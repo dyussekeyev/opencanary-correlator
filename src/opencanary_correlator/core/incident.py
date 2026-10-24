@@ -60,6 +60,7 @@ class Incident(BaseModel):
     created: int
     events_list: str = ""
     events_count: int = 1
+    events_truncated: bool = False
     logdata: str | None = None
     acknowledged: bool = False
     notified: bool = False
@@ -122,6 +123,10 @@ class Incident(BaseModel):
         }
         if self.logdata is not None:
             fields["logdata"] = self.logdata
+        # Only written when they carry information, so small incidents keep the
+        # exact legacy field set.
+        if self.events_truncated:
+            fields["events_truncated"] = "True"
         return fields
 
     @classmethod
@@ -139,12 +144,41 @@ class Incident(BaseModel):
             return json.dumps(list(value))
         return json.dumps([value])
 
+    @staticmethod
+    def append_timestamp(existing: str, now: int, *, limit: int) -> tuple[str, bool]:
+        """Append one epoch to the legacy CSV, or keep it frozen at `limit`.
+
+        Returns the stored CSV and whether it changed. Freezing (rather than
+        trimming) keeps the cost of a merge constant once an incident is large,
+        and leaves the first `limit` timestamps exactly as the console renders
+        them.
+        """
+        entries = existing.split(",") if existing else []
+        if len(entries) >= limit:
+            return existing, False
+        entries.append(str(now))
+        return ",".join(entries), True
+
     @classmethod
-    def merge_logdata(cls, existing: str | None, new: Any) -> str:
-        """Append new log data to the stored list."""
+    def trim_logdata(cls, value: str, *, limit: int) -> str:
+        """Keep at most `limit` stored entries."""
+        entries = _entries(value)
+        if len(entries) <= limit:
+            return value
+        return json.dumps(entries[:limit])
+
+    @classmethod
+    def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
+        """Append one log entry, keeping at most `limit` stored entries.
+
+        The stored list is frozen once the cap is reached, so a large incident
+        stops rewriting (and replicating) its whole history on every event.
+        """
         entries = _entries(existing)
-        entries.append(new)
-        return json.dumps(entries)
+        if len(entries) < limit:
+            entries.append(new)
+            return json.dumps(entries)
+        return existing or "[]"
 
 
 class IncidentFTPLogin(Incident):
@@ -248,11 +282,22 @@ class IncidentHostPortScan(Incident):
     DESCRIPTION = "Host Port Scan"
 
     @classmethod
-    def merge_logdata(cls, existing: str | None, new: Any) -> str:
+    def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
+        """Merge distinct ports, keeping every member.
+
+        A scan logs one entry per distinct port, not per event, so this list is
+        bounded by the port universe rather than by event volume; dropping
+        members would destroy the evidence the incident exists to record.
+        """
         values = {int(value) for value in _entries(existing)}
         incoming = new if isinstance(new, (list, tuple)) else [new]
         values.update(int(value) for value in incoming)
         return json.dumps(sorted(values))
+
+    @classmethod
+    def trim_logdata(cls, value: str, *, limit: int) -> str:
+        """Scan evidence is never truncated."""
+        return value
 
 
 class IncidentNetworkPortScan(Incident):
@@ -260,11 +305,17 @@ class IncidentNetworkPortScan(Incident):
     DESCRIPTION = "Network Port Scan"
 
     @classmethod
-    def merge_logdata(cls, existing: str | None, new: Any) -> str:
+    def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
+        """Merge distinct targets; like the host scan this list stays exact."""
         values = {str(value) for value in _entries(existing)}
         incoming = new if isinstance(new, (list, tuple)) else [new]
         values.update(str(value) for value in incoming)
         return json.dumps(sorted(values))
+
+    @classmethod
+    def trim_logdata(cls, value: str, *, limit: int) -> str:
+        """Scan evidence is never truncated."""
+        return value
 
     def format_report(self) -> str:
         """Formatting used by the legacy alert for distributed scans."""
@@ -389,16 +440,40 @@ class IncidentRepository:
             if existing_key is not None:
                 fields = await self._store.hgetall(existing_key)
                 if fields:
+                    cap = self._settings.max_stored_events
                     merged = incident_cls.from_fields(existing_key, fields)
-                    merged.events_list = (
-                        f"{merged.events_list},{now}" if merged.events_list else str(now)
+                    merged.events_list, timestamps_changed = incident_cls.append_timestamp(
+                        merged.events_list, now, limit=cap
                     )
                     merged.events_count += 1
                     merged.updated = True
-                    merged.logdata = incident_cls.merge_logdata(merged.logdata, new_logdata)
+                    stored_logdata = incident_cls.merge_logdata(
+                        merged.logdata, new_logdata, limit=cap
+                    )
+                    logdata_changed = stored_logdata != (merged.logdata or "")
+                    merged.logdata = stored_logdata
+                    stored_events = len(merged.events_list.split(",")) if merged.events_list else 0
+                    merged.events_truncated = (
+                        merged.events_truncated or merged.events_count > stored_events
+                    )
+                    if merged.events_truncated:
+                        # The stored history is full: send the counters only, so a
+                        # 10k-event incident stops costing a full-field rewrite
+                        # (and a full-field replication) on every event.
+                        updates: dict[str, str] = {
+                            "events_count": str(merged.events_count),
+                            "events_truncated": "True",
+                            "updated": "True",
+                        }
+                        if timestamps_changed:
+                            updates["events_list"] = merged.events_list
+                        if logdata_changed:
+                            updates["logdata"] = merged.logdata or "[]"
+                    else:
+                        updates = merged.to_fields()
                     await self._store.save_incident(
                         existing_key,
-                        merged.to_fields(),
+                        updates,
                         score=now,
                         pointer_key=pointer_key,
                     )
@@ -409,11 +484,16 @@ class IncidentRepository:
                             "incident": incident_name,
                             "key": existing_key,
                             "events_count": merged.events_count,
+                            "events_truncated": merged.events_truncated,
                         },
                     )
                     return None
 
             key = keys.incident_key(incident_name, event.src_host, now)
+            cap = self._settings.max_stored_events
+            initial_logdata = incident_cls.trim_logdata(
+                incident_cls.serialize_logdata(new_logdata), limit=cap
+            )
             incident = incident_cls(
                 key=key,
                 node_id=event.node_id,
@@ -425,7 +505,7 @@ class IncidentRepository:
                 created=now,
                 events_list=str(now),
                 events_count=1,
-                logdata=incident_cls.serialize_logdata(new_logdata),
+                logdata=initial_logdata,
                 description=incident_cls.DESCRIPTION,
             )
             await self._store.save_incident(

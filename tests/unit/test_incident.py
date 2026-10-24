@@ -301,6 +301,117 @@ async def test_network_portscan_merges_targets(repository, store, clock, event_f
     assert json.loads(fields["logdata"]) == ["10.0.0.2", "10.0.0.3"]
 
 
+async def test_small_incidents_keep_the_legacy_field_set(
+    repository, store, clock, event_factory
+) -> None:
+    created = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+    assert created is not None
+
+    fields = await store.hgetall(created.key)
+
+    assert "events_truncated" not in fields
+
+
+async def test_merge_caps_stored_events_and_keeps_the_exact_count(
+    repository, store, clock, event_factory
+) -> None:
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+
+    for _ in range(249):
+        assert await repository.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+
+    assert fields["events_count"] == "250"
+    assert len(fields["events_list"].split(",")) == 100
+    assert len(json.loads(fields["logdata"])) == 100
+    assert fields["events_truncated"] == "True"
+    # A login entry is ~45 bytes, so 100 of them plus 100 timestamps is the
+    # constant ceiling: the hash no longer depends on the incident's age.
+    assert sum(len(name) + len(value) for name, value in fields.items()) < 8192
+
+
+async def test_merge_after_the_cap_does_not_rewrite_stored_history(
+    repository, store, clock, event_factory
+) -> None:
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    for _ in range(149):
+        await repository.record("ftp.login_attempt", event)
+
+    before = await store.hgetall(created.key)
+    for _ in range(10):
+        await repository.record("ftp.login_attempt", event)
+    after = await store.hgetall(created.key)
+
+    assert after["events_list"] == before["events_list"]
+    assert after["logdata"] == before["logdata"]
+    assert int(after["events_count"]) == int(before["events_count"]) + 10
+
+
+async def test_capped_merge_writes_only_the_counters(
+    repository, store, clock, event_factory, monkeypatch
+) -> None:
+    """A capped incident must not send its stored history back to Redis."""
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    for _ in range(150):
+        await repository.record("ftp.login_attempt", event)
+
+    captured: list[dict[str, str]] = []
+    original = store.save_incident
+
+    async def spy(key, fields, *, score, pointer_key=None) -> None:
+        captured.append(dict(fields))
+        await original(key, fields, score=score, pointer_key=pointer_key)
+
+    monkeypatch.setattr(store, "save_incident", spy)
+    await repository.record("ftp.login_attempt", event)
+
+    assert len(captured) == 1
+    assert set(captured[0]) <= {"events_count", "events_truncated", "updated"}
+
+
+async def test_scan_logdata_keeps_every_distinct_member(
+    repository, store, clock, event_factory
+) -> None:
+    """Scan evidence is set-shaped, not per-event: it must not be truncated."""
+    event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
+    created = await repository.record(
+        "scans.host_portscan", event, logdata=list(range(1, 151)), logtype=5003
+    )
+    assert created is not None
+
+    clock.advance(5)
+    await repository.record(
+        "scans.host_portscan", event, logdata=list(range(151, 301)), logtype=5003
+    )
+
+    fields = await store.hgetall(created.key)
+
+    assert json.loads(fields["logdata"]) == list(range(1, 301))
+    assert fields["events_count"] == "2"
+
+
+async def test_create_keeps_scan_logdata_exact(repository, store, clock, event_factory) -> None:
+    event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
+
+    created = await repository.record(
+        "scans.host_portscan", event, logdata=list(range(1, 301)), logtype=5003
+    )
+    assert created is not None
+
+    fields = await store.hgetall(created.key)
+
+    assert json.loads(fields["logdata"]) == list(range(1, 301))
+
+
 async def test_incident_classes_are_registered() -> None:
     from opencanary_correlator.core.incident import INCIDENT_TYPES
 

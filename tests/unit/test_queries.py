@@ -146,6 +146,38 @@ async def test_device_queries(store, settings_factory, audit, clock, event_facto
     assert await should_notify(store, "canary-1") is False
 
 
+async def test_events_skipped_is_derived_from_the_exact_counter(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    """Storage is capped, so the skipped count must come from `events_count`."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    fields = await store.hgetall(incident.key)
+    fields["events_list"] = ",".join(str(incident.created + offset) for offset in range(100))
+    fields["events_count"] = "10000"
+    fields["events_truncated"] = "True"
+    await store.save_incident(incident.key, fields, score=float(fields["created"]))
+
+    payload = (await get_all_incidents(store, include_hosts=False))[0]
+
+    assert len(payload["events_list"]) == 100
+    assert payload["events_skipped"] == 9900
+    assert payload["events_truncated"] is True
+
+
+async def test_incidents_without_the_counter_keep_the_legacy_skip_calculation(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    fields = await store.hgetall(incident.key)
+    fields["events_list"] = ",".join(str(incident.created + offset) for offset in range(150))
+    await store.save_incident(incident.key, fields, score=float(fields["created"]))
+    await store.client.hdel(incident.key, "events_count")
+
+    payload = (await get_all_incidents(store, include_hosts=False))[0]
+
+    assert payload["events_skipped"] == 50
+
+
 async def test_logdata_is_truncated_for_the_console(
     store, settings_factory, audit, clock, event_factory
 ) -> None:

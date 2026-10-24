@@ -262,3 +262,20 @@ def test_legacy_values_can_be_overridden_by_explicit_arguments(tmp_path: Path) -
     )
 
     assert settings.incident_horizon == 5.0
+
+
+def test_max_stored_events_defaults_to_the_console_limit(settings_factory) -> None:
+    assert settings_factory().max_stored_events == 100
+
+
+@pytest.mark.parametrize("value", [0, -1, 10_001])
+def test_max_stored_events_is_bounded(settings_factory, value) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(max_stored_events=value)
+
+
+def test_max_stored_events_can_be_raised_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_MAX_STORED_EVENTS", "500")
+
+    assert Settings(_env_file=None).max_stored_events == 500

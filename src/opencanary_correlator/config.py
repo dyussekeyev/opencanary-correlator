@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from opencanary_correlator.constants import INCIDENT_KEY_PREFIX
+from opencanary_correlator.constants import INCIDENT_KEY_PREFIX, MAX_EVENT_COUNT
 
 _logger = logging.getLogger(__name__)
 
@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     scan_network_threshold: int = Field(default=2, ge=1)
     scan_network_horizon: float = Field(default=3600.0, gt=0.0)
     dedup_ttl: float = Field(default=60.0, ge=0.0)
+    max_stored_events: int = Field(
+        default=MAX_EVENT_COUNT,
+        ge=1,
+        le=10_000,
+        description=(
+            "Timestamps and log entries kept per incident. The legacy console renders "
+            "at most 100 entries, so a larger value only helps direct Redis readers; "
+            "events_count always stays exact."
+        ),
+    )
 
     # --- Dispatchers --------------------------------------------------------
     webhook_urls: CommaSeparated = Field(default_factory=list)
