@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and attach artifacts to (e.g. v0.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  artifacts:
+    name: Build and attach wheel and sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Check the tag matches the package version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          source = pathlib.Path("src/opencanary_correlator/__init__.py").read_text(encoding="utf-8")
+          version = re.search(r'__version__ = "([^"]+)"', source).group(1)
+          tag = os.environ["TAG"].removeprefix("v")
+          if tag != version:
+              raise SystemExit(f"tag {tag!r} does not match package version {version!r}")
+          print(f"tag and package version agree on {version}")
+          PY
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Install the wheel and smoke the CLI
+        run: |
+          python -m venv "$RUNNER_TEMP/fresh"
+          "$RUNNER_TEMP/fresh/bin/python" -m pip install --upgrade pip >/dev/null
+          "$RUNNER_TEMP/fresh/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/fresh/bin/opencanary-correlator" --version
+          OCC_REDIS_URL=redis://localhost:6379/0 \
+            "$RUNNER_TEMP/fresh/bin/opencanary-correlator" --check-config > "$RUNNER_TEMP/config.json"
+          python - "$RUNNER_TEMP/config.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert payload["redis_url"] == "redis://localhost:6379/0", payload
+          assert "channels" in payload, payload
+          print("installed CLI reports a valid configuration")
+          PY
+
+      - name: Attach the artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            echo "::warning::no release exists for $TAG yet; creating a draft for review"
+            gh release create "$TAG" --draft --generate-notes --verify-tag --title "$TAG" dist/*
+          fi
+          gh release view "$TAG" --json assets -q '.assets[].name'
+
+      - name: Keep the build output for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.tag || github.ref_name }}
+          path: dist/
+          if-no-files-found: error
