@@ -361,7 +361,9 @@ class SyslogUDPReceiver(BaseReceiver):
             lambda: SyslogDatagramProtocol(self),
             local_addr=(self.host, self.port),
         )
-        assert isinstance(transport, asyncio.DatagramTransport)  # noqa: S101
+        # Do not isinstance-check the transport: the POSIX selector transport
+        # implements the datagram API without inheriting DatagramTransport
+        # (only the Windows one does), so a runtime check would reject it.
         self._transport = transport
         sockname = transport.get_extra_info("sockname")
         if isinstance(sockname, tuple) and len(sockname) >= 2:
