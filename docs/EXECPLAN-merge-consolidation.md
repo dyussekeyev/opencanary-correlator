@@ -74,7 +74,8 @@ Linux host (a `ubuntu-latest` runner is enough) and record the RTT with
 
 The gate was run as a `benchmark` job on `ubuntu-latest` with a **native**
 `redis-server` (not a service container, which would smuggle the Docker
-network back in). Two invocations of the same commit:
+network back in). Three invocations of the same commit; the third reproduced
+Run B (12.404 s at a 0.057 ms round trip), so the spread is the runner:
 
 | | Run A | Run B | Docker Desktop (recorded earlier) |
 |---|---|---|---|
@@ -92,8 +93,9 @@ Three conclusions, and the third is the one that decides the plan:
    17.7 s → 5.1 s difference. The 77.2 s → 17.7 s improvement recorded for the
    capped history stands; the 5 s target was being missed largely by the VM.
 2. **A shared runner cannot gate a wall-time target.** The same commit took
-   5.145 s and 12.040 s on two consecutive runs, with the round trip doubling
-   alongside it — CPU steal on `ubuntu-latest` is the variable, not the code.
+   5.145 s, 12.040 s and 12.404 s on consecutive runs, with the round trip
+   doubling alongside it — CPU steal on `ubuntu-latest` is the variable, not
+   the code.
    That is why the CI job records numbers and never asserts one.
 3. **The rewrite addresses the smaller share on real hardware.** On Docker
    Desktop the six hops were 62-93 % of a merge, which is what made this plan

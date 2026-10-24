@@ -311,8 +311,10 @@ byte-bound: six commands per event on one lane.
 
 Docker Desktop's loopback is expensive, so the same workload was repeated on a
 native Linux runner (`ubuntu-latest`, `ubuntu-latest` hardware, a **native**
-`redis-server` rather than a service container) via the `benchmark` CI job. Two
-invocations of the same commit:
+`redis-server` rather than a service container) via the `benchmark` CI job.
+
+Three invocations of the same commit; the third reproduced Run B (12.404 s,
+round trip 0.057 ms), so the spread below is the runner and not a one-off.
 
 | | Run A | Run B | Docker Desktop |
 |---|---|---|---|
