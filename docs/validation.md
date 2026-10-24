@@ -335,8 +335,79 @@ therefore records numbers and never asserts one.
 The split is also the reason the single-script merge was **not** implemented
 (see [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md)): on a
 native host six round trips are ~31-33 % of an event, so collapsing them has a
-ceiling of ~28 % of wall time, while Python-side work - parsing, Pydantic
-validation, the merge logic (0.097 ms per merge on its own) - is the majority.
+ceiling of ~28 % of wall time, and at the time the rest was assumed to be
+application work. The profile below corrects that assumption: the remaining
+bucket is round trips and per-command overhead, not the correlator's own code.
+
+### Where the per-event time actually goes
+
+`tools/profile_hot_path.py` splits the bucket the native runs called "Python,
+parsing, receiver, queue". It has two modes: a pure-CPU loop with no I/O, and
+the real engine against a native Redis.
+
+Pure CPU per event (`cpu` mode, 20 000 events, `ubuntu-latest`):
+
+| Stage | mean | p95 |
+|---|---|---|
+| `json.loads` | 3.39 µs | 3.43 µs |
+| `CanaryEvent.model_validate` | 12.86 µs | 13.43 µs |
+| `event_fingerprint` | 4.93 µs | 5.24 µs |
+| **total** | **21.19 µs** | |
+
+Engine against a native Redis (`pipeline` mode, 2 000 events, PING round trip
+87.7 µs):
+
+| Workload | `handle_event` | application CPU | 6 round trips | residual |
+|---|---|---|---|---|
+| Hot merge, one host | 1 181.8 µs | 25.9 µs (2.2 %) | 527.5 µs (44.6 %) | 628.3 µs (53.2 %) |
+| New incident per event, 2 000 hosts | 4 977.9 µs | 20.8 µs (0.4 %) | 526.5 µs (10.6 %) | 4 430.7 µs (89.0 %) |
+
+The residual is what is left after subtracting the measured CPU and
+`round trips x PING`. It is not application code either: it is per-command
+overhead above a bare PING (redis-py response parsing, connection I/O, asyncio
+wake-ups) plus server work proportional to the response. One dedup call costs
+134.1 µs against an 87.7 µs PING, which puts ~46 µs per real command on the
+table.
+
+#### The index size is the largest single cost
+
+The second row is not slow because it does more round trips - both rows do six.
+It is slow because a host seen for the first time has no `incident-latest`
+pointer, so `find_recent_incident` falls back to `ZREVRANGEBYSCORE`, which
+returns **every** incident inside the horizon and filters that list in Python.
+The cost is O(live incidents) per event, and it grows:
+
+| Live incidents | `handle_event` | residual |
+|---|---|---|
+| 200 | 4 444.7 µs | 1 402.1 µs |
+| 2 000 | 8 774.2 µs | 5 517.1 µs |
+
+Both rows were measured on the same machine with a constant round trip, so the
+growth is the response and not the network; the absolute values are Docker
+Desktop's, so only the ratio is the result.
+
+#### Decision
+
+- **`orjson` — no.** Parsing is 3.39 µs of a 1 181.8 µs event, so replacing the
+  decoder buys at most ~2.4 µs (0.2 %) and adds a dependency.
+- **Pydantic tuning, removing `model_dump`, model settings — no.** Validation is
+  12.86 µs in total; halving it changes an event by 0.5 %. The largest single
+  function inside it is the per-character control-character scan shared by three
+  host validators (about 12 µs of own time under `cProfile`, which inflates small
+  calls). A regex would save a few microseconds - worth doing for clarity, not
+  for throughput.
+- **The lever is the lookup, not the language layer.** Bounding the fallback
+  scan, or skipping it for a first-seen host, removes up to 4.4 ms of a 5.0 ms
+  event while the index is populated. Round trips come second at 0.53 ms, and
+  the per-command overhead third.
+
+Reproduce with:
+
+```bash
+uv run python tools/profile_hot_path.py cpu --iterations 20000
+uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000
+uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000 --hosts 1
+```
 
 ### fakeredis reference (not a capacity number)
 

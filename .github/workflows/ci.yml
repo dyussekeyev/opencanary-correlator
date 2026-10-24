@@ -126,6 +126,19 @@ jobs:
         run: |
           uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
             --events 10000 --hosts 100 --concurrency 8 | tee /tmp/many.json
+      # Attribute the in-process cost: parsing, validation and fingerprinting
+      # have no I/O, so this number is comparable across machines.
+      - name: Profile the pure-Python path
+        run: |
+          uv run python tools/profile_hot_path.py cpu --iterations 20000 | tee /tmp/cpu.json
+      - name: Profile the engine, one new incident per event
+        run: |
+          uv run python tools/profile_hot_path.py pipeline \
+            --redis-url redis://localhost:6379/15 --events 2000 | tee /tmp/pipe-new.json
+      - name: Profile the engine, hot merge into one incident
+        run: |
+          uv run python tools/profile_hot_path.py pipeline \
+            --redis-url redis://localhost:6379/15 --events 2000 --hosts 1 | tee /tmp/pipe-hot.json
       - name: Summarise
         if: always()
         run: |
@@ -158,6 +171,60 @@ jobs:
               print(
                   f"| {label} | {data['elapsed_seconds']} s | {data['events_per_second']} | "
                   f"{data['accepted']} | {data['dropped']} | {data['incidents']} | {per_event:.3f} |"
+              )
+
+          def load(path):
+              file = pathlib.Path(path)
+              if not file.exists():
+                  return None
+              text = file.read_text()
+              return json.loads(text[: text.rindex("}") + 1])
+
+          cpu = load("/tmp/cpu.json")
+          if cpu:
+              print()
+              print("### Where the in-process time goes")
+              print()
+              print("| Stage | mean | p95 |")
+              print("|---|---|---|")
+              for stage, values in cpu["stages_us"].items():
+                  print(f"| `{stage}` | {values['mean_us']} us | {values['p95_us']} us |")
+              print(f"| **total Python** | **{cpu['cpu_per_event_us']} us** | |")
+              print()
+              print("Top functions by own time per event:")
+              print()
+              print("| Function | own us | cum us |")
+              print("|---|---|---|")
+              for entry in cpu["top_functions"][:8]:
+                  name = ":".join(str(part) for part in entry["function"][-2:])
+                  print(
+                      f"| `{name}` | {entry['tottime_us_per_event']} |"
+                      f" {entry['cumtime_us_per_event']} |"
+                  )
+
+          for label, path in (("new incident per event", "/tmp/pipe-new.json"), ("hot merge", "/tmp/pipe-hot.json")):
+              data = load(path)
+              if not data:
+                  continue
+              cost = data["cost_us_per_event"]
+              share = data["share_pct"]
+              print()
+              print(f"### Pipeline cost, {label}")
+              print()
+              print(
+                  f"handle_event **{cost['handle_event']} us** = CPU"
+                  f" {cost['measured_cpu_parse_validate_fingerprint']} us ({share['cpu']}%)"
+                  f" + {data['redis']['round_trips_per_event']} round trips"
+                  f" ({cost['estimated_round_trips_x_ping']} us, {share['round_trips_x_ping']}%)"
+                  f" + {cost['residual_event_loop_and_protocol']} us residual ({share['residual']}%)"
+              )
+              print()
+              print(
+                  "| Command | per event |\n|---|---|\n"
+                  + "\n".join(
+                      f"| `{command}` | {count} |"
+                      for command, count in data["redis"]["command_mix_per_event"].items()
+                  )
               )
           PY
 
