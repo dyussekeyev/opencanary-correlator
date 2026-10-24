@@ -33,6 +33,7 @@ from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.storage.redis_store import RedisStore
 
 BENCH_HOST_PREFIX = "10.42."
+SEED_HOST_PREFIX = "10.43."
 DEFAULT_EVENTS = 10_000
 DEFAULT_HOSTS = 100
 DEFAULT_TIMEOUT = 300.0
@@ -48,6 +49,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Redis URL (use a disposable database); omit to use fakeredis",
     )
     parser.add_argument("--queue-size", type=int, default=0, help="0 = events * 2")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="consumer lanes (default: the OCC_EVENT_CONCURRENCY setting)",
+    )
+    parser.add_argument(
+        "--seed-incidents",
+        type=int,
+        default=0,
+        help=(
+            "pre-create N incidents inside the horizon for unrelated hosts, to "
+            "measure how incident lookup scales with the index size"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     return parser
 
@@ -91,9 +107,30 @@ def build_payload(events: int, hosts: int) -> bytes:
 async def cleanup(store: RedisStore) -> None:
     """Remove incidents created for the synthetic hosts."""
     for key in await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf"):
-        if f":{BENCH_HOST_PREFIX}" in key:
+        if f":{BENCH_HOST_PREFIX}" in key or f":{SEED_HOST_PREFIX}" in key:
             await store.delete(key)
             await store.client.zrem(KEY_INCIDENTS, key)
+
+
+async def seed_incidents(store: RedisStore, count: int) -> int:
+    """Create `count` live incidents for unrelated hosts.
+
+    A busy deployment accumulates incidents inside the horizon too, so this
+    models the index size that every per-event lookup has to walk when there is
+    no per-host pointer.
+    """
+    if count <= 0:
+        return 0
+    now = int(time.time())
+    async with store.client.pipeline(transaction=False) as pipe:
+        for index in range(count):
+            key = f"incident:ftplogin:{SEED_HOST_PREFIX}{index // 250}.{index % 250}:{now}"
+            pipe.hset(key, mapping={"created": str(now), "events_count": "1"})
+            pipe.zadd(KEY_INCIDENTS, {key: now})
+            if index % 500 == 499:
+                await pipe.execute()
+        await pipe.execute()
+    return count
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -106,6 +143,7 @@ async def run(args: argparse.Namespace) -> int:
         health_port=None,
         rate_limit_events_per_minute=0,
     )
+    seeded = await seed_incidents(store, args.seed_incidents)
     audit = AuditLogger("bench", stream=io.StringIO())
     repository = IncidentRepository(store, settings, audit)
     engine = CorrelationEngine(
@@ -116,12 +154,14 @@ async def run(args: argparse.Namespace) -> int:
         audit=audit,
     )
     queue_size = args.queue_size or args.events * 2
+    concurrency = args.concurrency or settings.event_concurrency
     receiver = TCPJSONReceiver(
         sink=engine,
         audit=audit,
         host="127.0.0.1",
         port=0,
         queue_size=queue_size,
+        concurrency=concurrency,
     )
     await receiver.start()
     _reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -140,6 +180,8 @@ async def run(args: argparse.Namespace) -> int:
         "backend": backend,
         "events": args.events,
         "hosts": args.hosts,
+        "concurrency": concurrency,
+        "seeded_incidents": seeded,
         "payload_mib": round(len(payload) / 1024 / 1024, 2),
         "accepted": receiver.stats.accepted,
         "dropped": receiver.stats.dropped,

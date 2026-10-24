@@ -17,9 +17,14 @@ import socket
 from abc import abstractmethod
 from typing import Final
 
+from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
-from opencanary_correlator.connectors.receivers._pipeline import EventPipeline, ReceiverStats
+from opencanary_correlator.connectors.receivers._pipeline import (
+    DEFAULT_CONCURRENCY,
+    EventPipeline,
+    ReceiverStats,
+)
 from opencanary_correlator.schemas import CanaryEvent
 
 CLOSE_REASON_LINE_TOO_LARGE: Final[str] = "line_too_large"
@@ -156,6 +161,7 @@ class TCPStreamReceiver(BaseReceiver):
         max_connections: int = 1000,
         queue_size: int = 10_000,
         rate_limiter: RateLimiter | None = None,
+        concurrency: int = DEFAULT_CONCURRENCY,
     ) -> None:
         self.host = host
         self.port = port
@@ -169,6 +175,7 @@ class TCPStreamReceiver(BaseReceiver):
             audit=audit,
             queue_size=queue_size,
             rate_limiter=rate_limiter,
+            concurrency=concurrency,
         )
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[StreamProtocol] = set()
@@ -221,6 +228,7 @@ class TCPStreamReceiver(BaseReceiver):
         for task in list(self._admission_tasks):
             task.cancel()
         self._admission_tasks.clear()
+        metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(0)
         await self._pipeline.stop()
         self._audit.emit(
             "receiver_stopped",
@@ -234,7 +242,11 @@ class TCPStreamReceiver(BaseReceiver):
         """Track the connection and enforce the connection cap."""
         self._connections.add(protocol)
         self._pipeline.stats.connections += 1
+        metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(len(self._connections))
         if len(self._connections) > self.max_connections:
+            metrics.CONNECTION_REJECTIONS.labels(
+                receiver=self.name, reason=CLOSE_REASON_CONNECTION_LIMIT
+            ).inc()
             self._audit.emit(
                 "connection_rejected",
                 "warning",
@@ -257,6 +269,7 @@ class TCPStreamReceiver(BaseReceiver):
         try:
             allowed = await self._rate_limiter.allow_connection(protocol.peer_ip)
         except Exception as exc:
+            metrics.CONNECTION_REJECTIONS.labels(receiver=self.name, reason="limiter_error").inc()
             self._audit.emit(
                 "connection_limiter_error",
                 "error",
@@ -264,6 +277,9 @@ class TCPStreamReceiver(BaseReceiver):
             )
             return
         if not allowed:
+            metrics.CONNECTION_REJECTIONS.labels(
+                receiver=self.name, reason=CLOSE_REASON_RATE_LIMITED
+            ).inc()
             self._audit.emit(
                 "connection_rejected",
                 "warning",
@@ -278,6 +294,7 @@ class TCPStreamReceiver(BaseReceiver):
     def connection_lost(self, protocol: StreamProtocol) -> None:
         """Forget a closed connection."""
         self._connections.discard(protocol)
+        metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(len(self._connections))
 
     def connection_closed(self, protocol: StreamProtocol, reason: str) -> None:
         """Audit a connection that the receiver itself terminated."""
@@ -295,7 +312,7 @@ class TCPStreamReceiver(BaseReceiver):
         """Parse one complete payload and queue the resulting event."""
         event = self.parse_payload(payload, protocol.peer_ip)
         if event is None:
-            self._pipeline.stats.rejected += 1
+            self._pipeline.record_rejection()
             return
         self._pipeline.submit(event)
 

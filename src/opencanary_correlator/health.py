@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Final
+from urllib.parse import urlsplit
 
+from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -13,6 +15,7 @@ _REQUEST_TIMEOUT: Final[float] = 5.0
 _MAX_REQUEST_BYTES: Final[int] = 8192
 
 _OK_PATHS = frozenset({"/healthz", "/readyz", "/health"})
+_METRICS_PATH: Final[str] = "/metrics"
 
 
 class HealthServer:
@@ -64,7 +67,12 @@ class HealthServer:
             if not request_line:
                 return
             parts = request_line.decode("latin-1").split()
-            path = parts[1] if len(parts) >= 2 else "/"
+            target = parts[1] if len(parts) >= 2 else "/"
+            try:
+                path = urlsplit(target).path or "/"
+            except ValueError:
+                # Malformed absolute-form targets must not crash the probe listener.
+                path = ""
             consumed = len(request_line)
             while consumed < _MAX_REQUEST_BYTES:
                 line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
@@ -72,16 +80,20 @@ class HealthServer:
                 if line in (b"\r\n", b"\n", b""):
                     break
 
-            if path in _OK_PATHS:
+            if path == _METRICS_PATH:
+                code = 200
+                body = metrics.render().decode("utf-8")
+                content_type = metrics.CONTENT_TYPE
+            elif path in _OK_PATHS:
                 healthy = await self._store.ping()
                 code = 200 if healthy else 503
                 body = json.dumps({"status": "ok" if healthy else "degraded", "redis": healthy})
-            elif path.startswith("/healthz") or path.startswith("/readyz"):
-                code, body = 200, json.dumps({"status": "ok", "redis": None})
+                content_type = "application/json"
             else:
                 code, body = 404, json.dumps({"error": "not found"})
+                content_type = "application/json"
 
-            self._write(writer, code, body)
+            self._write(writer, code, body, content_type)
             await writer.drain()
         except (TimeoutError, ConnectionError):
             if self._audit is not None:
@@ -94,12 +106,17 @@ class HealthServer:
                 pass
 
     @staticmethod
-    def _write(writer: asyncio.StreamWriter, code: int, body: str) -> None:
+    def _write(
+        writer: asyncio.StreamWriter,
+        code: int,
+        body: str,
+        content_type: str = "application/json",
+    ) -> None:
         reason = {200: "OK", 404: "Not Found", 503: "Service Unavailable"}.get(code, "OK")
         payload = body.encode("utf-8")
         headers = (
             f"HTTP/1.1 {code} {reason}\r\n"
-            "Content-Type: application/json\r\n"
+            f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(payload)}\r\n"
             "Connection: close\r\n\r\n"
         )

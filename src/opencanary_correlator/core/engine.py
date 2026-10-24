@@ -12,6 +12,7 @@ import asyncio
 import time
 from collections.abc import Callable, Sequence
 
+from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
@@ -50,6 +51,7 @@ class CorrelationEngine:
         """Correlate one validated event."""
         now = float(self._clock())
         if not await self._dedup.first_seen(event_fingerprint(event)):
+            metrics.EVENTS_TOTAL.labels(result="deduplicated").inc()
             self._audit.emit(
                 "event_deduplicated",
                 "info",
@@ -66,6 +68,7 @@ class CorrelationEngine:
             try:
                 incidents.extend(await rule.apply(event, now=now))
             except Exception as exc:
+                metrics.RULE_FAILURES.labels(rule=rule.name).inc()
                 self._audit.emit(
                     "rule_failed",
                     "error",
@@ -77,6 +80,7 @@ class CorrelationEngine:
                 )
 
         if not matched:
+            metrics.EVENTS_TOTAL.labels(result="unrouted").inc()
             self._audit.emit(
                 "event_unrouted",
                 "warning",
@@ -104,6 +108,7 @@ class CorrelationEngine:
                 timeout=float(self._settings.dispatch_timeout),
             )
         except TimeoutError:
+            metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status="timeout").inc()
             self._audit.emit(
                 "alert_dispatch",
                 "error",
@@ -116,6 +121,7 @@ class CorrelationEngine:
             )
             return
         except Exception as exc:
+            metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status="exception").inc()
             self._audit.emit(
                 "alert_dispatch",
                 "error",
@@ -128,6 +134,7 @@ class CorrelationEngine:
             )
             return
 
+        metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status=result.status).inc()
         self._audit.emit(
             "alert_dispatch",
             "success" if result.status == "success" else "error",

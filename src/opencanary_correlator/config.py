@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from opencanary_correlator.constants import INCIDENT_KEY_PREFIX
@@ -32,9 +32,11 @@ LEGACY_KEY_MAP: Final[dict[str, str]] = {
     "portscan.monitor_period": "scan_host_horizon",
     "networkscan.packet_threshold": "scan_network_threshold",
     "networkscan.monitor_period": "scan_network_horizon",
+    "console.email_notification_enable": "smtp_enabled",
     "console.email_notification_address": "smtp_to",
     "console.email_host": "smtp_host",
     "console.email_port": "smtp_port",
+    "console.slack_notification_enable": "slack_enabled",
     "console.slack_notification_webhook": "slack_webhooks",
 }
 
@@ -97,6 +99,15 @@ class Settings(BaseSettings):
     partial_line_timeout: float = Field(default=30.0, gt=0.0, le=3600.0)
     max_connections: int = Field(default=1000, ge=1, le=100_000)
     event_queue_size: int = Field(default=10_000, ge=1, le=1_000_000)
+    event_concurrency: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description=(
+            "Consumer lanes per receiver. Events are sharded by source host, so one "
+            "slow host cannot stall the others and per-host order is preserved."
+        ),
+    )
     rate_limit_events_per_minute: int = Field(default=600, ge=0, le=1_000_000)
 
     # --- State --------------------------------------------------------------
@@ -119,11 +130,13 @@ class Settings(BaseSettings):
 
     # --- Dispatchers --------------------------------------------------------
     webhook_urls: CommaSeparated = Field(default_factory=list)
+    slack_enabled: bool = True
     slack_webhooks: CommaSeparated = Field(default_factory=list)
     discord_webhooks: CommaSeparated = Field(default_factory=list)
     telegram_token: SecretStr | None = None
     telegram_chat_ids: CommaSeparated = Field(default_factory=list)
 
+    smtp_enabled: bool = True
     smtp_host: str | None = None
     smtp_port: int = Field(default=587, ge=1, le=65535)
     smtp_username: str | None = None
@@ -131,11 +144,14 @@ class Settings(BaseSettings):
     smtp_from: str = "notifications@opencanary.invalid"
     smtp_to: CommaSeparated = Field(default_factory=list)
     smtp_starttls: bool = True
+    smtp_use_tls: bool = False
     dispatch_timeout: float = Field(default=10.0, gt=0.0, le=300.0)
 
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
-    health_port: int | None = Field(default=8080, ge=1, le=65535)
+    # 0 is a valid input and means "disabled"; the before-validator maps it to
+    # None, so the 1..65535 bound only applies to enabled ports.
+    health_port: int | None = Field(default=8080, ge=0, le=65535)
 
     @field_validator(
         "webhook_urls",
@@ -213,6 +229,34 @@ class Settings(BaseSettings):
             raise ValueError("smtp_from must be an email address")
         return value
 
+    @model_validator(mode="after")
+    def _validate_smtp_tls(self) -> Self:
+        """Reject ambiguous SMTP encryption settings.
+
+        ``start_tls`` performs an explicit STARTTLS upgrade (usually port 587);
+        ``use_tls`` wraps the connection immediately (usually port 465).
+        ``aiosmtplib`` rejects both at once, so fail at configuration time.
+        """
+        if self.smtp_use_tls and self.smtp_starttls:
+            raise ValueError("smtp_use_tls and smtp_starttls are mutually exclusive")
+        return self
+
+    @field_validator("health_port", mode="before")
+    @classmethod
+    def _disable_health_port(cls, value: Any) -> Any:
+        """Treat any numeric zero and an empty value as “no health endpoint”."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                value = int(text)
+            except ValueError:
+                return value
+        return None if value == 0 else value
+
     def horizon_for(self, incident_name: str) -> float:
         """Return the effective horizon in seconds for one incident type."""
         return float(self.incident_horizons.get(incident_name, self.incident_horizon))
@@ -230,7 +274,10 @@ class Settings(BaseSettings):
         removed integrations (Twilio, Mandrill) are never migrated.
         """
         raw: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
-        mapped: dict[str, Any] = {}
+        # The Python 2 notifier treated a missing enable key as disabled, even
+        # when addresses/webhooks were present. Preserve that default when the
+        # legacy file is imported; explicit overrides still win below.
+        mapped: dict[str, Any] = {"smtp_enabled": False, "slack_enabled": False}
         dropped: list[str] = []
         horizon_overrides = {
             incident_name: raw[key]

@@ -24,7 +24,11 @@ from pydantic import ValidationError
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
-from opencanary_correlator.connectors.receivers._pipeline import EventPipeline, ReceiverStats
+from opencanary_correlator.connectors.receivers._pipeline import (
+    DEFAULT_CONCURRENCY,
+    EventPipeline,
+    ReceiverStats,
+)
 from opencanary_correlator.connectors.receivers._tcp import StreamProtocol, TCPStreamReceiver
 from opencanary_correlator.constants import LogType
 from opencanary_correlator.schemas import CanaryEvent
@@ -315,6 +319,7 @@ class SyslogUDPReceiver(BaseReceiver):
         max_line_bytes: int = 65536,
         queue_size: int = 10_000,
         rate_limiter: RateLimiter | None = None,
+        concurrency: int = DEFAULT_CONCURRENCY,
     ) -> None:
         self.host = host
         self.port = port
@@ -325,6 +330,7 @@ class SyslogUDPReceiver(BaseReceiver):
             audit=audit,
             queue_size=queue_size,
             rate_limiter=rate_limiter,
+            concurrency=concurrency,
         )
         self._transport: asyncio.DatagramTransport | None = None
         self._bound_port: int | None = None
@@ -379,14 +385,14 @@ class SyslogUDPReceiver(BaseReceiver):
         """Validate one datagram and queue the resulting event."""
         if len(data) > self.max_line_bytes:
             self.audit_rejection("datagram_too_large", peer_ip, size=len(data))
-            self._pipeline.stats.rejected += 1
+            self._pipeline.record_rejection()
             return
         for line in data.splitlines() or [data]:
             if not line.strip():
                 continue
             event = self._parse_payload(line, peer_ip)
             if event is None:
-                self._pipeline.stats.rejected += 1
+                self._pipeline.record_rejection()
                 continue
             self._pipeline.submit(event)
 
