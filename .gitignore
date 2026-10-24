@@ -57,3 +57,10 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# Local development environment
+.venv/
+.env
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
