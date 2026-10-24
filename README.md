@@ -1,5 +1,7 @@
 # OpenCanary Correlator
 
+[![CI](https://github.com/dyussekeyev/opencanary-correlator/actions/workflows/ci.yml/badge.svg)](https://github.com/dyussekeyev/opencanary-correlator/actions/workflows/ci.yml)
+
 A stateless, asyncio correlator for [OpenCanary](https://github.com/thinkst/opencanary)
 honeypot events. It receives the exact JSON that `opencanaryd` already emits,
 coalesces related attempts into incidents, keeps all state in Redis, and pushes
@@ -30,7 +32,9 @@ infinite numbers, excessive `logdata` nesting.
 ## Requirements
 
 - Python 3.11+ (tested on 3.14)
-- Redis 6+ (TLS via `rediss://`, Unix sockets via `unix://`)
+- Redis 6+ as one logical server, with scripting enabled (`EVAL`/`EVALSHA`
+  drive the atomic incident write and lock release), TLS via `rediss://`, Unix
+  sockets via `unix://`; Redis Cluster is not supported (see [Scaling](#scaling))
 - No database or ORM: all correlation state is in Redis
 
 ## Install
@@ -116,26 +120,32 @@ Migrated keys: `console.incident_horizon`, the per-incident horizons
 `scans.host_portscan_horizon`, `scans.network_portscan_horizon`, plus
 `portscan.packet_threshold`, `portscan.monitor_period`,
 `networkscan.packet_threshold`, `networkscan.monitor_period`,
-`console.email_notification_address`, `console.email_host`,
-`console.email_port` and `console.slack_notification_webhook`.
+`console.email_notification_enable`, `console.email_notification_address`,
+`console.email_host`,
+`console.email_port`, `console.slack_notification_enable` and
+`console.slack_notification_webhook`.
 Twilio and Mandrill keys are ignored (with a log line), because SMS and the
-deprecated Mandrill SDK are not part of this release.
+deprecated Mandrill SDK are not part of this release. As in the Python 2
+notifier, a missing `*_notification_enable` key means the channel stays
+disabled; an explicit `OCC_SMTP_ENABLED=true` / `OCC_SLACK_ENABLED=true`
+override re-enables it.
 
 ## Alert channels
 
 | Channel | Settings |
 |---|---|
 | Generic webhook / SIEM | `OCC_WEBHOOK_URLS` — JSON `{"title", "text", "key"}`, one URL per delivery |
-| Slack | `OCC_SLACK_WEBHOOKS` — incoming webhook, compact report in `text` |
+| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, compact report in `text` |
 | Telegram | `OCC_TELEGRAM_TOKEN`, `OCC_TELEGRAM_CHAT_IDS` — one message per chat, truncated to 4096 chars |
 | Discord | `OCC_DISCORD_WEBHOOKS` — `content` under 2000 chars, otherwise a single embed; both `200` and `204 No Content` count as success |
-| SMTP | `OCC_SMTP_HOST`, `OCC_SMTP_PORT`, `OCC_SMTP_FROM`, `OCC_SMTP_TO`, optional `OCC_SMTP_USERNAME` / `OCC_SMTP_PASSWORD`, `OCC_SMTP_STARTTLS` |
+| SMTP | `OCC_SMTP_ENABLED`, `OCC_SMTP_HOST`, `OCC_SMTP_PORT`, `OCC_SMTP_FROM`, `OCC_SMTP_TO`, optional `OCC_SMTP_USERNAME` / `OCC_SMTP_PASSWORD`, `OCC_SMTP_STARTTLS` (port 587), `OCC_SMTP_USE_TLS` (implicit TLS, usually port 465; mutually exclusive with STARTTLS) |
 
 HTTP channels retry 429/5xx and transport errors three times with exponential
-backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker so a
-dead endpoint is not hammered by every replica. `OCC_DISPATCH_TIMEOUT` bounds a
-single delivery. One failing channel never blocks the others and never blocks
-ingestion.
+backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
+endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
+not hammered by every replica while the other URLs of the same channel keep
+receiving alerts. `OCC_DISPATCH_TIMEOUT` bounds a single delivery. One failing
+endpoint never blocks the others and never blocks ingestion.
 
 ## Correlation semantics
 
@@ -150,6 +160,9 @@ ingestion.
   `OCC_SCAN_HOST_HORIZON` (50 s) on one canary.
 - Network port scan: `OCC_SCAN_NETWORK_THRESHOLD` canary targets (2) for the same
   `src_host`/`dst_port` within `OCC_SCAN_NETWORK_HORIZON` (3600 s).
+  Both scan windows use a **fixed** TTL: the expiry is anchored when the window
+  is created and is never extended by later packets, so sustained scanning
+  cannot keep the window (or a stale threshold count) alive indefinitely.
 - Duplicate events are dropped with a SHA-256 fingerprint (`OCC_DEDUP_TTL`), so a
   retransmitted log never inflates an incident.
 - Unknown `logtype` values are audited as `event_unrouted` and otherwise ignored.
@@ -157,15 +170,49 @@ ingestion.
 ## Scaling
 
 The process holds no correlation state: Redis stores windows, counters, locks,
-dedup keys and incidents. Run any number of replicas behind a load balancer,
-point them at the same Redis, and create-or-merge on the incident is serialised
-with a short distributed lock, so N replicas still produce one incident and one
-notification. Receivers are bounded (connections, queue size, line size) and
-rate limits are shared through Redis.
+dedup keys and incidents. Run any number of **correlator** replicas behind a load
+balancer, point them at the same Redis, and create-or-merge on the incident is
+serialised with a short distributed lock, so N replicas still produce one
+incident and one notification. Receivers are bounded (connections, queue size,
+line size) and rate limits are shared through Redis.
+
+Two settings carry the throughput:
+
+- `OCC_EVENT_CONCURRENCY` (default 8) runs that many consumer lanes per
+  receiver, sharded by `src_host`. Different hosts progress in parallel; one
+  host keeps arrival order, so merging stays deterministic and a slow host or
+  channel cannot stall the others. Events still cost about six Redis round
+  trips each, so this is the knob that matters for a remote Redis.
+- Incident lookup is O(1): `incident-latest:<incident>:<src_host>` points at the
+  newest incident for that host, instead of scanning every incident inside the
+  horizon. The pointer falls back to the index when it is missing or stale, so
+  an upgrade or a deleted incident stays correct.
+
+Measured on a real Redis 7 server (10,000 events, 100 hosts): 2.6 s with 8
+lanes. With 5,000 live incidents in the index, an older build that scanned the
+index took 47.9 s for 2,000 events; the pointer version takes 4.6 s. Details and
+caveats are in [docs/validation.md](docs/validation.md).
+
+That Redis must be one logical server (a primary with replicas, or a failover
+endpoint/VIP, is fine). **Redis Cluster is not supported**: the incident write
+script touches an `incident:*` hash, the `incidents` ZSET and the host pointer,
+and those keys live in different slots, so Cluster answers `CROSSSLOT`.
+Hash-tagging them would change the legacy key layout and break existing
+consoles, so it is deliberately out of scope. Scale Redis vertically or by using
+a single failover endpoint; scale the correlator itself horizontally. Redis
+scripting must be available, as it is on every supported server release.
 
 `GET /healthz` and `GET /readyz` return `200` with `{"status":"ok","redis":true}`,
-or `503` when Redis is unreachable. Use them for load-balancer and Kubernetes
-probes.
+or `503` when Redis is unreachable. The path is matched exactly after stripping
+the query string, so `/healthz?x=1` is still a real Redis probe while
+`/healthzfoo` is a 404. Use them for load-balancer and Kubernetes probes.
+
+`GET /metrics` (same listener) exports Prometheus text: event outcomes, queue
+depth, active connections and rejections, rule failures, alert delivery results
+and build information. Metrics are process-local — scrape every replica — and
+carry only low-cardinality labels, never incident keys or payload data.
+The endpoint does not ping Redis, so it stays scrapeable during a Redis outage.
+Set `OCC_HEALTH_PORT=0` to disable both the health and metrics listener.
 
 Audit records are JSON lines on stdout — see
 [docs/audit-events.md](docs/audit-events.md).
@@ -173,22 +220,42 @@ Audit records are JSON lines on stdout — see
 ## Docker
 
 ```bash
-cp .env.example .env          # fill in OCC_REDIS_URL and channels
+cp .env.example .env          # fill in channels; compose supplies Redis
 docker compose up -d --build
 ```
 
-The image runs as an unprivileged user, listens on `1514/tcp` and `5514/udp`,
-and declares a `HEALTHCHECK` against `/healthz`. The compose file starts Redis
-and the correlator on a private network; publish `1514` only to your canary
-network.
+The image runs as an unprivileged user, accepts canary JSON on `1514/tcp`, and
+includes the syslog receiver for `5514/tcp` + `5514/udp`. Base images (Python,
+the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
+build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
+that reads `OCC_HEALTH_PORT` from the container environment; changing the port,
+or setting it to `0` to disable the endpoint, keeps the health status meaningful
+instead of probing a dead 8080.
+
+Compose publishes both intake ports, so external canaries can reach the handler
+without editing the file; set `OCC_SYSLOG_ENABLED=true` (and
+`OCC_SYSLOG_UDP_ENABLED=true` for UDP) in `.env` to start the syslog listener.
+The health port stays container-internal. Inspect it with
+`docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
+yourself if an external probe needs it.
+
+The compose file starts Redis and the correlator on a private network. Restrict
+the published intake ports (`1514`, `5514`) to your canary network at the
+firewall or cloud security-group level; they accept untrusted traffic by
+design.
 
 ## Quality gates
 
+Dependencies are locked in [uv.lock](uv.lock). CI installs that lockfile with
+`uv sync --frozen`; `uv lock --check` fails the build when `pyproject.toml` and
+the lockfile drift apart.
+
 ```bash
-ruff check .
-ruff format --check .
-mypy src
-pytest
+uv sync --frozen --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src tools
+uv run pytest
 ```
 
 The suite covers unit logic, socket-level receiver tests, dispatcher delivery

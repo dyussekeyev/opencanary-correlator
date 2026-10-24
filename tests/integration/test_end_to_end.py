@@ -183,3 +183,139 @@ async def test_full_stack_ingests_correlates_and_notifies(
         {"timestamp", "component", "action", "status", "details"} <= set(record)
         for record in records
     )
+
+
+async def deliver_scan_events(
+    *,
+    store: RedisStore,
+    settings,
+    dispatcher: RecordingDispatcher,
+    logger_name: str,
+    payloads: list[dict[str, object]],
+    timeout: float = 10.0,
+) -> None:
+    """Send SYN events over a real `SocketJSONHandler` socket and wait for alerts."""
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        run_correlator(
+            settings,
+            store=store,
+            dispatchers=[dispatcher],
+            audit=AuditLogger("correlator", stream=io.StringIO()),
+            stop_event=stop_event,
+        )
+    )
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    try:
+        await wait_for_port(settings.tcp_port)
+        handler = SocketJSONHandler("127.0.0.1", settings.tcp_port)
+        logger.handlers = [handler]
+        try:
+            for payload in payloads:
+                logger.warning(json.dumps(payload, sort_keys=True))
+        finally:
+            logger.handlers = []
+            handler.close()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not dispatcher.incidents:
+            if loop.time() >= deadline:
+                raise AssertionError("no incident was delivered for the scan events")
+            await asyncio.sleep(0.02)
+    finally:
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=10)
+
+
+async def test_host_portscan_through_the_wire(
+    fake_redis, settings_factory, free_tcp_port, event_factory
+) -> None:
+    """Five SYN packets to five ports of one canary produce one host-scan alert."""
+    store = RedisStore(fake_redis)
+    settings = settings_factory(
+        tcp_port=free_tcp_port,
+        syslog_enabled=False,
+        health_port=None,
+        rate_limit_events_per_minute=0,
+    )
+    dispatcher = RecordingDispatcher()
+    payloads = [
+        event_factory(
+            logtype=5001,
+            src_host="203.0.113.10",
+            src_port=40000 + port,
+            dst_host="10.0.0.2",
+            dst_port=port,
+            logdata={},
+        )
+        for port in (21, 22, 23, 24, 25)
+    ]
+
+    await deliver_scan_events(
+        store=store,
+        settings=settings,
+        dispatcher=dispatcher,
+        logger_name="tests.e2e.scan.host",
+        payloads=payloads,
+    )
+
+    assert len(dispatcher.incidents) == 1
+    incident = dispatcher.incidents[0]
+    assert incident.INCIDENT_NAME == "scans.host_portscan"
+    assert incident.logtype == 5003
+    assert json.loads(incident.logdata or "[]") == [21, 22, 23, 24, 25]
+    assert incident.events_count == 1
+
+    keys = await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf")
+    assert len(keys) == 1
+    assert keys[0].startswith("incident:hostportscan:203.0.113.10:")
+
+
+async def test_network_portscan_through_the_wire(
+    fake_redis, settings_factory, free_tcp_port, event_factory
+) -> None:
+    """The same source scanning two canaries on one port produces a network alert."""
+    store = RedisStore(fake_redis)
+    settings = settings_factory(
+        tcp_port=free_tcp_port,
+        syslog_enabled=False,
+        health_port=None,
+        rate_limit_events_per_minute=0,
+    )
+    dispatcher = RecordingDispatcher()
+    payloads = [
+        event_factory(
+            logtype=5001,
+            src_host="203.0.113.20",
+            src_port=41000 + index,
+            dst_host=dst_host,
+            dst_port=22,
+            reported_dst_host=reported_host,
+            logdata={},
+        )
+        for index, (dst_host, reported_host) in enumerate(
+            [("192.0.2.10", "127.0.0.1"), ("192.0.2.11", "127.0.0.2")]
+        )
+    ]
+
+    await deliver_scan_events(
+        store=store,
+        settings=settings,
+        dispatcher=dispatcher,
+        logger_name="tests.e2e.scan.network",
+        payloads=payloads,
+    )
+
+    assert len(dispatcher.incidents) == 1
+    incident = dispatcher.incidents[0]
+    assert incident.INCIDENT_NAME == "scans.network_portscan"
+    assert incident.logtype == 5002
+    assert json.loads(incident.logdata or "[]") == ["127.0.0.1", "127.0.0.2"]
+    assert incident.dst_port == 22
+
+    keys = await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf")
+    assert len(keys) == 1
+    assert keys[0].startswith("incident:networkportscan:203.0.113.20:")
