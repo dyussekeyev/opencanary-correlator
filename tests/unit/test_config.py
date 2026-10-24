@@ -58,11 +58,18 @@ def test_empty_comma_separated_values_become_empty_lists(settings_factory) -> No
         pytest.param({"webhook_urls": ["ftp://siem.example"]}, id="webhook-not-http"),
         pytest.param({"smtp_from": "not-an-address"}, id="bad-sender"),
         pytest.param({"max_line_bytes": 10}, id="line-limit-too-small"),
+        pytest.param({"event_concurrency": 0}, id="no-consumer-lanes"),
+        pytest.param({"event_concurrency": 65}, id="too-many-lanes"),
     ],
 )
 def test_invalid_settings_are_rejected(settings_factory, overrides: dict) -> None:
     with pytest.raises(ValidationError):
         settings_factory(**overrides)
+
+
+def test_event_concurrency_defaults_to_eight_lanes(settings_factory) -> None:
+    assert settings_factory().event_concurrency == 8
+    assert settings_factory(event_concurrency=1).event_concurrency == 1
 
 
 def test_secrets_never_appear_in_repr(settings_factory) -> None:
@@ -117,11 +124,70 @@ def test_invalid_incident_horizons_are_rejected(settings_factory, value) -> None
         settings_factory(incident_horizons=value)
 
 
+@pytest.mark.parametrize("value", [0, "0", "00", "+0", ""])
+def test_health_port_zero_or_empty_disables_the_endpoint(settings_factory, value) -> None:
+    settings = settings_factory(health_port=value)
+
+    assert settings.health_port is None
+
+
+def test_health_port_defaults_to_8080(settings_factory) -> None:
+    assert settings_factory().health_port == 8080
+
+
+def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_PORT", "9090")
+
+    assert Settings(_env_file=None).health_port == 9090
+
+
+@pytest.mark.parametrize("value", ["0", "00", " 0 ", ""])
+def test_health_port_disabled_from_the_environment(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_PORT", value)
+
+    assert Settings(_env_file=None).health_port is None
+
+
 def test_empty_incident_horizons_are_allowed(settings_factory) -> None:
     settings = settings_factory(incident_horizons={})
 
     assert settings.incident_horizons == {}
     assert settings.horizon_for("ftp.login_attempt") == settings.incident_horizon
+
+
+def test_smtp_tls_modes_are_mutually_exclusive(settings_factory) -> None:
+    settings = settings_factory(smtp_starttls=False, smtp_use_tls=True)
+
+    assert settings.smtp_use_tls is True
+    assert settings.smtp_starttls is False
+
+    with pytest.raises(ValidationError):
+        settings_factory(smtp_starttls=True, smtp_use_tls=True)
+
+
+def test_legacy_enable_flags_disable_notification_channels(tmp_path: Path) -> None:
+    legacy = {
+        "console.email_notification_enable": False,
+        "console.email_notification_address": ["soc@example.com"],
+        "console.email_host": "smtp.example.com",
+        "console.slack_notification_enable": False,
+        "console.slack_notification_webhook": ["https://hooks.slack.com/services/x"],
+        "console.sms_notification_enable": True,
+    }
+    path = tmp_path / "legacy.conf"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    settings = Settings.from_legacy_json(path, overrides={"redis_url": TEST_REDIS_URL})
+
+    assert settings.smtp_enabled is False
+    assert settings.slack_enabled is False
+    # The addresses stay available for inspection/overrides, but the channels
+    # must not be instantiated while their legacy enable flag is false.
+    assert settings.smtp_to == ["soc@example.com"]
+    assert settings.slack_webhooks == ["https://hooks.slack.com/services/x"]
+    assert not hasattr(settings, "twilio_sid")
 
 
 def test_legacy_json_is_imported(tmp_path: Path) -> None:
@@ -167,6 +233,10 @@ def test_legacy_json_is_imported(tmp_path: Path) -> None:
     assert settings.smtp_host == "smtp.example.com"
     assert settings.smtp_port == 2525
     assert settings.slack_webhooks == ["https://hooks.slack.com/services/x"]
+    # These keys were absent in the legacy file, and the old notifier treated
+    # them as disabled rather than inferring them from the configured endpoints.
+    assert settings.smtp_enabled is False
+    assert settings.slack_enabled is False
     assert not hasattr(settings, "mandrill_key")
     assert not hasattr(settings, "twilio_sid")
 

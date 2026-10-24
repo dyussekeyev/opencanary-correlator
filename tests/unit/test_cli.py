@@ -12,6 +12,7 @@ import signal
 from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.cli import (
     build_dispatchers,
+    channel_names,
     install_signal_handlers,
     main,
     run_correlator,
@@ -64,6 +65,28 @@ def test_check_config_prints_redacted_summary(monkeypatch, capsys) -> None:
     assert payload["channels"] == ["slack"]
 
 
+def test_check_config_accepts_env_health_port_zero(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_HEALTH_PORT", "0")
+
+    code = main(["--check-config"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert json.loads(captured.out)["health_port"] is None
+
+
+def test_check_config_cli_health_port_zero_overrides_the_env(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_HEALTH_PORT", "9090")
+
+    code = main(["--check-config", "--health-port", "0"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert json.loads(captured.out)["health_port"] is None
+
+
 def test_check_config_rejects_invalid_override(monkeypatch, capsys) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
 
@@ -103,6 +126,83 @@ async def test_build_dispatchers_follows_settings(settings_factory, store) -> No
             "telegram",
             "smtp",
         ]
+    finally:
+        await asyncio.gather(*(dispatcher.aclose() for dispatcher in dispatchers))
+
+
+async def test_build_dispatchers_respects_disabled_channels(settings_factory, store) -> None:
+    settings = settings_factory(
+        slack_enabled=False,
+        slack_webhooks=["https://hooks.slack.test/x"],
+        smtp_enabled=False,
+        smtp_host="smtp.test",
+        smtp_to=["soc@example.test"],
+    )
+
+    assert build_dispatchers(settings, store) == []
+    assert channel_names(settings) == []
+
+
+async def test_build_dispatchers_passes_implicit_tls_to_smtp(
+    settings_factory, store, monkeypatch
+) -> None:
+    captured: dict = {}
+
+    class RecordingSmtp:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("opencanary_correlator.cli.SmtpDispatcher", RecordingSmtp)
+    settings = settings_factory(
+        smtp_host="smtp.test",
+        smtp_to=["soc@example.test"],
+        smtp_starttls=False,
+        smtp_use_tls=True,
+    )
+
+    dispatchers = build_dispatchers(settings, store)
+
+    assert len(dispatchers) == 1
+    assert captured["start_tls"] is False
+    assert captured["use_tls"] is True
+
+
+async def test_build_dispatchers_scopes_breakers_to_each_endpoint(
+    settings_factory, store, monkeypatch
+) -> None:
+    names: list[str] = []
+
+    class RecordingBreaker:
+        def __init__(self, _store, name: str) -> None:
+            names.append(name)
+
+    monkeypatch.setattr("opencanary_correlator.cli.CircuitBreaker", RecordingBreaker)
+    settings = settings_factory(
+        webhook_urls=["https://siem.test/a", "https://siem.test/b"],
+        slack_webhooks=["https://slack.test/a", "https://slack.test/b"],
+        discord_webhooks=["https://discord.test/a", "https://discord.test/b"],
+        telegram_token="1:token",
+        telegram_chat_ids=["1", "2"],
+    )
+
+    dispatchers = build_dispatchers(settings, store)
+    try:
+        assert [name.split(":", 1)[0] for name in names] == [
+            "webhook",
+            "webhook",
+            "slack",
+            "slack",
+            "discord",
+            "discord",
+            "telegram",
+            "telegram",
+        ]
+        assert len(set(names)) == len(names)
+        assert not any(
+            marker in name
+            for name in names
+            for marker in ("siem.test", "slack.test", "discord.test")
+        )
     finally:
         await asyncio.gather(*(dispatcher.aclose() for dispatcher in dispatchers))
 

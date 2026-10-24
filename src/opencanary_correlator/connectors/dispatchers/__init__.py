@@ -6,6 +6,8 @@ from opencanary_correlator.connectors.dispatchers.base import (
     CircuitBreaker,
     HTTPDispatcher,
     RetryPolicy,
+    breaker_name,
+    endpoint_fingerprint,
 )
 from opencanary_correlator.connectors.dispatchers.discord import DiscordDispatcher
 from opencanary_correlator.connectors.dispatchers.slack import SlackDispatcher
@@ -22,4 +24,6 @@ __all__ = [
     "SmtpDispatcher",
     "TelegramDispatcher",
     "WebhookDispatcher",
+    "breaker_name",
+    "endpoint_fingerprint",
 ]

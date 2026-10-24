@@ -16,6 +16,7 @@ from opencanary_correlator.connectors.dispatchers import (
     SlackDispatcher,
     SmtpDispatcher,
     WebhookDispatcher,
+    breaker_name,
 )
 
 pytestmark = pytest.mark.integration
@@ -267,6 +268,41 @@ async def test_circuit_breaker_stops_calls_after_repeated_failures(incident_fact
     assert second.status == "skipped"
     assert second.detail == "circuit_open"
     assert len(server.requests) == 1
+
+
+async def test_circuit_breaker_is_scoped_to_one_endpoint(incident_factory, store) -> None:
+    async with (
+        MockHTTPServer([(503, {})]) as dead,
+        MockHTTPServer([(200, {})]) as alive,
+    ):
+        dead_dispatcher = WebhookDispatcher(
+            url=dead.url("/dead"),
+            retry=no_jitter_policy(attempts=1, base_delay=0.0),
+            breaker=CircuitBreaker(
+                store,
+                breaker_name("webhook", dead.url("/dead")),
+                failure_threshold=1,
+            ),
+        )
+        alive_dispatcher = WebhookDispatcher(
+            url=alive.url("/alive"),
+            retry=no_jitter_policy(attempts=1, base_delay=0.0),
+            breaker=CircuitBreaker(
+                store,
+                breaker_name("webhook", alive.url("/alive")),
+                failure_threshold=1,
+            ),
+        )
+        try:
+            assert (await dead_dispatcher.dispatch(incident_factory())).status == "error"
+            assert (await dead_dispatcher.dispatch(incident_factory())).detail == "circuit_open"
+            assert (await alive_dispatcher.dispatch(incident_factory())).status == "success"
+        finally:
+            await dead_dispatcher.aclose()
+            await alive_dispatcher.aclose()
+
+    assert len(dead.requests) == 1
+    assert len(alive.requests) == 1
 
 
 async def test_slack_and_discord_use_short_reports_over_http(incident_factory) -> None:

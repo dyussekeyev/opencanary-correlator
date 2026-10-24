@@ -17,6 +17,7 @@ from opencanary_correlator.connectors.dispatchers import (
     SmtpDispatcher,
     TelegramDispatcher,
     WebhookDispatcher,
+    breaker_name,
 )
 from opencanary_correlator.connectors.dispatchers.discord import (
     DISCORD_MAX_CONTENT,
@@ -30,6 +31,18 @@ async def no_sleep(_seconds: float) -> None:
 
 def make_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_breaker_name_is_per_endpoint_and_hides_the_secret() -> None:
+    endpoint = "https://hooks.test/services/secret-token"
+
+    name = breaker_name("webhook", endpoint)
+
+    assert name == breaker_name("webhook", endpoint)
+    assert name.startswith("webhook:")
+    assert "secret-token" not in name
+    assert name != breaker_name("webhook", "https://hooks.test/services/other")
+    assert name != breaker_name("slack", endpoint)
 
 
 def scripted_handler(responses, calls):
@@ -260,6 +273,31 @@ async def test_smtp_sends_email(incident_factory) -> None:
     assert message["To"] == "soc@example.test"
     assert kwargs["hostname"] == "smtp.test"
     assert kwargs["start_tls"] is True
+    assert kwargs["use_tls"] is False
+
+
+async def test_smtp_uses_implicit_tls(incident_factory) -> None:
+    sent: list[dict] = []
+
+    async def fake_send(message, **kwargs) -> Any:
+        sent.append(kwargs)
+        return ({}, "ok")
+
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=465,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        start_tls=False,
+        use_tls=True,
+        send=fake_send,
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "success"
+    assert sent[0]["start_tls"] is False
+    assert sent[0]["use_tls"] is True
 
 
 async def test_smtp_retries_and_reports_failure(incident_factory) -> None:

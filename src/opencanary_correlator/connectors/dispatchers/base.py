@@ -8,6 +8,7 @@ hammering an endpoint that is already known to be down.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -30,6 +31,21 @@ class RetryPolicy:
     base_delay: float = 0.5
     max_delay: float = 5.0
     jitter: float = 0.1
+
+
+def endpoint_fingerprint(endpoint: str) -> str:
+    """Return a stable, non-reversible identifier for a channel endpoint."""
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:16]
+
+
+def breaker_name(channel: str, endpoint: str) -> str:
+    """Return the Redis breaker name for one concrete endpoint.
+
+    Webhook URLs and Telegram bot URLs contain secrets, so only a truncated
+    SHA-256 of the endpoint is persisted; the raw URL/chat id never appears in
+    Redis keys or audit output.
+    """
+    return f"{channel}:{endpoint_fingerprint(endpoint)}"
 
 
 class CircuitBreaker:
@@ -156,4 +172,10 @@ class HTTPDispatcher(BaseDispatcher):
         return max(0.0, min(seconds, _MAX_RETRY_AFTER_SECONDS))
 
 
-__all__ = ["CircuitBreaker", "HTTPDispatcher", "RetryPolicy"]
+__all__ = [
+    "CircuitBreaker",
+    "HTTPDispatcher",
+    "RetryPolicy",
+    "breaker_name",
+    "endpoint_fingerprint",
+]

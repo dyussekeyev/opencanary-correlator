@@ -35,6 +35,7 @@ class SmtpDispatcher(BaseDispatcher):
         username: str | None = None,
         password: SecretStr | None = None,
         start_tls: bool = True,
+        use_tls: bool = False,
         timeout: float = 10.0,
         retry: RetryPolicy | None = None,
         send: SendFunction = aiosmtplib.send,
@@ -47,6 +48,7 @@ class SmtpDispatcher(BaseDispatcher):
         self._username = username
         self._password = password
         self._start_tls = start_tls
+        self._use_tls = use_tls
         self._timeout = timeout
         self._retry = retry or RetryPolicy()
         self._send = send
@@ -80,6 +82,7 @@ class SmtpDispatcher(BaseDispatcher):
                     username=self._username,
                     password=password,
                     start_tls=self._start_tls,
+                    use_tls=self._use_tls,
                     timeout=self._timeout,
                 )
             except (aiosmtplib.SMTPException, OSError, TimeoutError) as exc:

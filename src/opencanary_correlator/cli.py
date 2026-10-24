@@ -29,6 +29,7 @@ from opencanary_correlator.connectors.dispatchers import (
     SmtpDispatcher,
     TelegramDispatcher,
     WebhookDispatcher,
+    breaker_name,
 )
 from opencanary_correlator.connectors.receivers import (
     SyslogTCPReceiver,
@@ -136,11 +137,12 @@ def channel_names(settings: Settings) -> list[str]:
     """Names of the dispatchers that the configuration would enable."""
     channels: list[str] = []
     channels.extend("webhook" for _ in settings.webhook_urls)
-    channels.extend("slack" for _ in settings.slack_webhooks)
+    if settings.slack_enabled:
+        channels.extend("slack" for _ in settings.slack_webhooks)
     channels.extend("discord" for _ in settings.discord_webhooks)
     if settings.telegram_token is not None:
         channels.extend("telegram" for _ in settings.telegram_chat_ids)
-    if settings.smtp_host and settings.smtp_to:
+    if settings.smtp_enabled and settings.smtp_host and settings.smtp_to:
         channels.append("smtp")
     return channels
 
@@ -150,18 +152,23 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
     dispatchers: list[BaseDispatcher] = []
     timeout = settings.dispatch_timeout
 
-    def breaker(name: str) -> CircuitBreaker:
-        return CircuitBreaker(store, name)
+    def breaker(channel: str, endpoint: str) -> CircuitBreaker:
+        return CircuitBreaker(store, breaker_name(channel, endpoint))
 
     for url in settings.webhook_urls:
-        dispatchers.append(WebhookDispatcher(url=url, timeout=timeout, breaker=breaker("webhook")))
-    for slack_url in settings.slack_webhooks:
         dispatchers.append(
-            SlackDispatcher(url=slack_url, timeout=timeout, breaker=breaker("slack"))
+            WebhookDispatcher(url=url, timeout=timeout, breaker=breaker("webhook", url))
         )
+    if settings.slack_enabled:
+        for slack_url in settings.slack_webhooks:
+            dispatchers.append(
+                SlackDispatcher(url=slack_url, timeout=timeout, breaker=breaker("slack", slack_url))
+            )
     for discord_url in settings.discord_webhooks:
         dispatchers.append(
-            DiscordDispatcher(url=discord_url, timeout=timeout, breaker=breaker("discord"))
+            DiscordDispatcher(
+                url=discord_url, timeout=timeout, breaker=breaker("discord", discord_url)
+            )
         )
     if settings.telegram_token is not None:
         for chat_id in settings.telegram_chat_ids:
@@ -170,10 +177,10 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
                     token=settings.telegram_token,
                     chat_id=chat_id,
                     timeout=timeout,
-                    breaker=breaker("telegram"),
+                    breaker=breaker("telegram", chat_id),
                 )
             )
-    if settings.smtp_host and settings.smtp_to:
+    if settings.smtp_enabled and settings.smtp_host and settings.smtp_to:
         dispatchers.append(
             SmtpDispatcher(
                 host=settings.smtp_host,
@@ -183,6 +190,7 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
                 username=settings.smtp_username,
                 password=settings.smtp_password,
                 start_tls=settings.smtp_starttls,
+                use_tls=settings.smtp_use_tls,
                 timeout=timeout,
             )
         )
@@ -209,6 +217,7 @@ def build_receivers(
                 max_connections=settings.max_connections,
                 queue_size=settings.event_queue_size,
                 rate_limiter=rate_limiter,
+                concurrency=settings.event_concurrency,
             )
         )
     if settings.syslog_enabled:
@@ -223,6 +232,7 @@ def build_receivers(
                 max_connections=settings.max_connections,
                 queue_size=settings.event_queue_size,
                 rate_limiter=rate_limiter,
+                concurrency=settings.event_concurrency,
             )
         )
         if settings.syslog_udp_enabled:
@@ -235,6 +245,7 @@ def build_receivers(
                     max_line_bytes=settings.max_line_bytes,
                     queue_size=settings.event_queue_size,
                     rate_limiter=rate_limiter,
+                    concurrency=settings.event_concurrency,
                 )
             )
     return receivers

@@ -1,21 +1,24 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim-bookworm AS builder
+# Digests resolved 2026-10-24 from the python:3.12-slim-bookworm multi-arch index.
+FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS builder
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_ROOT_USER_ACTION=ignore
+COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_NO_CACHE=1
 
 WORKDIR /build
 
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 
-RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install .
+RUN uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS runtime
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
@@ -30,9 +33,13 @@ COPY --from=builder /opt/venv /opt/venv
 
 USER 10001:10001
 
+# 8080 is only the default OCC_HEALTH_PORT; it stays container-internal.
 EXPOSE 1514/tcp 5514/tcp 5514/udp 8080/tcp
 
+# Reads OCC_HEALTH_PORT from the environment (0/empty = endpoint disabled), so a
+# changed or disabled health listener never leaves the container permanently
+# unhealthy. Use the environment variable, not --health-port, inside Docker.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
+    CMD ["python", "-m", "opencanary_correlator.healthcheck"]
 
 ENTRYPOINT ["opencanary-correlator"]

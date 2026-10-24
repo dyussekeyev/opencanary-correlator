@@ -2,7 +2,8 @@ name: opencanary-correlator
 
 services:
   redis:
-    image: redis:7-alpine
+    # Digest resolved 2026-10-24 from the redis:7-alpine multi-arch index.
+    image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
     command:
       - redis-server
       - --appendonly
@@ -25,7 +26,7 @@ services:
     build:
       context: .
     restart: unless-stopped
-    # Optional `.env` supplies webhooks, SMTP and Telegram settings. The
+    # Optional `.env` supplies webhooks, SMTP, syslog and health settings. The
     # variables below take precedence, so the container always talks to the
     # bundled Redis instead of a URL copied from a host-oriented `.env`.
     env_file:
@@ -37,13 +38,15 @@ services:
       OCC_TCP_PORT: "1514"
       OCC_SYSLOG_HOST: 0.0.0.0
       OCC_SYSLOG_PORT: "5514"
-      OCC_HEALTH_PORT: "8080"
+    # OCC_HEALTH_PORT is inherited from `.env`, so the listener and the image
+    # HEALTHCHECK always agree; it stays container-internal because the probe
+    # runs inside the container.
+    # TCP and UDP are published for external canaries. Enable the listener with
+    # OCC_SYSLOG_ENABLED=true, plus OCC_SYSLOG_UDP_ENABLED=true for UDP.
     ports:
       - "1514:1514"
-    expose:
-      - "5514/tcp"
-      - "5514/udp"
-      - "8080"
+      - "5514:5514/tcp"
+      - "5514:5514/udp"
     depends_on:
       redis:
         condition: service_healthy
