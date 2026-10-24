@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -77,6 +78,88 @@ jobs:
         run: uv sync --extra dev --python "$(command -v python)"
       - name: Pytest
         run: uv run pytest
+
+  # Records numbers, never gates on them: two invocations of one commit
+  # measured 5.145 s and 12.040 s for the same workload, because a shared
+  # runner's CPU steal, not the code, dominates the wall time.
+  benchmark:
+    name: Benchmark (hot incident, native loopback)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --extra dev --python "$(command -v python)"
+      # A native server on the runner, not a service container: the point of
+      # this job is to separate Redis round-trip cost from the workload, and a
+      # container network would smuggle the Docker daemon's latency back in.
+      - name: Start a native Redis server
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server
+          if ! redis-cli ping >/dev/null 2>&1; then
+            redis-server --port 6379 --save '' --appendonly no --daemonize yes
+          fi
+          for _ in $(seq 1 50); do
+            if redis-cli ping >/dev/null 2>&1; then break; fi
+            sleep 0.2
+          done
+          redis-cli ping
+      - name: Measure the loopback round trip
+        run: |
+          # `-q` separates progress lines with a bare carriage return, so the
+          # output is normalised before anything matches against it.
+          redis-benchmark -t ping -n 20000 -c 1 -q | tr '\r' '\n' | tee /tmp/ping.txt
+          grep 'requests per second' /tmp/ping.txt || true
+      - name: Hot incident, 10,000 events from one host
+        run: |
+          uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
+            --events 10000 --hosts 1 --concurrency 1 | tee /tmp/hot.json
+      - name: Baseline, 10,000 events over 100 hosts
+        run: |
+          uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
+            --events 10000 --hosts 100 --concurrency 8 | tee /tmp/many.json
+      - name: Summarise
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+
+          print("### Native runner measurements")
+          print()
+          ping_file = pathlib.Path("/tmp/ping.txt")
+          ping = ping_file.read_text() if ping_file.exists() else ""
+          rps_line = next(
+              (line for line in ping.splitlines() if "requests per second" in line), ""
+          )
+          rtt = ""
+          if rps_line:
+              rate = float(rps_line.split()[1])
+              rtt = f"{1000 / rate:.4f} ms"
+          print(f"Loopback round trip: **{rtt or 'not measured'}** (`{rps_line}`)")
+          print()
+          print("| Workload | Elapsed | events/s | accepted | dropped | incidents | ms/event |")
+          print("|---|---|---|---|---|---|---|")
+          for label, path in (("1 host, 1 lane", "/tmp/hot.json"), ("100 hosts, 8 lanes", "/tmp/many.json")):
+              file = pathlib.Path(path)
+              if not file.exists():
+                  print(f"| {label} | missing | | | | | |")
+                  continue
+              data = json.loads(file.read_text())
+              per_event = data["elapsed_seconds"] * 1000 / data["events"] if data["events"] else 0
+              print(
+                  f"| {label} | {data['elapsed_seconds']} s | {data['events_per_second']} | "
+                  f"{data['accepted']} | {data['dropped']} | {data['incidents']} | {per_event:.3f} |"
+              )
+          PY
 
   package:
     name: Build wheel
