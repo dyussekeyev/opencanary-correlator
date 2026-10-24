@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# Run the Linux test suite before pushing changes that can affect runtime code.
+#
+# A Windows-only green run once hid a datagram transport bug that failed every
+# syslog UDP test on Linux, so pushes that touch Python, tests or dependencies
+# are checked in a POSIX container first. Documentation-only pushes are skipped,
+# and a missing Docker daemon never blocks a push (CI still runs the suite).
+#
+# Enable with tools/install_hooks.sh; bypass a single push with
+# SKIP_LINUX_CHECK=1 git push.
+
+set -uo pipefail
+
+if [[ "${SKIP_LINUX_CHECK:-0}" == "1" ]]; then
+    echo "pre-push: SKIP_LINUX_CHECK=1, skipping the Linux check" >&2
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+
+zero="0000000000000000000000000000000000000000"
+changed=()
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [[ -z "${local_sha:-}" || "$local_sha" == "$zero" ]] && continue
+    if [[ -n "${remote_sha:-}" && "$remote_sha" != "$zero" ]]; then
+        base="$remote_sha"
+    else
+        base="$(git merge-base "$local_sha" origin/master 2>/dev/null || true)"
+        base="${base:-${local_sha}^}"
+    fi
+    while IFS= read -r path; do
+        [[ -n "$path" ]] && changed+=("$path")
+    done < <(git diff --name-only "$base" "$local_sha" 2>/dev/null || echo "ALL")
+done
+
+if [[ ${#changed[@]} -eq 0 ]]; then
+    echo "pre-push: nothing to compare, skipping the Linux check" >&2
+    exit 0
+fi
+
+relevant=0
+for path in "${changed[@]}"; do
+    case "$path" in
+        src/* | tests/* | tools/* | pyproject.toml | uv.lock | Dockerfile)
+            relevant=1
+            break
+            ;;
+        ALL)
+            relevant=1
+            break
+            ;;
+    esac
+done
+
+if [[ "$relevant" -eq 0 ]]; then
+    echo "pre-push: no Python, test or dependency changes, skipping the Linux check" >&2
+    exit 0
+fi
+
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    echo "pre-push: Docker is unavailable, skipping the Linux check (CI will run it)" >&2
+    exit 0
+fi
+
+exec "$repo_root/tools/linux_check.sh"

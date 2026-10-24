@@ -272,6 +272,30 @@ OCC_TEST_REDIS_URL=redis://localhost:6379/15 pytest tests/integration/test_real_
 python tools/bench_ingest.py --redis-url redis://localhost:6379/15 --events 10000 --hosts 100
 ```
 
+### Linux parity check
+
+A green suite on Windows does not prove Linux behaviour: the POSIX selector
+transport, signal delivery and socket semantics differ, and CI is the only
+automatic guard. `tools/linux_check.sh` runs the suite on Python 3.11 in a
+container built from the locked dependencies, with a disposable `redis:7-alpine`
+for the opt-in real-server tests, so the whole CI test job is reproducible
+locally:
+
+```bash
+tools/linux_check.sh                      # whole suite, Redis included
+tools/linux_check.sh tests/integration    # subset; extra arguments go to pytest
+tools/linux_check.sh --no-redis           # skip the real-Redis tests
+tools/linux_check.sh --rebuild            # rebuild the test image
+```
+
+The image is cached by `pyproject.toml` and `uv.lock`, so routine runs start in
+seconds. POSIX-only tests are marked `@pytest.mark.linux`, so a Windows run can
+select or skip them with `-m linux` / `-m "not linux"`. `tools/install_hooks.sh`
+points this clone at [.githooks](.githooks) so the same check runs before a push
+that touches Python, tests or dependencies; documentation-only pushes and a
+stopped Docker daemon are skipped, and `SKIP_LINUX_CHECK=1 git push` bypasses it
+once.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) and the refactoring plan in
