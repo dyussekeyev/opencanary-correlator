@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 MAX_LOG_ENTRIES = 1000
 
 
+def _as_int(value: Any) -> int:
+    """Parse a stored integer field, tolerating the legacy shapes."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _jsonify_incident(
     key: str,
     incident: dict[str, str],
@@ -52,8 +60,17 @@ def _jsonify_incident(
     rendered = events[:MAX_EVENT_COUNT]
     payload["events_list_printable"] = ",".join(timestamp_printable(event) for event in rendered)
     payload["events_list"] = [timestamp_js(event) for event in rendered]
-    if len(events) > MAX_EVENT_COUNT:
+    # The counter is exact even though storage is capped, so the console still
+    # reports how many events an incident really has. Incidents written before
+    # the counter existed fall back to the stored list length.
+    total_events = _as_int(incident.get("events_count"))
+    if total_events > len(rendered):
+        payload["events_skipped"] = total_events - len(rendered)
+    elif len(events) > MAX_EVENT_COUNT:
         payload["events_skipped"] = len(events) - MAX_EVENT_COUNT
+
+    if "events_truncated" in payload:
+        payload["events_truncated"] = str(payload["events_truncated"]).lower() == "true"
 
     if "logdata" in incident:
         try:

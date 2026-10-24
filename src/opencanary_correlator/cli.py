@@ -127,6 +127,7 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "health_port": settings.health_port,
         "incident_horizon": settings.incident_horizon,
         "incident_horizons": settings.incident_horizons,
+        "max_stored_events": settings.max_stored_events,
         "dispatch_timeout": settings.dispatch_timeout,
         "channels": channel_names(settings),
         "log_level": settings.log_level,
