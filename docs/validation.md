@@ -39,7 +39,9 @@ deleted; a smoke test asserts they stay gone.
 | `package` | `python -m build`, `twine check`, wheel install, `--version` and parsed `--check-config` output |
 | `docker` | `docker compose up --build --wait`, a real `SocketJSONHandler` event over TCP 1514, then assertions on the incident key, `startup` audit line, uid 10001, container health and the `/metrics` exposition |
 
-The workflow has **not executed on GitHub yet**; its YAML was parsed and every `run` block passed `bash -n` locally. The Docker job is the CI counterpart of the container smoke test, which was not exercised here.
+The workflow has executed on GitHub (run [40114309203](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40114309203), PR #1): all seven checks pass — `quality` 14 s, four `test` jobs 29–34 s with **294 passed and 0 skipped** (the real-Redis two-replica checks and the POSIX SIGTERM test actually execute there), `package` 19 s, `docker` 37 s with `incident count: 1`, the uid 10001 check and container health. The Docker job repeats the container smoke test below on a clean runner.
+
+The first run was red and found two defects that local Windows runs could not see: `setup-python` cached pip while uv installs the packages, so its post-job step failed an otherwise green lint job, and the UDP receiver asserted `isinstance(transport, asyncio.DatagramTransport)`, which is false for the POSIX selector transport (it implements the datagram API without inheriting the class) and failed all five syslog UDP tests. Both are fixed; the POSIX failure was reproduced and the fix confirmed in a `python:3.11-slim` container before pushing.
 
 ## Compatibility proof
 
@@ -332,7 +334,9 @@ close.
 1. Decide whether to cap the stored `events_list` (or index incidents per
    `src_host`) to remove the quadratic merge cost; this changes legacy hash
    contents, so it needs an explicit decision.
-2. Run the POSIX SIGTERM check from `test_real_redis.py` on Linux; on Windows
-   only `stop_event` and handler registration are covered. The container path is
-   already proven (`docker stop` → exit 0 with a final `shutdown` record), so
-   this now only covers the bare-metal/systemd case.
+
+Closed since the previous revision: the POSIX SIGTERM case now runs in CI
+(`294 passed, 0 skipped` in the `test` jobs) and was reproduced locally in a
+`python:3.11-slim` container against a real `redis:7-alpine` (`3 passed`); the
+container path remains covered by `docker stop` → exit 0 with a final
+`shutdown` record.
