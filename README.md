@@ -165,6 +165,13 @@ endpoint never blocks the others and never blocks ingestion.
   cannot keep the window (or a stale threshold count) alive indefinitely.
 - Duplicate events are dropped with a SHA-256 fingerprint (`OCC_DEDUP_TTL`), so a
   retransmitted log never inflates an incident.
+- Stored incident history is capped at `OCC_MAX_STORED_EVENTS` (default `100`,
+  the number of entries the legacy console renders). `events_count` always stays
+  exact: once the cap is reached the timestamp CSV and `logdata` are **frozen**
+  rather than trimmed, the merge writes the counters only, and the hash stops
+  growing. The `events_truncated` field marks a partial history, and the console
+  payload reports the difference as `events_skipped`. Port scans keep every
+  distinct port or target — they store one entry per member, not per event.
 - Unknown `logtype` values are audited as `event_unrouted` and otherwise ignored.
 
 ## Scaling
@@ -187,6 +194,11 @@ Two settings carry the throughput:
   newest incident for that host, instead of scanning every incident inside the
   horizon. The pointer falls back to the index when it is missing or stale, so
   an upgrade or a deleted incident stays correct.
+
+Per-event cost no longer depends on how large an incident already is: a single
+host flooding 10,000 events into one incident took 77.2 s before stored history
+was capped and takes 17.7 s now, with the incident hash stable at about 4 KB
+instead of growing towards half a megabyte.
 
 Measured on a real Redis 7 server (10,000 events, 100 hosts): 2.6 s with 8
 lanes. With 5,000 live incidents in the index, an older build that scanned the

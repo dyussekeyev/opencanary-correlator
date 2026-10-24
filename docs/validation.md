@@ -282,6 +282,31 @@ validated against the horizon, and falls back to the ZSET scan when it is
 missing or stale, so incidents created by an older replica still merge during a
 rolling upgrade.
 
+### One hot incident: 10,000 events from a single host
+
+The workload above spreads events over 100 hosts, so each incident stays small.
+The worst case is the opposite: every event merges into one incident, which is
+what a single canary being hammered on one service looks like. That case used to
+be quadratic, because each merge re-serialised the growing `events_list` CSV and
+`logdata` array.
+
+Stored history is now capped at `OCC_MAX_STORED_EVENTS` (default 100): the CSV
+and the log entries are frozen at the cap, and a merge into a full incident
+writes the counters only. Measured with
+`tools/bench_ingest.py --events 10000 --hosts 1 --concurrency 1` against
+`redis:7-alpine` over loopback in a `python:3.11-slim` container:
+
+| Revision | Time | Throughput | Incident hash |
+|---|---|---|---|
+| Uncapped history | 77.2 s | 130 events/s | grows to ≈0.5 MB of payload |
+| Capped at 100, counters-only merge | **17.7 s** | 565 events/s | **4 329 bytes** (flat) |
+
+`accepted = 10000`, `dropped = 0`, `incidents = 1`, and the resulting incident
+holds 100 timestamps with `events_count = 10000`, `events_truncated = True`. The
+hash size is `MEMORY USAGE` on a cap-full incident (100 epochs plus 100 log
+entries), not an estimate. The remaining 17.7 s is round-trip bound, not
+byte-bound: six commands per event on one lane.
+
 ### fakeredis reference (not a capacity number)
 
 | Revision | 10,000 events / 100 hosts |
@@ -298,14 +323,16 @@ fakeredis is CPU-bound in one process.
 
 ### Known limits
 
-- **One source host is still quadratic.** 10,000 events from a single host took
-  77.2 s before this change, because every merge rewrites the growing
-  `events_list`/`logdata` fields (the legacy console reads them as CSV/JSON
-  strings). The pointer and lanes do not change that, and fixing it would mean
-  changing the incident schema, which is out of scope.
-- Six Redis round trips per event remain (dedup, lock, pointer read, incident
-  read, incident write, unlock). `OCC_EVENT_CONCURRENCY` overlaps them; it does
-  not remove them.
+- The merge path is still six round trips per event (dedup, lock, pointer read,
+  incident read, incident write, unlock), so one lane spends ~1.8 ms per event
+  end to end on this container even though the write itself is now
+  constant-size. Collapsing the sequence into one script is the next step if a
+  single hot key matters; `OCC_EVENT_CONCURRENCY` only overlaps work across
+  hosts, since one host keeps arrival order.
+- `OCC_MAX_STORED_EVENTS` trades stored history for write cost: the legacy
+  console shows the first 100 timestamps and reports the rest through
+  `events_skipped`. Raise it only when incidents are read directly from Redis,
+  because the console renders 100 and nothing more.
 - Numbers from Docker Desktop on Windows are dominated by the host/NAT proxy
   (0.1–0.7 ms per round trip, varying with host load) and are not quoted as
   capacity. The Linux numbers above are the reference.
@@ -338,12 +365,17 @@ close.
 
 ## Open items
 
-1. Decide whether to cap the stored `events_list` (or index incidents per
-   `src_host`) to remove the quadratic merge cost; this changes legacy hash
-   contents, so it needs an explicit decision.
+1. Collapse the six-command merge into a single Lua script. The remaining cost
+   of a hot incident is round trips, not payload; the trade is that the lock
+   moves inside the script, which changes the semantics the compare-and-delete
+   fix currently relies on, so it needs its own design decision.
 
-Closed since the previous revision: the POSIX SIGTERM case now runs in CI
-(`294 passed, 0 skipped` in the `test` jobs) and was reproduced locally in a
-`python:3.11-slim` container against a real `redis:7-alpine` (`3 passed`); the
-container path remains covered by `docker stop` → exit 0 with a final
-`shutdown` record.
+Closed since the previous revision:
+
+- The quadratic single-host merge is gone: stored history is capped at
+  `OCC_MAX_STORED_EVENTS` and a full incident is updated with counters only
+  (77.2 s → 17.7 s, hash flat at 4 329 bytes).
+- The POSIX SIGTERM case runs in CI with nothing skipped, and was reproduced
+  locally in a `python:3.11-slim` container against a real `redis:7-alpine`.
+  The container path remains covered by `docker stop` → exit 0 with a final
+  `shutdown` record.

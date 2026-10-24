@@ -137,11 +137,30 @@ Incident keys and descriptions are byte-compatible with the Python 2 release
 (`incident:ftplogin:10.0.0.5:1418997029`, `FTP Login Attempt by … on …`), and the
 report formatters keep the legacy wording.
 
+**Stored history is bounded.** A merged incident appends one epoch to the
+`events_list` CSV and one entry to `logdata`, and both stop growing at
+`OCC_MAX_STORED_EVENTS` (default `100`, matching what the console renders). They
+are frozen rather than trimmed, so the oldest entries stay byte-identical for the
+console, and once an incident is full the merge writes only `events_count`,
+`events_truncated` and `updated` instead of re-serialising the whole hash. That
+is what keeps the cost of an event independent of the size of the incident:
+before the cap, 10,000 events from one host rewrote a growing half-megabyte hash
+on every event and took 77 s.
+
+`events_count` is always exact, so the console keeps the true size of the
+incident; `events_truncated=true` marks the stored history as partial, and
+`events_skipped` in the console payload is derived from the counter (with a
+fallback to the stored list length for incidents written before the field
+existed). Scan incidents are exempt by design: `scans.host_portscan` stores
+distinct ports and `scans.network_portscan` distinct targets, one entry per
+member rather than per event, so their lists are bounded by the port universe
+and truncating them would delete the evidence the incident exists to record.
+
 ## Redis state
 
 | Key | Type | Purpose | TTL |
 |---|---|---|---|
-| `incident:<prefix><src_host>:<ts>` | hash | incident fields (`events_list` CSV of epochs, `events_count`, `acknowledged`, `notified`, `updated`, `description`, `logdata` JSON) | none |
+| `incident:<prefix><src_host>:<ts>` | hash | incident fields (`events_list` CSV of epochs and `logdata` JSON, both capped at `OCC_MAX_STORED_EVENTS`; `events_count`, `events_truncated`, `acknowledged`, `notified`, `updated`, `description`) | none |
 | `incidents` | ZSET | incident index, score = last update | none |
 | `scan:host:<src_host>:<dst_host>` | set | distinct scanned ports | `OCC_SCAN_HOST_HORIZON`, fixed at creation |
 | `scan:network:<src_host>:<dst_port>:targets` | set | distinct canaries hit | `OCC_SCAN_NETWORK_HORIZON`, fixed at creation |
@@ -157,7 +176,11 @@ report formatters keep the legacy wording.
 
 Nothing enumerates keys (`KEYS`, `SCAN`, `FLUSHDB` are never used). Multi-step
 writes use `MULTI`/`EXEC` pipelines, and the incident write plus the lock
-release are Lua scripts, so they stay atomic in one round trip.
+release are Lua scripts, so they stay atomic in one round trip. A merge into a
+full incident sends three fields (`events_count`, `events_truncated`, `updated`)
+instead of the whole hash, which is why a busy incident stops costing more per
+event than an idle one, and why a full-field replication on every write is no
+longer the dominant cost.
 
 **Redis topology: one logical server, not Redis Cluster.** `save_incident()`
 writes an `incident:*` hash, the `incidents` ZSET and the host pointer in one
