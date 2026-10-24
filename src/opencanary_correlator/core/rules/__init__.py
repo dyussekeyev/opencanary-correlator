@@ -1,0 +1,36 @@
+"""Correlation rules and the default rule set."""
+
+from __future__ import annotations
+
+from opencanary_correlator.config import Settings
+from opencanary_correlator.core.incident import Incident, IncidentRepository
+from opencanary_correlator.core.rules.base import Rule
+from opencanary_correlator.core.rules.login import LoginRule, build_login_rules
+from opencanary_correlator.core.rules.portscan import HostPortScanRule, NetworkPortScanRule
+from opencanary_correlator.core.rules.smb import SmbFileOpenRule
+from opencanary_correlator.storage.redis_store import RedisStore
+
+
+def build_rules(
+    store: RedisStore,
+    repository: IncidentRepository,
+    settings: Settings,
+) -> list[Rule]:
+    """Build the default rule set."""
+    rules: list[Rule] = list(build_login_rules(repository))
+    rules.append(SmbFileOpenRule(repository))
+    rules.append(HostPortScanRule(store=store, repository=repository, settings=settings))
+    rules.append(NetworkPortScanRule(store=store, repository=repository, settings=settings))
+    return rules
+
+
+__all__ = [
+    "HostPortScanRule",
+    "Incident",
+    "LoginRule",
+    "NetworkPortScanRule",
+    "Rule",
+    "SmbFileOpenRule",
+    "build_login_rules",
+    "build_rules",
+]

@@ -1,0 +1,69 @@
+"""HTTP health endpoint tests."""
+
+from __future__ import annotations
+
+import asyncio
+
+from opencanary_correlator.health import HealthServer
+from opencanary_correlator.storage.redis_store import RedisStore
+
+
+class DeadStore:
+    """Store stand-in whose Redis is unreachable."""
+
+    async def ping(self) -> bool:
+        return False
+
+
+async def http_get(port: int, path: str) -> bytes:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+    await writer.drain()
+    data = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    return data
+
+
+async def start_server(store) -> HealthServer:
+    server = HealthServer(store, host="127.0.0.1", port=0)
+    await server.start()
+    return server
+
+
+async def test_healthz_reports_redis_ok(fake_redis) -> None:
+    server = await start_server(RedisStore(fake_redis))
+    try:
+        response = await http_get(server.bound_port, "/healthz")
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 200 OK")
+    assert b'"redis": true' in response
+
+
+async def test_readyz_reports_degraded_when_redis_is_down() -> None:
+    server = await start_server(DeadStore())
+    try:
+        response = await http_get(server.bound_port, "/readyz")
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 503 Service Unavailable")
+    assert b'"status": "degraded"' in response
+
+
+async def test_unknown_path_returns_404(fake_redis) -> None:
+    server = await start_server(RedisStore(fake_redis))
+    try:
+        response = await http_get(server.bound_port, "/metrics")
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 404 Not Found")
+
+
+async def test_stop_is_idempotent(fake_redis) -> None:
+    server = await start_server(RedisStore(fake_redis))
+    await server.stop()
+    await server.stop()
