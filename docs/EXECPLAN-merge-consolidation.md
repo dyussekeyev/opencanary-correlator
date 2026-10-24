@@ -1,6 +1,10 @@
 # ExecPlan: Single-round-trip incident merge
 
-Status: **proposed — awaiting approval.** No code has been changed for this plan.
+Status: **closed at Milestone 0 (2026-10-24) — not implemented.** The measurement
+this plan asked for says the consolidation targets the wrong third of the cost:
+on a native Linux server the six round trips are ~31-33 % of an event, and the
+ceiling of the rewrite is about **28 %** of wall time. Milestones 1-5 are not
+planned. Evidence and reasoning: [Milestone 0 result and decision](#milestone-0-result-and-decision).
 
 ## 1. Goal
 
@@ -44,19 +48,11 @@ Non-goals:
 
 ## 2. Progress and Milestones
 
-- [ ] Milestone 0: Reference measurement on native Linux — decide whether the
-      target is already met outside Docker Desktop (see the gate below).
-- [ ] Milestone 1: Read path in Lua — pointer lookup, ZSET fallback and hash
-      read in one script.
-- [ ] Milestone 2: Merge in Lua — append and set modes, cap and truncation
-      parity with the Python model.
-- [ ] Milestone 3: Write and lock inside the same script — one round trip for a
-      whole merge, with the legacy lock key still taken.
-- [ ] Milestone 4: Parity and concurrency tests, including a mixed-version
-      fleet.
-- [ ] Milestone 5: Benchmark and docs — record before/after, update
-      `README.md`, `docs/architecture.md`, `docs/validation.md`, the progress
-      entry in [EXECPLAN-refactor.md](EXECPLAN-refactor.md).
+- [x] Milestone 0: Reference measurement on native Linux — run on
+      `ubuntu-latest` (2026-10-24). Verdict: the rewrite is not worth its risk;
+      closed here.
+- [~] Milestone 1-5: not planned. Kept below as the design record for the case
+      where throughput on a server-class host ever becomes the constraint.
 
 ## 3. Plan of Work
 
@@ -73,6 +69,49 @@ Linux host (a `ubuntu-latest` runner is enough) and record the RTT with
   measurement plus a CI benchmark, not a rewrite — and this plan stops at
   Milestone 0.
 - If it is not, the projections below apply and the work proceeds.
+
+### Milestone 0 result and decision
+
+The gate was run as a `benchmark` job on `ubuntu-latest` with a **native**
+`redis-server` (not a service container, which would smuggle the Docker
+network back in). Two invocations of the same commit:
+
+| | Run A | Run B | Docker Desktop (recorded earlier) |
+|---|---|---|---|
+| Loopback round trip | **0.029 ms** (p50 0.031) | **0.063 ms** (p50 0.063) | 0.183 ms |
+| Hot incident, 10k events, 1 lane | **5.145 s** (1 943 ev/s) | **12.040 s** (831 ev/s) | 17.707 s |
+| ms per event | 0.514 | 1.204 | 1.771 |
+| of which six round trips | 0.171 (33 %) | 0.379 (31 %) | 1.098 (62 %) |
+| of which Python + receiver | 0.343 (67 %) | 0.825 (69 %) | 0.673 (38 %) |
+| Other workload (100 hosts, 8 lanes) | 4.347 s | 11.094 s | — |
+
+Three conclusions, and the third is the one that decides the plan:
+
+1. **The Docker Desktop penalty is real but not a redesign trigger.** Loopback
+   costs 0.183 ms there against 0.029-0.063 ms natively, which is most of the
+   17.7 s → 5.1 s difference. The 77.2 s → 17.7 s improvement recorded for the
+   capped history stands; the 5 s target was being missed largely by the VM.
+2. **A shared runner cannot gate a wall-time target.** The same commit took
+   5.145 s and 12.040 s on two consecutive runs, with the round trip doubling
+   alongside it — CPU steal on `ubuntu-latest` is the variable, not the code.
+   That is why the CI job records numbers and never asserts one.
+3. **The rewrite addresses the smaller share on real hardware.** On Docker
+   Desktop the six hops were 62-93 % of a merge, which is what made this plan
+   look attractive. On a native server they are ~31-33 %, the ceiling of
+   removing five of them is ~28 % of wall time (5.1 s → ~3.7 s on the fast run),
+   and the dominant cost becomes Python: parsing, Pydantic validation, the
+   merge logic (0.097 ms alone) and the receiver/queue path.
+
+**Decision:** do not implement milestones 1-5. Spending a `cjson` merge
+implementation, a parity test suite and a lock-semantics change to move a third
+of the cost is a bad trade, and the remaining third is where any future
+throughput work belongs. The plan is kept as the design record, and the
+`benchmark` job stays as a regression record for both workloads.
+
+If throughput becomes a requirement, the cheaper first steps are, in order:
+profile the 0.343-0.825 ms of non-Redis work per event; look at whether the
+incident hash needs a full Pydantic round trip on every merge; and only then
+reconsider the single-script merge.
 
 ### The three shapes a merge can take
 
@@ -306,11 +345,14 @@ the stored fields are unchanged, so no data migration is needed in either
 direction. The script and the Python merge coexist during the change, which is
 what makes a revert safe.
 
-## 6. Open questions for approval
+## 6. Open questions (moot after Milestone 0)
 
-1. Is the ≤ 5 s target meant per repository merge (this plan) or end to end
-   including dedup (which would need a dedup redesign for scan rules)?
-2. Should Milestone 0 stop the work if a native Linux runner already meets the
-   target, or still land the single script for the reduced server load?
-3. Is taking the legacy lock key inside the script acceptable, given it keeps
-   the write contention that dropping the lock (option 2) would remove?
+Kept so a future reader can see what was undecided when the plan was written:
+
+1. Whether the ≤ 5 s target meant per repository merge or end to end including
+   dedup. Answered by the measurement: on native hardware neither is worth a
+   rewrite.
+2. Whether to land the script anyway for the reduced server load. Answered by
+   the 28 % ceiling and the `cjson` parity risk.
+3. Whether taking the legacy lock key inside the script is acceptable. Never
+   needed to be decided, since option 3 was only chosen by this plan.

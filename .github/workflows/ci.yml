@@ -79,6 +79,9 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+  # Records numbers, never gates on them: two invocations of one commit
+  # measured 5.145 s and 12.040 s for the same workload, because a shared
+  # runner's CPU steal, not the code, dominates the wall time.
   benchmark:
     name: Benchmark (hot incident, native loopback)
     runs-on: ubuntu-latest

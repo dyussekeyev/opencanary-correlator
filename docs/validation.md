@@ -307,6 +307,35 @@ hash size is `MEMORY USAGE` on a cap-full incident (100 epochs plus 100 log
 entries), not an estimate. The remaining 17.7 s is round-trip bound, not
 byte-bound: six commands per event on one lane.
 
+### Native Linux runner: how much of the cost is the network
+
+Docker Desktop's loopback is expensive, so the same workload was repeated on a
+native Linux runner (`ubuntu-latest`, `ubuntu-latest` hardware, a **native**
+`redis-server` rather than a service container) via the `benchmark` CI job. Two
+invocations of the same commit:
+
+| | Run A | Run B | Docker Desktop |
+|---|---|---|---|
+| Loopback round trip | **0.029 ms** | **0.063 ms** | 0.183 ms |
+| Hot incident, 10k events, 1 lane | **5.145 s** | **12.040 s** | 17.707 s |
+| ms per event | 0.514 | 1.204 | 1.771 |
+| six round trips inside that | 0.171 (33 %) | 0.379 (31 %) | 1.098 (62 %) |
+| Python, parsing, receiver, queue | 0.343 (67 %) | 0.825 (69 %) | 0.673 (38 %) |
+| 100 hosts, 8 lanes | 4.347 s | 11.094 s | 2.6 s (native container, earlier) |
+
+Two things follow. First, the Docker Desktop numbers overstate the merge cost:
+the 17.7 s figure is mostly the VM's 0.183 ms round trip, and on native hardware
+the same code completes in 5.1 s. Second, **a shared runner cannot gate a
+wall-time target** — 5.145 s and 12.040 s for the same commit, with the round
+trip doubling alongside it, is CPU steal rather than code. The `benchmark` job
+therefore records numbers and never asserts one.
+
+The split is also the reason the single-script merge was **not** implemented
+(see [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md)): on a
+native host six round trips are ~31-33 % of an event, so collapsing them has a
+ceiling of ~28 % of wall time, while Python-side work - parsing, Pydantic
+validation, the merge logic (0.097 ms per merge on its own) - is the majority.
+
 ### fakeredis reference (not a capacity number)
 
 | Revision | 10,000 events / 100 hosts |
@@ -324,11 +353,11 @@ fakeredis is CPU-bound in one process.
 ### Known limits
 
 - The merge path is still six round trips per event (dedup, lock, pointer read,
-  incident read, incident write, unlock), so one lane spends ~1.8 ms per event
-  end to end on this container even though the write itself is now
-  constant-size. Collapsing the sequence into one script is the next step if a
-  single hot key matters; `OCC_EVENT_CONCURRENCY` only overlaps work across
-  hosts, since one host keeps arrival order.
+  incident read, incident write, unlock). One lane spends ~1.8 ms per event end
+  to end under Docker Desktop and 0.5-1.2 ms on a native runner, of which a
+  third to two thirds is round trips depending on the host; the write itself is
+  constant-size. `OCC_EVENT_CONCURRENCY` only overlaps work across hosts, since
+  one host keeps arrival order.
 - `OCC_MAX_STORED_EVENTS` trades stored history for write cost: the legacy
   console shows the first 100 timestamps and reports the rest through
   `events_skipped`. Raise it only when incidents are read directly from Redis,
@@ -365,10 +394,12 @@ close.
 
 ## Open items
 
-1. Collapse the six-command merge into a single Lua script. The remaining cost
-   of a hot incident is round trips, not payload; the trade is that the lock
-   moves inside the script, which changes the semantics the compare-and-delete
-   fix currently relies on, so it needs its own design decision.
+1. Reduce the non-Redis cost of an event. A native runner spends 0.34-0.83 ms
+   per event outside Redis (parsing, Pydantic validation, the merge logic,
+   receiver and queue), against 0.17-0.38 ms in round trips, so the network is
+   no longer the place where a hot incident is won. The single-script merge was
+   investigated and rejected on this evidence — see
+   [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md).
 
 Closed since the previous revision:
 
