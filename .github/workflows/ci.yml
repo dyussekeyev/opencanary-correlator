@@ -111,8 +111,10 @@ jobs:
           redis-cli ping
       - name: Measure the loopback round trip
         run: |
-          redis-benchmark -t ping -n 20000 -c 1 -q | tee /tmp/ping.txt
-          grep -E '^PING' /tmp/ping.txt
+          # `-q` separates progress lines with a bare carriage return, so the
+          # output is normalised before anything matches against it.
+          redis-benchmark -t ping -n 20000 -c 1 -q | tr '\r' '\n' | tee /tmp/ping.txt
+          grep 'requests per second' /tmp/ping.txt || true
       - name: Hot incident, 10,000 events from one host
         run: |
           uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
@@ -130,11 +132,14 @@ jobs:
 
           print("### Native runner measurements")
           print()
-          ping = pathlib.Path("/tmp/ping.txt").read_text().strip() if pathlib.Path("/tmp/ping.txt").exists() else ""
-          rps_line = next((line for line in ping.splitlines() if line.startswith("PING")), "")
+          ping_file = pathlib.Path("/tmp/ping.txt")
+          ping = ping_file.read_text() if ping_file.exists() else ""
+          rps_line = next(
+              (line for line in ping.splitlines() if "requests per second" in line), ""
+          )
           rtt = ""
-          if " requests per second" in rps_line:
-              rate = float(rps_line.split()[3])
+          if rps_line:
+              rate = float(rps_line.split()[1])
               rtt = f"{1000 / rate:.4f} ms"
           print(f"Loopback round trip: **{rtt or 'not measured'}** (`{rps_line}`)")
           print()
