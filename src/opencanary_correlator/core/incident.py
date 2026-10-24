@@ -364,7 +364,11 @@ class IncidentRepository:
         incident_cls = INCIDENT_TYPES[incident_name]
         now = int(self._clock())
         horizon = self._settings.horizon_for(incident_name)
-        prefix = keys.incident_prefix(incident_name, event.src_host)
+        # The trailing colon is part of the key grammar: matching only the host
+        # prefix would also match hosts that merely start with it (10.0.0.5
+        # would merge into an incident for 10.0.0.55).
+        prefix = f"{keys.incident_prefix(incident_name, event.src_host)}:"
+        pointer_key = keys.incident_latest_key(incident_name, event.src_host)
         new_logdata = event.logdata if logdata is _UNSET else logdata
         resolved_logtype = logtype if logtype is not None else int(event.logtype)
 
@@ -379,7 +383,9 @@ class IncidentRepository:
                 )
                 return None
 
-            existing_key = await self._store.find_recent_incident(prefix, min_score=now - horizon)
+            existing_key = await self._store.find_recent_incident(
+                prefix, min_score=now - horizon, pointer_key=pointer_key
+            )
             if existing_key is not None:
                 fields = await self._store.hgetall(existing_key)
                 if fields:
@@ -390,7 +396,12 @@ class IncidentRepository:
                     merged.events_count += 1
                     merged.updated = True
                     merged.logdata = incident_cls.merge_logdata(merged.logdata, new_logdata)
-                    await self._store.save_incident(existing_key, merged.to_fields(), score=now)
+                    await self._store.save_incident(
+                        existing_key,
+                        merged.to_fields(),
+                        score=now,
+                        pointer_key=pointer_key,
+                    )
                     self._audit.emit(
                         "incident_updated",
                         "info",
@@ -417,7 +428,9 @@ class IncidentRepository:
                 logdata=incident_cls.serialize_logdata(new_logdata),
                 description=incident_cls.DESCRIPTION,
             )
-            await self._store.save_incident(key, incident.to_fields(), score=now)
+            await self._store.save_incident(
+                key, incident.to_fields(), score=now, pointer_key=pointer_key
+            )
             self._audit.emit(
                 "incident_created",
                 "info",

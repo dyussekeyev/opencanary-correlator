@@ -10,6 +10,7 @@ from opencanary_correlator.storage.keys import (
     device_key,
     host_scan_key,
     incident_key,
+    incident_latest_key,
     incident_lock_key,
     incident_prefix,
     network_scan_key,
@@ -44,3 +45,11 @@ def test_lock_and_dedup_keys_are_namespaced() -> None:
         "incident-lock:ftp.login_attempt:10.0.0.5"
     )
     assert dedup_key("abc") == "dedup:abc"
+
+
+def test_pointer_key_is_internal_and_per_host() -> None:
+    """The pointer is our own index: it must not collide with legacy keys."""
+    assert incident_latest_key("ftp.login_attempt", "10.0.0.5") == (
+        "incident-latest:ftp.login_attempt:10.0.0.5"
+    )
+    assert not incident_latest_key("ftp.login_attempt", "10.0.0.5").startswith("incident:")

@@ -39,6 +39,23 @@ async def test_distinct_window_counts_unique_members(store) -> None:
     assert await window.add("23") == 1
 
 
+async def test_distinct_window_ttl_is_not_refreshed_by_new_members(store, fake_redis) -> None:
+    key = "test:distinct-fixed"
+    window = DistinctSetWindow(store, key, ttl=50)
+
+    assert await window.add("21") == 1
+    initial_ttl = await fake_redis.ttl(key)
+    assert 0 < initial_ttl <= 50
+
+    # Shorten the window, then add another member. A refreshing implementation
+    # would reset the TTL to 50 and this scan window would never close.
+    await fake_redis.expire(key, 5)
+    assert await window.add("22") == 2
+
+    remaining = await fake_redis.ttl(key)
+    assert 0 < remaining <= 5
+
+
 async def test_sliding_window_trims_entries_outside_the_horizon(store) -> None:
     window = SlidingWindow(store, "test:sliding", horizon=50)
 

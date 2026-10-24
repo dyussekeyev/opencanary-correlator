@@ -62,8 +62,12 @@ class DistinctSetWindow:
         self._ttl = ttl
 
     async def add(self, member: str) -> int:
-        """Add a member and return the number of distinct members."""
-        return await self._store.sadd_with_expire(self._key, member, ttl=self._ttl)
+        """Add a member and return the number of distinct members.
+
+        The set's TTL is anchored when the window is created and is not extended
+        by later members, so sustained scanning cannot keep it alive forever.
+        """
+        return await self._store.sadd_with_fixed_expire(self._key, member, ttl=self._ttl)
 
     async def members(self) -> set[str]:
         """Return the current members."""

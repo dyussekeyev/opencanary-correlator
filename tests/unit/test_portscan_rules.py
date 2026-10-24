@@ -59,6 +59,42 @@ async def test_host_portscan_dedups_repeated_port(
     assert await store.exists(keys.host_scan_key("10.0.0.5", "10.0.0.2")) is True
 
 
+async def test_host_portscan_window_ttl_does_not_slide(
+    store, fake_redis, settings_factory, audit, clock, event_factory
+) -> None:
+    settings = settings_factory(scan_host_threshold=5, scan_host_horizon=50)
+    repository = make_repository(store, settings, audit, clock)
+    rule = HostPortScanRule(store=store, repository=repository, settings=settings)
+    key = keys.host_scan_key("10.0.0.5", "10.0.0.2")
+
+    assert await rule.apply(syn_event(event_factory, dst_port=21), now=clock.now) == []
+    assert 0 < await fake_redis.ttl(key) <= 50
+
+    await fake_redis.expire(key, 5)
+    assert await rule.apply(syn_event(event_factory, dst_port=22), now=clock.now) == []
+
+    assert 0 < await fake_redis.ttl(key) <= 5
+
+
+async def test_network_portscan_window_ttl_does_not_slide(
+    store, fake_redis, settings_factory, audit, clock, event_factory
+) -> None:
+    settings = settings_factory(scan_network_threshold=5, scan_network_horizon=50)
+    repository = make_repository(store, settings, audit, clock)
+    rule = NetworkPortScanRule(store=store, repository=repository, settings=settings)
+    key = keys.network_scan_key("10.0.0.5", 22)
+
+    first = syn_event(event_factory, dst_port=22, reported_dst_host="127.0.0.1")
+    second = syn_event(event_factory, dst_port=22, reported_dst_host="127.0.0.2")
+    assert await rule.apply(first, now=clock.now) == []
+    assert 0 < await fake_redis.ttl(key) <= 50
+
+    await fake_redis.expire(key, 5)
+    assert await rule.apply(second, now=clock.now) == []
+
+    assert 0 < await fake_redis.ttl(key) <= 5
+
+
 async def test_network_portscan_uses_reported_target(
     store, settings_factory, audit, clock, event_factory
 ) -> None:

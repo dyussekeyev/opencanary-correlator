@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from opencanary_correlator.core.incident import (
     IncidentFTPLogin,
     IncidentHostPortScan,
@@ -12,6 +14,7 @@ from opencanary_correlator.core.incident import (
     IncidentSMBFileOpen,
 )
 from opencanary_correlator.schemas import CanaryEvent
+from opencanary_correlator.storage.keys import incident_latest_key
 
 
 def make_incident(incident_cls=IncidentFTPLogin, **overrides):
@@ -111,6 +114,88 @@ async def test_repository_creates_then_merges_within_horizon(
     ]
 
 
+async def test_repository_writes_a_per_host_pointer(
+    repository, store, clock, event_factory
+) -> None:
+    created = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+    assert created is not None
+
+    pointer = await store.hgetall(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+
+    assert pointer == {"key": created.key, "score": str(int(clock.now))}
+
+
+async def test_merge_falls_back_to_the_index_when_the_pointer_is_missing(
+    repository, store, clock, event_factory
+) -> None:
+    """Incidents created by an older replica still merge during a rolling upgrade."""
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    await store.delete(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+
+    clock.advance(5)
+    assert await repository.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+    assert fields["events_count"] == "2"
+    pointer = await store.hgetall(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+    assert pointer["key"] == created.key
+
+
+async def test_stale_pointer_does_not_merge_outside_the_horizon(
+    repository, store, clock, event_factory
+) -> None:
+    event = CanaryEvent.model_validate(event_factory())
+    first = await repository.record("ftp.login_attempt", event)
+    assert first is not None
+
+    clock.advance(61)
+    second = await repository.record("ftp.login_attempt", event)
+
+    assert second is not None
+    assert second.key != first.key
+    pointer = await store.hgetall(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+    assert pointer["key"] == second.key
+
+
+async def test_pointer_to_a_deleted_incident_creates_a_new_one(
+    repository, store, clock, event_factory
+) -> None:
+    """An operator may delete an incident hash; the next event must not crash."""
+    event = CanaryEvent.model_validate(event_factory())
+    first = await repository.record("ftp.login_attempt", event)
+    assert first is not None
+    await store.delete(first.key)
+
+    clock.advance(5)
+    second = await repository.record("ftp.login_attempt", event)
+
+    assert second is not None
+    pointer = await store.hgetall(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+    assert pointer["key"] == second.key
+
+
+async def test_corrupt_pointer_falls_back_to_the_index(
+    repository, store, clock, event_factory
+) -> None:
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    await store.hset_mapping(
+        incident_latest_key("ftp.login_attempt", "10.0.0.5"),
+        {"key": "incident:ftplogin:10.0.0.5:1", "score": "not-a-number"},
+    )
+
+    clock.advance(5)
+    assert await repository.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+    assert fields["events_count"] == "2"
+
+
 async def test_new_incident_after_the_horizon(repository, clock, event_factory) -> None:
     event = CanaryEvent.model_validate(event_factory())
 
@@ -159,6 +244,33 @@ async def test_incidents_are_per_source_host(repository, event_factory) -> None:
 
     assert first is not None and second is not None
     assert first.key != second.key
+
+
+@pytest.mark.parametrize(
+    ("longer_host", "shorter_host"),
+    [
+        ("10.0.0.55", "10.0.0.5"),
+        ("web01", "web"),
+        ("::10", "::1"),
+    ],
+)
+async def test_hosts_sharing_a_prefix_do_not_merge(
+    repository, event_factory, longer_host, shorter_host
+) -> None:
+    longer = await repository.record(
+        "ftp.login_attempt",
+        CanaryEvent.model_validate(event_factory(src_host=longer_host)),
+    )
+    shorter = await repository.record(
+        "ftp.login_attempt",
+        CanaryEvent.model_validate(event_factory(src_host=shorter_host)),
+    )
+
+    assert longer is not None
+    assert shorter is not None
+    assert longer.key.startswith(f"incident:ftplogin:{longer_host}:")
+    assert shorter.key.startswith(f"incident:ftplogin:{shorter_host}:")
+    assert longer.key != shorter.key
 
 
 async def test_host_portscan_merges_distinct_ports(repository, store, clock, event_factory) -> None:
