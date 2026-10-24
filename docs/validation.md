@@ -41,6 +41,13 @@ deleted; a smoke test asserts they stay gone.
 
 The workflow has executed on GitHub (run [40114309203](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40114309203), PR #1): all seven checks pass — `quality` 14 s, four `test` jobs 29–34 s with **294 passed and 0 skipped** (the real-Redis two-replica checks and the POSIX SIGTERM test actually execute there), `package` 19 s, `docker` 37 s with `incident count: 1`, the uid 10001 check and container health. The Docker job repeats the container smoke test below on a clean runner.
 
+The CI test job can be reproduced locally with `tools/linux_check.sh`, which
+mounts the tree into a cached `python:3.11-slim` image built from `uv.lock` and
+runs pytest against a disposable `redis:7-alpine`: `294 passed`, coverage
+91.33 %, 18 s. POSIX-only tests carry `@pytest.mark.linux`, and
+`.githooks/pre-push` (installed by `tools/install_hooks.sh`) runs the same check
+before a push that touches Python, tests or dependencies.
+
 The first run was red and found two defects that local Windows runs could not see: `setup-python` cached pip while uv installs the packages, so its post-job step failed an otherwise green lint job, and the UDP receiver asserted `isinstance(transport, asyncio.DatagramTransport)`, which is false for the POSIX selector transport (it implements the datagram API without inheriting the class) and failed all five syslog UDP tests. Both are fixed; the POSIX failure was reproduced and the fix confirmed in a `python:3.11-slim` container before pushing.
 
 ## Compatibility proof

@@ -163,6 +163,7 @@ async def test_distinct_events_merge_into_one_incident(
         await cleanup_host(replica_stores[0], src_host)
 
 
+@pytest.mark.linux
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics required")
 async def test_sigterm_stops_the_cli_cleanly(replica_stores, free_tcp_port, tmp_path) -> None:
     assert replica_stores
