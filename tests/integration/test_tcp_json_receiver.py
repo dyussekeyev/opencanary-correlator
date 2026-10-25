@@ -9,10 +9,11 @@ import logging.handlers
 from typing import Any
 
 import pytest
-from helpers import CollectingSink, audit_actions, wait_for_eof
 
 from opencanary_correlator.connectors.receivers.tcp_json import TCPJSONReceiver
 from opencanary_correlator.constants import LogType
+
+from .helpers import CollectingSink, audit_actions, wait_for_eof
 
 pytestmark = pytest.mark.integration
 

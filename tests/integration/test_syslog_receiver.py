@@ -10,13 +10,14 @@ import socket
 from typing import Any
 
 import pytest
-from helpers import CollectingSink, audit_actions, wait_for_eof
 
 from opencanary_correlator.connectors.receivers.syslog import (
     SyslogTCPReceiver,
     SyslogUDPReceiver,
 )
 from opencanary_correlator.constants import LogType
+
+from .helpers import CollectingSink, audit_actions, wait_for_eof
 
 pytestmark = pytest.mark.integration
 

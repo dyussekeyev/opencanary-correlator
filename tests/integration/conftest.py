@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 
 import pytest
-from helpers import CollectingSink
 
 from opencanary_correlator.audit import AuditLogger
+
+from .helpers import CollectingSink
 
 
 @pytest.fixture

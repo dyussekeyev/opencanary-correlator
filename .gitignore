@@ -86,3 +86,6 @@ secrets/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Freebuff Desktop project marker (local chat index, never commit)
+.freebuff/
