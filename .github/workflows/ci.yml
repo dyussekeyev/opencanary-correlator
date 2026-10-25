@@ -388,6 +388,41 @@ jobs:
           docker compose logs correlator | grep -q '"action":"startup"'
           docker compose exec -T correlator python -c 'import os; raise SystemExit(0 if os.getuid() == 10001 else 1)'
           test "$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q correlator)")" = "healthy"
+      - name: Keep the container healthy with a loopback-only listener
+        env:
+          OCC_HEALTH_HOST: 127.0.0.1
+        run: |
+          # The health port is not published by the base file, so publish it here:
+          # with a loopback-only listener the mapping must stay unreachable while
+          # the in-container HEALTHCHECK still reports healthy.
+          cat > /tmp/health-loopback.yml <<'YAML'
+          services:
+            correlator:
+              ports:
+                - "127.0.0.1:18080:8080"
+          YAML
+          compose=(docker compose -f docker-compose.yml -f /tmp/health-loopback.yml)
+          "${compose[@]}" up -d --no-deps --force-recreate correlator
+          status=""
+          for _ in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$("${compose[@]}" ps -q correlator)")
+            if [ "$status" = "healthy" ] || [ "$status" = "unhealthy" ]; then
+              break
+            fi
+            sleep 2
+          done
+          echo "health with OCC_HEALTH_HOST=${OCC_HEALTH_HOST}: $status"
+          test "$status" = "healthy"
+          # The listener answers on loopback inside the container ...
+          "${compose[@]}" exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status)"
+          # ... and is not bound to the container interface, so the published port
+          # cannot reach it. This is what a wildcard binding would have allowed.
+          if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/healthz', timeout=5)" 2>/dev/null; then
+            echo "the published port reached a listener that should be loopback-only"
+            exit 1
+          fi
+          echo "published port refused, as expected for a loopback-only binding"
+
       - name: Collect diagnostics on failure
         if: failure()
         run: |

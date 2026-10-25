@@ -266,6 +266,12 @@ The health port stays container-internal. Inspect it with
 `docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
 yourself if an external probe needs it.
 
+Compose passes `OCC_HEALTH_HOST` through from the shell or `.env`, defaulting to
+`0.0.0.0`. `OCC_HEALTH_HOST=127.0.0.1 docker compose up -d` keeps the listener
+and its counters inside the container while the image `HEALTHCHECK` keeps
+reporting `healthy`; a published mapping to that port then refuses connections
+instead of answering them.
+
 The compose file starts Redis and the correlator on a private network. Restrict
 the published intake ports (`1514`, `5514`) to your canary network at the
 firewall or cloud security-group level; they accept untrusted traffic by
