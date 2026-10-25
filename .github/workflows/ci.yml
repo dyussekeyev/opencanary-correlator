@@ -118,14 +118,28 @@ jobs:
           # output is normalised before anything matches against it.
           redis-benchmark -t ping -n 20000 -c 1 -q | tr '\r' '\n' | tee /tmp/ping.txt
           grep 'requests per second' /tmp/ping.txt || true
-      - name: Hot incident, 10,000 events from one host
+      # Server latency while the server is being hammered, which nothing else
+      # measured: `redis-benchmark` above reports the throughput of its own closed
+      # loop, not what a second client waits for. The probe brackets both runs in
+      # one step so it outlives the workloads it measures.
+      - name: Server latency, idle and under the ingestion load
         run: |
+          uv run python tools/latency_probe.py --redis-url redis://localhost:6379/15 \
+            --duration 5 | tee /tmp/latency-idle.json
+          uv run python tools/latency_probe.py --redis-url redis://localhost:6379/15 \
+            --duration 300 > /tmp/latency-load.json &
+          probe=$!
+          trap 'kill -TERM "$probe" 2>/dev/null || true' EXIT
+          # One interval of preamble, so the first samples are not the start-up
+          # cost of the benchmark rather than the load being measured.
+          sleep 1
           uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
             --events 10000 --hosts 1 --concurrency 1 | tee /tmp/hot.json
-      - name: Baseline, 10,000 events over 100 hosts
-        run: |
           uv run python tools/bench_ingest.py --redis-url redis://localhost:6379/15 \
             --events 10000 --hosts 100 --concurrency 8 | tee /tmp/many.json
+          kill -TERM "$probe"
+          wait "$probe" || true
+          trap - EXIT
       # Attribute the in-process cost: parsing, validation and fingerprinting
       # have no I/O, so this number is comparable across machines.
       - name: Profile the pure-Python path
@@ -139,6 +153,12 @@ jobs:
         run: |
           uv run python tools/profile_hot_path.py pipeline \
             --redis-url redis://localhost:6379/15 --events 2000 --hosts 1 | tee /tmp/pipe-hot.json
+      # The parser/decoding/script question, answered by paired differences
+      # instead of single-run means that bounce by the size of the effect.
+      - name: Compare command paths
+        run: |
+          uv run python tools/profile_hot_path.py commands \
+            --redis-url redis://localhost:6379/15 --iterations 1000 | tee /tmp/cmd.json
       - name: Summarise
         if: always()
         run: |
@@ -180,6 +200,42 @@ jobs:
               text = file.read_text()
               return json.loads(text[: text.rindex("}") + 1])
 
+          latency_idle = pathlib.Path("/tmp/latency-idle.json")
+          latency_load = pathlib.Path("/tmp/latency-load.json")
+          if latency_idle.exists() and latency_load.exists():
+              idle = json.loads(latency_idle.read_text())["rtt_us"]
+              loaded = json.loads(latency_load.read_text())["rtt_us"]
+              print()
+              print("### Redis server latency, PING from a second client")
+              print()
+              print("| Phase | samples | p50 | p95 | p99 | max |")
+              print("|---|---|---|---|---|---|")
+              for label, data in (("idle", idle), ("while ingesting", loaded)):
+                  print(
+                      f"| {label} | {data['samples']} | {data['p50_us']} us |"
+                      f" {data['p95_us']} us | {data['p99_us']} us | {data['max_us']} us |"
+                  )
+              if idle["p99_us"] is not None and loaded["p99_us"] is not None:
+                  delta = loaded["p99_us"] - idle["p99_us"]
+                  verdict = "within" if delta < 2000 else "ABOVE"
+                  print()
+                  print(f"p99 change under load: **{delta:+.1f} us** ({verdict} the 2 ms criterion)")
+
+          print()
+          print("### Resident memory (process RSS)")
+          print()
+          print("| Workload | before | after | peak |")
+          print("|---|---|---|---|")
+          for label, path in (("1 host, 1 lane", "/tmp/hot.json"), ("100 hosts, 8 lanes", "/tmp/many.json")):
+              data = load(path)
+              if not data or "rss_mib" not in data:
+                  print(f"| {label} | missing | | |")
+                  continue
+              rss = data["rss_mib"]
+              print(
+                  f"| {label} | {rss['before']} MiB | {rss['after']} MiB | **{rss['peak']} MiB** |"
+              )
+
           cpu = load("/tmp/cpu.json")
           if cpu:
               print()
@@ -201,6 +257,13 @@ jobs:
                       f"| `{name}` | {entry['tottime_us_per_event']} |"
                       f" {entry['cumtime_us_per_event']} |"
                   )
+              print()
+              print("### Merge into a capped incident (pure Python, per call)")
+              print()
+              print("| Stage | mean | p95 |")
+              print("|---|---|---|")
+              for stage, values in cpu["merge_stages_us"].items():
+                  print(f"| `{stage}` | {values['mean_us']} us | {values['p95_us']} us |")
 
           for label, path in (("new incident per event", "/tmp/pipe-new.json"), ("hot merge", "/tmp/pipe-hot.json")):
               data = load(path)
@@ -226,6 +289,21 @@ jobs:
                       for command, count in data["redis"]["command_mix_per_event"].items()
                   )
               )
+
+          commands = load("/tmp/cmd.json")
+          if commands:
+              print()
+              print("### Command paths, median of interleaved differences")
+              print()
+              print(f"`hiredis` installed: {commands['hiredis_available']}")
+              print()
+              print("| Comparison (positive = second call is slower) | median | p25 | p75 |")
+              print("|---|---|---|---|")
+              for label, values in commands["paired_deltas_us"].items():
+                  print(
+                      f"| {label} | {values['median_us']} us | {values['p25_us']} us |"
+                      f" {values['p75_us']} us |"
+                  )
           PY
 
   package:

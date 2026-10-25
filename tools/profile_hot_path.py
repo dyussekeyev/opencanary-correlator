@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import cProfile
+import importlib.util
 import io
 import json
 import pstats
@@ -566,7 +567,11 @@ def build_clients(redis_url: str) -> dict[str, Redis]:
     parser_class = getattr(_parsers, "_AsyncHiredisParser", None) or getattr(
         _parsers, "HiredisParser", None
     )
-    if parser_class is None:
+    # The class exists even when the C parser does not: its `__init__` raises
+    # "Hiredis is not available". Presence of the class therefore says nothing,
+    # and the module has to be looked up as well - without this check `commands`
+    # failed outright on an interpreter without hiredis.
+    if parser_class is None or importlib.util.find_spec("hiredis") is None:
         return clients
     clients["hiredis"] = Redis.from_url(redis_url, decode_responses=True, parser_class=parser_class)
     return clients
