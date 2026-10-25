@@ -24,6 +24,11 @@ from pydantic import ValidationError
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
+from opencanary_correlator.connectors.receivers._allowlist import (
+    PEER_NOT_ALLOWED,
+    AllowedNetworks,
+    is_peer_allowed,
+)
 from opencanary_correlator.connectors.receivers._pipeline import (
     DEFAULT_CONCURRENCY,
     EventPipeline,
@@ -320,11 +325,13 @@ class SyslogUDPReceiver(BaseReceiver):
         queue_size: int = 10_000,
         rate_limiter: RateLimiter | None = None,
         concurrency: int = DEFAULT_CONCURRENCY,
+        allowed_networks: AllowedNetworks = (),
     ) -> None:
         self.host = host
         self.port = port
         self.max_line_bytes = max_line_bytes
         self._audit = audit
+        self._allowed_networks = allowed_networks
         self._pipeline = EventPipeline(
             sink=sink,
             audit=audit,
@@ -385,6 +392,10 @@ class SyslogUDPReceiver(BaseReceiver):
 
     def datagram_received(self, data: bytes, peer_ip: str) -> None:
         """Validate one datagram and queue the resulting event."""
+        if not is_peer_allowed(peer_ip, self._allowed_networks):
+            self.audit_rejection(PEER_NOT_ALLOWED, peer_ip)
+            self._pipeline.record_rejection()
+            return
         if len(data) > self.max_line_bytes:
             self.audit_rejection("datagram_too_large", peer_ip, size=len(data))
             self._pipeline.record_rejection()

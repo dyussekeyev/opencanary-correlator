@@ -1,6 +1,6 @@
 """Attribute the per-event ingestion cost to the code that actually spends it.
 
-Milestone 0 of ``docs/EXECPLAN-merge-consolidation.md`` showed that a merge is
+Milestone 0 of ``docs/internal/EXECPLAN-merge-consolidation.md`` showed that a merge is
 round-trip bound, not byte bound. This tool answers the next question: of the
 remaining in-process time, how much is JSON parsing, how much is Pydantic
 validation, how much is fingerprinting, and how much is the correlation logic

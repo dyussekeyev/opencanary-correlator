@@ -1,7 +1,7 @@
 """JSON audit trail for the correlator.
 
 Every record is one JSON object per line with the fields required by
-``docs/EXECPLAN-refactor.md``: ``timestamp``, ``component``, ``action``,
+``docs/internal/EXECPLAN-refactor.md``: ``timestamp``, ``component``, ``action``,
 ``status`` and ``details``. Details pass through secret redaction and
 log-injection sanitisation, so attacker-controlled honeypot data can never
 forge a line or leak a captured password.

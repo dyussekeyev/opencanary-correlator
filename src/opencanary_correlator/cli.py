@@ -36,6 +36,7 @@ from opencanary_correlator.connectors.receivers import (
     SyslogUDPReceiver,
     TCPJSONReceiver,
 )
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.rules import build_rules
@@ -132,6 +133,7 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         },
         "health_host": settings.health_host,
         "health_port": settings.health_port,
+        "health_allowed_ips": settings.health_allowed_ips,
         "incident_horizon": settings.incident_horizon,
         "incident_horizons": settings.incident_horizons,
         "max_stored_events": settings.max_stored_events,
@@ -214,6 +216,7 @@ def build_receivers(
 ) -> list[BaseReceiver]:
     """Instantiate every receiver enabled by the configuration."""
     receivers: list[BaseReceiver] = []
+    allowed_networks = parse_allowed_networks(settings.receiver_allowed_ips)
     if settings.tcp_enabled:
         receivers.append(
             TCPJSONReceiver(
@@ -227,6 +230,7 @@ def build_receivers(
                 queue_size=settings.event_queue_size,
                 rate_limiter=rate_limiter,
                 concurrency=settings.event_concurrency,
+                allowed_networks=allowed_networks,
             )
         )
     if settings.syslog_enabled:
@@ -242,6 +246,7 @@ def build_receivers(
                 queue_size=settings.event_queue_size,
                 rate_limiter=rate_limiter,
                 concurrency=settings.event_concurrency,
+                allowed_networks=allowed_networks,
             )
         )
         if settings.syslog_udp_enabled:
@@ -255,6 +260,7 @@ def build_receivers(
                     queue_size=settings.event_queue_size,
                     rate_limiter=rate_limiter,
                     concurrency=settings.event_concurrency,
+                    allowed_networks=allowed_networks,
                 )
             )
     return receivers
@@ -314,7 +320,13 @@ async def run_correlator(
     )
     receivers = build_receivers(settings, engine, audit, rate_limiter)
     health = health or (
-        HealthServer(store, host=settings.health_host, port=settings.health_port, audit=audit)
+        HealthServer(
+            store,
+            host=settings.health_host,
+            port=settings.health_port,
+            audit=audit,
+            allowed_networks=parse_allowed_networks(settings.health_allowed_ips),
+        )
         if settings.health_port is not None
         else None
     )
