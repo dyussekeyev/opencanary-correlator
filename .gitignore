@@ -89,3 +89,6 @@ Thumbs.db
 
 # Freebuff Desktop project marker (local chat index, never commit)
 .freebuff/
+
+# Internal planning documents (ExecPlans), not published
+docs/internal/
