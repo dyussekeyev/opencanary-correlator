@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,7 +17,7 @@ from opencanary_correlator.cli import main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def read_pyproject() -> dict:
+def read_pyproject() -> dict[str, Any]:
     """Parse the project's `pyproject.toml`."""
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
         return tomllib.load(handle)
@@ -96,7 +97,7 @@ def test_legacy_tree_is_gone() -> None:
         assert not (PROJECT_ROOT / legacy_path).exists(), f"{legacy_path} should be deleted"
 
 
-def test_version_flag_exits_zero(capsys) -> None:
+def test_version_flag_exits_zero(capsys: Any) -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
 
@@ -104,7 +105,9 @@ def test_version_flag_exits_zero(capsys) -> None:
     assert "opencanary-correlator" in capsys.readouterr().out
 
 
-def test_running_without_configuration_reports_the_missing_setting(monkeypatch, capsys) -> None:
+def test_running_without_configuration_reports_the_missing_setting(
+    monkeypatch: Any, capsys: Any
+) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
 
     assert main([]) == 2
@@ -121,4 +124,4 @@ def test_module_entry_point_runs_from_the_repository_root() -> None:
     )
 
     assert result.returncode == 0
-    assert "opencanary-correlator 0.2.0" in result.stdout
+    assert "opencanary-correlator 0.3.0" in result.stdout

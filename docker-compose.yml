@@ -4,8 +4,12 @@ services:
   redis:
     # Digest resolved 2026-10-24 from the redis:7-alpine multi-arch index.
     image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+    # The password has no default: compose refuses to start without it, so an
+    # unauthenticated Redis is never brought up by accident.
     command:
       - redis-server
+      - --requirepass
+      - "${OCC_REDIS_PASSWORD:?set OCC_REDIS_PASSWORD in .env or the environment}"
       - --appendonly
       - "yes"
       - --save
@@ -14,6 +18,10 @@ services:
     restart: unless-stopped
     volumes:
       - redis-data:/data
+    # redis-cli reads REDISCLI_AUTH, so the healthcheck and `docker compose exec`
+    # authenticate without putting the password on a command line.
+    environment:
+      REDISCLI_AUTH: "${OCC_REDIS_PASSWORD:?set OCC_REDIS_PASSWORD in .env or the environment}"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -33,17 +41,19 @@ services:
       - path: .env
         required: false
     environment:
-      OCC_REDIS_URL: redis://redis:6379/0
+      # Built from the same password as the Redis service. Use a URL-safe value
+      # (letters, digits, `-` and `_`): the password is embedded in the URL unescaped.
+      OCC_REDIS_URL: "redis://:${OCC_REDIS_PASSWORD:?set OCC_REDIS_PASSWORD in .env or the environment}@redis:6379/0"
       OCC_TCP_HOST: 0.0.0.0
       OCC_TCP_PORT: "1514"
       OCC_SYSLOG_HOST: 0.0.0.0
       OCC_SYSLOG_PORT: "5514"
-      # Interface the probe listener binds to. The wildcard default lets an
-      # external scraper reach /metrics through a published port; export
-      # OCC_HEALTH_HOST=127.0.0.1 (or set it in `.env`) to keep the listener, and
-      # everything it exposes, inside the container. The image HEALTHCHECK dials
+      # Interface the probe listener binds to. The loopback default keeps the
+      # listener and /metrics inside the container; export
+      # OCC_HEALTH_HOST=0.0.0.0 (or set it in `.env`) only when an external probe needs it. The
+      # image HEALTHCHECK dials
       # 127.0.0.1 for a wildcard binding, so either value stays healthy.
-      OCC_HEALTH_HOST: "${OCC_HEALTH_HOST:-0.0.0.0}"
+      OCC_HEALTH_HOST: "${OCC_HEALTH_HOST:-127.0.0.1}"
     # OCC_HEALTH_PORT is inherited from `.env`, so the listener and the image
     # HEALTHCHECK always agree; it stays container-internal because the probe
     # runs inside the container.

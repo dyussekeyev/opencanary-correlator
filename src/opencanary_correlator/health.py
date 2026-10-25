@@ -9,6 +9,10 @@ from urllib.parse import urlsplit
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
+from opencanary_correlator.connectors.receivers._allowlist import (
+    AllowedNetworks,
+    is_peer_allowed,
+)
 from opencanary_correlator.storage.redis_store import RedisStore
 
 _REQUEST_TIMEOUT: Final[float] = 5.0
@@ -28,11 +32,14 @@ class HealthServer:
         host: str = "0.0.0.0",  # noqa: S104 - probes are served on every interface by default
         port: int = 8080,
         audit: AuditLogger | None = None,
+        allowed_networks: AllowedNetworks = (),
     ) -> None:
         self._store = store
         self._host = host
         self._port = port
         self._audit = audit
+        # Peers outside these networks get a 403 before any state is read.
+        self._allowed_networks = allowed_networks
         self._server: asyncio.AbstractServer | None = None
         self._bound_port: int | None = None
 
@@ -66,6 +73,25 @@ class HealthServer:
             request_line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
             if not request_line:
                 return
+            # Drain the headers before answering, even for rejected peers: closing
+            # with unread request bytes makes the kernel reset the connection, so
+            # the client never sees the 403.
+            consumed = len(request_line)
+            while consumed < _MAX_REQUEST_BYTES:
+                line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
+                consumed += len(line)
+                if line in (b"\r\n", b"\n", b""):
+                    break
+
+            if not self._peer_allowed(writer):
+                self._write(writer, 403, json.dumps({"error": "forbidden"}))
+                await writer.drain()
+                if self._audit is not None:
+                    self._audit.emit(
+                        "health_request_rejected", "warning", {"reason": "peer_not_allowed"}
+                    )
+                return
+
             parts = request_line.decode("latin-1").split()
             target = parts[1] if len(parts) >= 2 else "/"
             try:
@@ -73,12 +99,6 @@ class HealthServer:
             except ValueError:
                 # Malformed absolute-form targets must not crash the probe listener.
                 path = ""
-            consumed = len(request_line)
-            while consumed < _MAX_REQUEST_BYTES:
-                line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
-                consumed += len(line)
-                if line in (b"\r\n", b"\n", b""):
-                    break
 
             if path == _METRICS_PATH:
                 code = 200
@@ -105,6 +125,13 @@ class HealthServer:
             except ConnectionError:  # pragma: no cover - peer already gone
                 pass
 
+    def _peer_allowed(self, writer: asyncio.StreamWriter) -> bool:
+        if not self._allowed_networks:
+            return True
+        peername = writer.get_extra_info("peername")
+        peer_ip = str(peername[0]) if peername else ""
+        return is_peer_allowed(peer_ip, self._allowed_networks)
+
     @staticmethod
     def _write(
         writer: asyncio.StreamWriter,
@@ -112,7 +139,12 @@ class HealthServer:
         body: str,
         content_type: str = "application/json",
     ) -> None:
-        reason = {200: "OK", 404: "Not Found", 503: "Service Unavailable"}.get(code, "OK")
+        reason = {
+            200: "OK",
+            403: "Forbidden",
+            404: "Not Found",
+            503: "Service Unavailable",
+        }.get(code, "OK")
         payload = body.encode("utf-8")
         headers = (
             f"HTTP/1.1 {code} {reason}\r\n"

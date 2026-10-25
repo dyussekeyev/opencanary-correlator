@@ -1,7 +1,7 @@
 """Shared asyncio TCP receiver plumbing.
 
 Both the JSON receiver and the syslog TCP receiver use this module. It enforces
-the hardening rules from ``docs/EXECPLAN-refactor.md``:
+the hardening rules from ``docs/internal/EXECPLAN-refactor.md``:
 
 * a hard per-line byte limit (default 64 KiB);
 * a timeout that only applies to a *stalled partial line*, so a silent
@@ -20,6 +20,11 @@ from typing import Final
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
+from opencanary_correlator.connectors.receivers._allowlist import (
+    PEER_NOT_ALLOWED,
+    AllowedNetworks,
+    is_peer_allowed,
+)
 from opencanary_correlator.connectors.receivers._pipeline import (
     DEFAULT_CONCURRENCY,
     EventPipeline,
@@ -162,6 +167,7 @@ class TCPStreamReceiver(BaseReceiver):
         queue_size: int = 10_000,
         rate_limiter: RateLimiter | None = None,
         concurrency: int = DEFAULT_CONCURRENCY,
+        allowed_networks: AllowedNetworks = (),
     ) -> None:
         self.host = host
         self.port = port
@@ -170,6 +176,7 @@ class TCPStreamReceiver(BaseReceiver):
         self.max_connections = max_connections
         self._audit = audit
         self._rate_limiter = rate_limiter
+        self._allowed_networks = allowed_networks
         self._pipeline = EventPipeline(
             sink=sink,
             audit=audit,
@@ -239,7 +246,16 @@ class TCPStreamReceiver(BaseReceiver):
     # --- Connection handling ------------------------------------------------
 
     def connection_made(self, protocol: StreamProtocol) -> None:
-        """Track the connection and enforce the connection cap."""
+        """Track the connection and enforce the allowlist and connection cap."""
+        if not is_peer_allowed(protocol.peer_ip, self._allowed_networks):
+            metrics.CONNECTION_REJECTIONS.labels(receiver=self.name, reason=PEER_NOT_ALLOWED).inc()
+            self._audit.emit(
+                "connection_rejected",
+                "warning",
+                {"receiver": self.name, "reason": PEER_NOT_ALLOWED, "peer": protocol.peer_ip},
+            )
+            protocol.close(PEER_NOT_ALLOWED)
+            return
         self._connections.add(protocol)
         self._pipeline.stats.connections += 1
         metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(len(self._connections))

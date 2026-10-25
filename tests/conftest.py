@@ -42,7 +42,7 @@ async def fake_redis() -> AsyncIterator[Redis]:
 
 
 @pytest.fixture
-def store(fake_redis) -> RedisStore:
+def store(fake_redis: Any) -> RedisStore:
     """Async store backed by fakeredis."""
     return RedisStore(fake_redis)
 
@@ -107,7 +107,7 @@ def event_factory() -> Callable[..., dict[str, Any]]:
 
 
 @pytest.fixture
-def event_line(event_factory) -> Callable[..., bytes]:
+def event_line(event_factory: Any) -> Callable[..., bytes]:
     """Serialise an event exactly like `SocketJSONHandler.makePickle()` does."""
 
     def _line(**overrides: Any) -> bytes:

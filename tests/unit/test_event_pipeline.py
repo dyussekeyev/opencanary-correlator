@@ -42,7 +42,7 @@ def make_event(src_host: str, src_port: int) -> CanaryEvent:
     )
 
 
-async def test_single_lane_delivers_everything_in_order(audit) -> None:
+async def test_single_lane_delivers_everything_in_order(audit: Any) -> None:
     sink = RecordingSink()
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=100, concurrency=1)
     await pipeline.start()
@@ -58,7 +58,7 @@ async def test_single_lane_delivers_everything_in_order(audit) -> None:
     assert pipeline.stats.accepted == 50
 
 
-async def test_per_host_order_is_preserved_across_lanes(audit) -> None:
+async def test_per_host_order_is_preserved_across_lanes(audit: Any) -> None:
     sink = RecordingSink(delay=0.001)
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=1000, concurrency=8)
     await pipeline.start()
@@ -76,7 +76,7 @@ async def test_per_host_order_is_preserved_across_lanes(audit) -> None:
     assert sum(len(ports) for ports in sink.orders.values()) == 200
 
 
-async def test_lanes_overlap_slow_hosts(audit) -> None:
+async def test_lanes_overlap_slow_hosts(audit: Any) -> None:
     """A slow dispatch for one host must not serialise the other hosts."""
     sink = RecordingSink(delay=0.01)
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=100, concurrency=4)
@@ -93,7 +93,7 @@ async def test_lanes_overlap_slow_hosts(audit) -> None:
     assert sink.max_active > 1
 
 
-async def test_a_full_lane_drops_and_audits(audit, audit_stream) -> None:
+async def test_a_full_lane_drops_and_audits(audit: Any, audit_stream: Any) -> None:
     sink = RecordingSink()
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=1, concurrency=1)
     await pipeline.start()
@@ -114,7 +114,7 @@ async def test_a_full_lane_drops_and_audits(audit, audit_stream) -> None:
     assert "event_dropped" in audit_stream.getvalue()
 
 
-async def test_queue_budget_is_shared_between_lanes(audit) -> None:
+async def test_queue_budget_is_shared_between_lanes(audit: Any) -> None:
     pipeline = EventPipeline(sink=RecordingSink(), audit=audit, queue_size=100, concurrency=8)
 
     total = sum(queue.maxsize for queue in pipeline._queues)
@@ -125,7 +125,7 @@ async def test_queue_budget_is_shared_between_lanes(audit) -> None:
     assert 100 <= total < 100 + pipeline.concurrency
 
 
-async def test_stop_cancels_idle_lanes(audit) -> None:
+async def test_stop_cancels_idle_lanes(audit: Any) -> None:
     pipeline = EventPipeline(sink=RecordingSink(), audit=audit, queue_size=10, concurrency=4)
     await pipeline.start()
     tasks: list[Any] = list(pipeline._tasks)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from typing import Any
 
 import pytest
 
@@ -44,6 +45,6 @@ def audit(audit_stream: io.StringIO) -> AuditLogger:
 
 
 @pytest.fixture
-def repository(store, settings_factory, audit, clock) -> IncidentRepository:
+def repository(store: Any, settings_factory: Any, audit: Any, clock: Any) -> IncidentRepository:
     """Incident repository using the fake store and clock."""
     return IncidentRepository(store, settings_factory(), audit, clock=clock)

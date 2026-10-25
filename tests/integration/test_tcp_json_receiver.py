@@ -9,10 +9,11 @@ import logging.handlers
 from typing import Any
 
 import pytest
-from helpers import CollectingSink, audit_actions, wait_for_eof
 
 from opencanary_correlator.connectors.receivers.tcp_json import TCPJSONReceiver
 from opencanary_correlator.constants import LogType
+
+from .helpers import CollectingSink, audit_actions, wait_for_eof
 
 pytestmark = pytest.mark.integration
 
@@ -58,7 +59,9 @@ async def send(writer: asyncio.StreamWriter, payload: bytes) -> None:
 # --- Compatibility ----------------------------------------------------------
 
 
-async def test_accepts_payload_from_socket_json_handler(sink, audit, event_factory) -> None:
+async def test_accepts_payload_from_socket_json_handler(
+    sink: Any, audit: Any, event_factory: Any
+) -> None:
     receiver = await make_receiver(sink, audit)
     handler = SocketJSONHandler("127.0.0.1", receiver.bound_port)
     logger = logging.getLogger("tests.opencanary.socket")
@@ -81,7 +84,7 @@ async def test_accepts_payload_from_socket_json_handler(sink, audit, event_facto
     assert event.logdata == {"USERNAME": "admin", "PASSWORD": "hunter2"}
 
 
-async def test_accepts_unknown_logtypes_and_empty_hosts(sink, audit) -> None:
+async def test_accepts_unknown_logtypes_and_empty_hosts(sink: Any, audit: Any) -> None:
     receiver = await make_receiver(sink, audit)
     try:
         _reader, writer = await open_connection(receiver)
@@ -98,7 +101,9 @@ async def test_accepts_unknown_logtypes_and_empty_hosts(sink, audit) -> None:
     assert events[0].src_port == -1
 
 
-async def test_handles_batched_split_and_crlf_lines(sink, audit, event_factory) -> None:
+async def test_handles_batched_split_and_crlf_lines(
+    sink: Any, audit: Any, event_factory: Any
+) -> None:
     receiver = await make_receiver(sink, audit)
     first = json.dumps(event_factory(src_port=1001), sort_keys=True).encode()
     second = json.dumps(event_factory(src_port=1002), sort_keys=True).encode()
@@ -122,7 +127,7 @@ async def test_handles_batched_split_and_crlf_lines(sink, audit, event_factory) 
 
 
 async def test_canary_error_line_and_bad_payloads_do_not_close_connection(
-    sink, audit, audit_stream, event_factory
+    sink: Any, audit: Any, audit_stream: Any, event_factory: Any
 ) -> None:
     receiver = await make_receiver(sink, audit)
     try:
@@ -151,7 +156,7 @@ async def test_canary_error_line_and_bad_payloads_do_not_close_connection(
 # --- Hardening --------------------------------------------------------------
 
 
-async def test_oversized_line_closes_connection(sink, audit, audit_stream) -> None:
+async def test_oversized_line_closes_connection(sink: Any, audit: Any, audit_stream: Any) -> None:
     receiver = await make_receiver(sink, audit, max_line_bytes=256)
     try:
         reader, writer = await open_connection(receiver)
@@ -166,7 +171,9 @@ async def test_oversized_line_closes_connection(sink, audit, audit_stream) -> No
     assert sink.events == []
 
 
-async def test_partial_line_timeout_closes_stalled_connection(sink, audit, audit_stream) -> None:
+async def test_partial_line_timeout_closes_stalled_connection(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
     receiver = await make_receiver(sink, audit, partial_line_timeout=0.2)
     try:
         reader, writer = await open_connection(receiver)
@@ -180,7 +187,9 @@ async def test_partial_line_timeout_closes_stalled_connection(sink, audit, audit
     assert ("connection_closed", "partial_line_timeout") in audit_actions(audit_stream)
 
 
-async def test_silent_keepalive_connection_survives_timeout(sink, audit, event_factory) -> None:
+async def test_silent_keepalive_connection_survives_timeout(
+    sink: Any, audit: Any, event_factory: Any
+) -> None:
     receiver = await make_receiver(sink, audit, partial_line_timeout=0.2)
     try:
         _reader, writer = await open_connection(receiver)
@@ -195,7 +204,7 @@ async def test_silent_keepalive_connection_survives_timeout(sink, audit, event_f
     assert len(sink.events) == 1
 
 
-async def test_connection_limit_is_enforced(sink, audit, audit_stream) -> None:
+async def test_connection_limit_is_enforced(sink: Any, audit: Any, audit_stream: Any) -> None:
     receiver = await make_receiver(sink, audit, max_connections=1)
     try:
         first_reader, first_writer = await open_connection(receiver)
@@ -213,7 +222,9 @@ async def test_connection_limit_is_enforced(sink, audit, audit_stream) -> None:
     assert ("connection_rejected", "connection_limit") in audit_actions(audit_stream)
 
 
-async def test_rate_limited_events_are_not_delivered(sink, audit, audit_stream) -> None:
+async def test_rate_limited_events_are_not_delivered(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
     class DenyEvents:
         async def allow_connection(self, source_ip: str) -> bool:
             return True
@@ -236,13 +247,13 @@ async def test_rate_limited_events_are_not_delivered(sink, audit, audit_stream) 
     assert ("event_rate_limited", "") in audit_actions(audit_stream)
 
 
-async def test_queue_overflow_drops_events_instead_of_growing(sink, audit) -> None:
+async def test_queue_overflow_drops_events_instead_of_growing(sink: Any, audit: Any) -> None:
     class BlockingSink(CollectingSink):
         def __init__(self) -> None:
             super().__init__()
             self.release = asyncio.Event()
 
-        async def handle_event(self, event) -> None:
+        async def handle_event(self, event: Any) -> None:
             await self.release.wait()
             await super().handle_event(event)
 
@@ -262,7 +273,9 @@ async def test_queue_overflow_drops_events_instead_of_growing(sink, audit) -> No
         await receiver.stop()
 
 
-async def test_stats_track_accepted_and_connections(sink, audit, event_factory) -> None:
+async def test_stats_track_accepted_and_connections(
+    sink: Any, audit: Any, event_factory: Any
+) -> None:
     receiver = await make_receiver(sink, audit)
     try:
         _reader, writer = await open_connection(receiver)
@@ -278,7 +291,7 @@ async def test_stats_track_accepted_and_connections(sink, audit, event_factory) 
     assert receiver.stats.rejected == 0
 
 
-async def test_stop_is_idempotent(sink, audit) -> None:
+async def test_stop_is_idempotent(sink: Any, audit: Any) -> None:
     receiver = await make_receiver(sink, audit)
     await receiver.stop()
     await receiver.stop()

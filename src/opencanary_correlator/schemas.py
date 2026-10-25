@@ -1,6 +1,6 @@
 """Pydantic v2 models for OpenCanary events and correlated incidents.
 
-Compatibility rules encoded here (see ``docs/EXECPLAN-refactor.md``):
+Compatibility rules encoded here (see ``docs/internal/EXECPLAN-refactor.md``):
 
 * unknown fields are preserved (``extra="allow"``), never rejected;
 * ``src_host`` may be an empty string, a hostname or an IPv6 address;

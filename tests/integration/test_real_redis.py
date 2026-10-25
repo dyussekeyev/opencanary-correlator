@@ -19,13 +19,15 @@ import os
 import signal
 import sys
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from redis.asyncio import Redis
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
-from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
@@ -53,7 +55,8 @@ class RecordingDispatcher(BaseDispatcher):
     def __init__(self) -> None:
         self.incidents: list[Incident] = []
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+        assert isinstance(incident, Incident)
         self.incidents.append(incident)
         return DispatchResult(dispatcher=self.name, status="success")
 
@@ -85,18 +88,19 @@ async def cleanup_host(store: RedisStore, src_host: str) -> None:
 
 
 @pytest.fixture
-async def real_settings(settings_factory) -> Settings:
+async def real_settings(settings_factory: Any) -> Settings:
     """Settings pointing at the disposable database from the environment."""
-    return settings_factory(
+    settings: Settings = settings_factory(
         redis_url=REDIS_URL,
         syslog_enabled=False,
         health_port=None,
         rate_limit_events_per_minute=0,
     )
+    return settings
 
 
 @pytest.fixture
-async def replica_stores() -> list[RedisStore]:
+async def replica_stores() -> AsyncIterator[list[RedisStore]]:
     """Two independent connections, standing in for two replicas."""
     clients = [Redis.from_url(REDIS_URL, decode_responses=True) for _ in range(2)]
     stores = [RedisStore(client) for client in clients]
@@ -111,7 +115,7 @@ async def replica_stores() -> list[RedisStore]:
 
 
 async def test_duplicate_events_notify_once_across_replicas(
-    replica_stores, real_settings, event_factory
+    replica_stores: Any, real_settings: Any, event_factory: Any
 ) -> None:
     src_host = f"198.51.100.{uuid.uuid4().int % 250 + 1}"
     dispatchers = [RecordingDispatcher(), RecordingDispatcher()]
@@ -135,7 +139,7 @@ async def test_duplicate_events_notify_once_across_replicas(
 
 
 async def test_distinct_events_merge_into_one_incident(
-    replica_stores, real_settings, event_factory
+    replica_stores: Any, real_settings: Any, event_factory: Any
 ) -> None:
     src_host = f"203.0.113.{uuid.uuid4().int % 250 + 1}"
     dispatchers = [RecordingDispatcher(), RecordingDispatcher()]
@@ -163,9 +167,43 @@ async def test_distinct_events_merge_into_one_incident(
         await cleanup_host(replica_stores[0], src_host)
 
 
+async def test_1000_events_keep_the_incident_hash_small(
+    replica_stores: Any, real_settings: Any, event_factory: Any
+) -> None:
+    """Opt-in: a capped incident's real memory footprint stays flat as events grow."""
+    store = replica_stores[0]
+    src_host = f"192.0.2.{uuid.uuid4().int % 250 + 1}"
+    repository = IncidentRepository(store, real_settings, AuditLogger("test", stream=io.StringIO()))
+    try:
+        created: Incident | None = None
+        footprint_at_cap = 0
+        for port in range(1000):
+            event = CanaryEvent.model_validate(event_factory(src_host=src_host, src_port=port + 1))
+            result = await repository.record("ftp.login_attempt", event)
+            if result is not None:
+                created = result
+            if port + 1 == real_settings.max_stored_events:
+                assert created is not None
+                footprint_at_cap = await store.client.memory_usage(created.key)
+        assert created is not None
+
+        fields = await store.hgetall(created.key)
+        assert fields["events_count"] == "1000"
+        assert fields["events_truncated"] == "True"
+        assert len(fields["events_list"].split(",")) == real_settings.max_stored_events
+        # Once the cap is reached the hash must stop growing: 900 more events
+        # may only add the counter's digits, not another copy of the event list.
+        footprint_final = await store.client.memory_usage(created.key)
+        assert footprint_final <= footprint_at_cap * 1.1, (footprint_at_cap, footprint_final)
+    finally:
+        await cleanup_host(store, src_host)
+
+
 @pytest.mark.linux
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics required")
-async def test_sigterm_stops_the_cli_cleanly(replica_stores, free_tcp_port, tmp_path) -> None:
+async def test_sigterm_stops_the_cli_cleanly(
+    replica_stores: Any, free_tcp_port: Any, tmp_path: Any
+) -> None:
     assert replica_stores
     env = {
         **os.environ,

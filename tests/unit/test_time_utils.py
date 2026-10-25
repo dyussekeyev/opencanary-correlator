@@ -8,6 +8,7 @@ existing dashboard renders even when every other test is green.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -50,21 +51,21 @@ def test_current_time_offset_is_whole_seconds() -> None:
         (1.9, "1 second"),
     ],
 )
-def test_seconds_to_age_picks_the_largest_unit(seconds, expected) -> None:
+def test_seconds_to_age_picks_the_largest_unit(seconds: Any, expected: Any) -> None:
     assert time_utils.seconds_to_age(seconds) == expected
 
 
 @pytest.mark.parametrize("value", ["soon", None, object()])
-def test_seconds_to_age_reports_unusable_input(value) -> None:
+def test_seconds_to_age_reports_unusable_input(value: Any) -> None:
     assert time_utils.seconds_to_age(value) == "age error"
 
 
 @pytest.mark.parametrize("value", ["nope", None, "1e30"])
-def test_timestamp_age_reports_unusable_input(value) -> None:
+def test_timestamp_age_reports_unusable_input(value: Any) -> None:
     assert time_utils.timestamp_age(value) == "age error"
 
 
-def test_timestamp_age_measures_from_the_injected_now(monkeypatch) -> None:
+def test_timestamp_age_measures_from_the_injected_now(monkeypatch: Any) -> None:
     monkeypatch.setattr(time_utils, "utc_now", lambda: datetime.fromtimestamp(STAMP + 90, tz=UTC))
 
     assert time_utils.timestamp_age(STAMP) == "1 minute"
@@ -77,7 +78,7 @@ def test_timestamp_printable_matches_the_legacy_console_format() -> None:
 
 
 @pytest.mark.parametrize("value", ["nope", "1e30"])
-def test_timestamp_printable_falls_back_to_the_raw_value(value) -> None:
+def test_timestamp_printable_falls_back_to_the_raw_value(value: Any) -> None:
     assert time_utils.timestamp_printable(value) == value
 
 

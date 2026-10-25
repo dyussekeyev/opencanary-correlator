@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.incident import IncidentRepository
@@ -23,7 +24,9 @@ from opencanary_correlator.storage.queries import (
 )
 
 
-async def create_incident(store, settings_factory, audit, clock, event_factory, **overrides):
+async def create_incident(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any, **overrides: Any
+) -> Any:
     repository = IncidentRepository(store, settings_factory(), audit, clock=clock)
     event = CanaryEvent.model_validate(event_factory(**overrides))
     incident = await repository.record("ftp.login_attempt", event)
@@ -32,7 +35,7 @@ async def create_incident(store, settings_factory, audit, clock, event_factory, 
 
 
 async def test_incident_json_shape_matches_the_console(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
 
@@ -51,7 +54,7 @@ async def test_incident_json_shape_matches_the_console(
 
 
 async def test_incidents_can_be_filtered_by_node(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     await create_incident(store, settings_factory, audit, clock, event_factory, node_id="a")
     await create_incident(
@@ -64,7 +67,9 @@ async def test_incidents_can_be_filtered_by_node(
     assert "host" not in payloads[0]
 
 
-async def test_acknowledged_filters(store, settings_factory, audit, clock, event_factory) -> None:
+async def test_acknowledged_filters(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
 
     assert len(await get_unacknowledged_incidents(store)) == 1
@@ -82,7 +87,7 @@ async def test_acknowledged_filters(store, settings_factory, audit, clock, event
 
 
 async def test_events_are_capped_at_one_hundred(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
     fields = await store.hgetall(incident.key)
@@ -95,12 +100,12 @@ async def test_events_are_capped_at_one_hundred(
     assert payload["events_skipped"] == 50
 
 
-async def test_get_incident_returns_none_when_missing(store) -> None:
+async def test_get_incident_returns_none_when_missing(store: Any) -> None:
     assert await get_incident(store, "incident:ftplogin:nope:1") is None
 
 
 async def test_clear_incidents_removes_hashes_and_index(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
 
@@ -111,7 +116,7 @@ async def test_clear_incidents_removes_hashes_and_index(
     assert await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf") == []
 
 
-async def test_logs_are_bounded_and_newest_first(store) -> None:
+async def test_logs_are_bounded_and_newest_first(store: Any) -> None:
     for index in range(5):
         await write_log(store, f"line-{index}", max_entries=3)
 
@@ -119,7 +124,7 @@ async def test_logs_are_bounded_and_newest_first(store) -> None:
     assert await get_logs(store, limit=1) == ["line-4"]
 
 
-async def test_console_settings_round_trip(store) -> None:
+async def test_console_settings_round_trip(store: Any) -> None:
     assert await get_console_setting(store, "theme") is None
     assert await get_console_setting(store, "theme", "dark") == "dark"
 
@@ -128,7 +133,9 @@ async def test_console_settings_round_trip(store) -> None:
     assert await get_console_setting(store, "theme") == "light"
 
 
-async def test_device_queries(store, settings_factory, audit, clock, event_factory) -> None:
+async def test_device_queries(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
     assert await get_device(store, "canary-1") is None
     assert await should_notify(store, "canary-1") is True
@@ -147,7 +154,7 @@ async def test_device_queries(store, settings_factory, audit, clock, event_facto
 
 
 async def test_events_skipped_is_derived_from_the_exact_counter(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     """Storage is capped, so the skipped count must come from `events_count`."""
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
@@ -165,7 +172,7 @@ async def test_events_skipped_is_derived_from_the_exact_counter(
 
 
 async def test_incidents_without_the_counter_keep_the_legacy_skip_calculation(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
     fields = await store.hgetall(incident.key)
@@ -179,7 +186,7 @@ async def test_incidents_without_the_counter_keep_the_legacy_skip_calculation(
 
 
 async def test_logdata_is_truncated_for_the_console(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     incident = await create_incident(store, settings_factory, audit, clock, event_factory)
     fields = await store.hgetall(incident.key)

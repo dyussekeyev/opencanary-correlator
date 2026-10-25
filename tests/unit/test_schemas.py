@@ -25,7 +25,7 @@ RECEIVED_AT = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 # --- Accepted real-world payloads -------------------------------------------
 
 
-def test_accepts_payload_produced_by_sanitize_log(event_factory) -> None:
+def test_accepts_payload_produced_by_sanitize_log(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory())
 
     assert event.logtype is LogType.LOG_FTP_LOGIN_ATTEMPT
@@ -36,7 +36,7 @@ def test_accepts_payload_produced_by_sanitize_log(event_factory) -> None:
     assert event.resolved_time(RECEIVED_AT) == datetime(2026, 10, 24, 10, 0, tzinfo=UTC)
 
 
-def test_accepts_empty_hosts_and_canary_port_defaults(event_factory) -> None:
+def test_accepts_empty_hosts_and_canary_port_defaults(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(
         event_factory(src_host="", dst_host="", src_port=-1, dst_port=-1)
     )
@@ -50,7 +50,7 @@ def test_accepts_empty_hosts_and_canary_port_defaults(event_factory) -> None:
     "src_host",
     ["canary.internal", "fe80::1", "2001:db8::dead:beef", "10.0.0.5"],
 )
-def test_accepts_hostnames_and_ipv6(event_factory, src_host: str) -> None:
+def test_accepts_hostnames_and_ipv6(event_factory: Any, src_host: str) -> None:
     event = CanaryEvent.model_validate(event_factory(src_host=src_host))
 
     assert event.src_host == src_host
@@ -67,13 +67,13 @@ def test_missing_optional_fields_fall_back_to_legacy_defaults() -> None:
     assert event.logtype is LogType.LOG_BASE_MSG
 
 
-def test_unknown_fields_are_preserved(event_factory) -> None:
+def test_unknown_fields_are_preserved(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory(custom_field="kept", counter=3))
 
     assert event.model_extra == {"custom_field": "kept", "counter": 3}
 
 
-def test_unknown_logtype_is_accepted_but_flagged(event_factory) -> None:
+def test_unknown_logtype_is_accepted_but_flagged(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory(logtype=77777))
 
     assert event.logtype == 77777
@@ -98,7 +98,7 @@ def test_list_logdata_is_preserved_under_raw() -> None:
     assert event.logdata == {"raw": [1, "two"]}
 
 
-def test_absent_reported_dst_host_stays_none(event_factory) -> None:
+def test_absent_reported_dst_host_stays_none(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory())
 
     assert event.reported_dst_host is None
@@ -167,7 +167,7 @@ def test_hostile_payloads_are_rejected(payload: dict[str, Any]) -> None:
         CanaryEvent.model_validate(payload)
 
 
-def test_redacted_event_masks_captured_credentials(event_factory) -> None:
+def test_redacted_event_masks_captured_credentials(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory())
 
     assert event.redacted().logdata["PASSWORD"] == "***"
@@ -177,7 +177,7 @@ def test_redacted_event_masks_captured_credentials(event_factory) -> None:
 # --- Typed logdata accessors ------------------------------------------------
 
 
-def test_ftp_login_accessor_reads_captured_credentials(event_factory) -> None:
+def test_ftp_login_accessor_reads_captured_credentials(event_factory: Any) -> None:
     data = FtpLoginData.from_event(CanaryEvent.model_validate(event_factory()))
 
     assert data.USERNAME == "admin"

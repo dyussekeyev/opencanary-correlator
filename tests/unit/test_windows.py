@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from opencanary_correlator.core.windows import (
     DedupCache,
     DistinctSetWindow,
@@ -11,7 +13,7 @@ from opencanary_correlator.core.windows import (
 from opencanary_correlator.schemas import CanaryEvent
 
 
-async def test_dedup_accepts_a_fingerprint_once(store) -> None:
+async def test_dedup_accepts_a_fingerprint_once(store: Any) -> None:
     cache = DedupCache(store, ttl=60)
 
     assert await cache.first_seen("fingerprint") is True
@@ -19,14 +21,14 @@ async def test_dedup_accepts_a_fingerprint_once(store) -> None:
     assert await cache.first_seen("other") is True
 
 
-async def test_dedup_is_disabled_by_zero_ttl(store) -> None:
+async def test_dedup_is_disabled_by_zero_ttl(store: Any) -> None:
     cache = DedupCache(store, ttl=0)
 
     assert await cache.first_seen("fingerprint") is True
     assert await cache.first_seen("fingerprint") is True
 
 
-async def test_distinct_window_counts_unique_members(store) -> None:
+async def test_distinct_window_counts_unique_members(store: Any) -> None:
     window = DistinctSetWindow(store, "test:distinct", ttl=50)
 
     assert await window.add("21") == 1
@@ -39,7 +41,9 @@ async def test_distinct_window_counts_unique_members(store) -> None:
     assert await window.add("23") == 1
 
 
-async def test_distinct_window_ttl_is_not_refreshed_by_new_members(store, fake_redis) -> None:
+async def test_distinct_window_ttl_is_not_refreshed_by_new_members(
+    store: Any, fake_redis: Any
+) -> None:
     key = "test:distinct-fixed"
     window = DistinctSetWindow(store, key, ttl=50)
 
@@ -56,7 +60,7 @@ async def test_distinct_window_ttl_is_not_refreshed_by_new_members(store, fake_r
     assert 0 < remaining <= 5
 
 
-async def test_sliding_window_trims_entries_outside_the_horizon(store) -> None:
+async def test_sliding_window_trims_entries_outside_the_horizon(store: Any) -> None:
     window = SlidingWindow(store, "test:sliding", horizon=50)
 
     assert await window.add("a", timestamp=1000) == 1
@@ -65,7 +69,7 @@ async def test_sliding_window_trims_entries_outside_the_horizon(store) -> None:
     assert await window.add("d", timestamp=1120) == 1
 
 
-def test_fingerprint_is_stable_and_distinguishes_events(event_factory) -> None:
+def test_fingerprint_is_stable_and_distinguishes_events(event_factory: Any) -> None:
     event = CanaryEvent.model_validate(event_factory())
     same = CanaryEvent.model_validate(event_factory())
     other_port = CanaryEvent.model_validate(event_factory(src_port=5555))

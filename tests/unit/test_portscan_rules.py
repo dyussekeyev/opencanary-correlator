@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from opencanary_correlator.connectors.receivers._pipeline import ReceiverStats
 from opencanary_correlator.core.incident import IncidentRepository
@@ -15,18 +16,18 @@ from opencanary_correlator.storage import keys
 from opencanary_correlator.storage.redis_store import RedisStore
 
 
-def syn_event(event_factory, *, dst_port: int, **overrides) -> CanaryEvent:
+def syn_event(event_factory: Any, *, dst_port: int, **overrides: Any) -> CanaryEvent:
     return CanaryEvent.model_validate(
         event_factory(logtype=5001, dst_port=dst_port, logdata={}, **overrides)
     )
 
 
-def make_repository(store: RedisStore, settings, audit, clock) -> IncidentRepository:
+def make_repository(store: RedisStore, settings: Any, audit: Any, clock: Any) -> IncidentRepository:
     return IncidentRepository(store, settings, audit, clock=clock)
 
 
 async def test_host_portscan_fires_at_threshold_and_clears_window(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_host_threshold=3, scan_host_horizon=50)
     repository = make_repository(store, settings, audit, clock)
@@ -46,7 +47,7 @@ async def test_host_portscan_fires_at_threshold_and_clears_window(
 
 
 async def test_host_portscan_dedups_repeated_port(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_host_threshold=3)
     repository = make_repository(store, settings, audit, clock)
@@ -60,7 +61,7 @@ async def test_host_portscan_dedups_repeated_port(
 
 
 async def test_host_portscan_window_ttl_does_not_slide(
-    store, fake_redis, settings_factory, audit, clock, event_factory
+    store: Any, fake_redis: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_host_threshold=5, scan_host_horizon=50)
     repository = make_repository(store, settings, audit, clock)
@@ -77,7 +78,7 @@ async def test_host_portscan_window_ttl_does_not_slide(
 
 
 async def test_network_portscan_window_ttl_does_not_slide(
-    store, fake_redis, settings_factory, audit, clock, event_factory
+    store: Any, fake_redis: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_network_threshold=5, scan_network_horizon=50)
     repository = make_repository(store, settings, audit, clock)
@@ -96,7 +97,7 @@ async def test_network_portscan_window_ttl_does_not_slide(
 
 
 async def test_network_portscan_uses_reported_target(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_network_threshold=2, scan_network_horizon=3600)
     repository = make_repository(store, settings, audit, clock)
@@ -126,7 +127,7 @@ async def test_network_portscan_uses_reported_target(
 
 
 async def test_network_portscan_ignores_repeated_target(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(scan_network_threshold=2)
     repository = make_repository(store, settings, audit, clock)

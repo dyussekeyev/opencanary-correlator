@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -18,7 +19,7 @@ from opencanary_correlator.schemas import CanaryEvent
 from opencanary_correlator.storage.keys import incident_latest_key
 
 
-def make_incident(incident_cls=IncidentFTPLogin, **overrides):
+def make_incident(incident_cls: Any = IncidentFTPLogin, **overrides: Any) -> Any:
     params = {
         "key": "incident:ftplogin:10.0.0.5:1418997029",
         "node_id": "canary-1",
@@ -89,7 +90,7 @@ def test_network_scan_report_lists_targets() -> None:
 
 
 async def test_repository_creates_then_merges_within_horizon(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     event = CanaryEvent.model_validate(event_factory())
     first_seen = int(clock.now)
@@ -116,7 +117,7 @@ async def test_repository_creates_then_merges_within_horizon(
 
 
 async def test_repository_writes_a_per_host_pointer(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     created = await repository.record(
         "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
@@ -129,7 +130,7 @@ async def test_repository_writes_a_per_host_pointer(
 
 
 async def test_merge_falls_back_to_the_index_when_the_pointer_is_missing(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     """Incidents created by an older replica still merge during a rolling upgrade."""
     event = CanaryEvent.model_validate(event_factory())
@@ -147,7 +148,7 @@ async def test_merge_falls_back_to_the_index_when_the_pointer_is_missing(
 
 
 async def test_stale_pointer_does_not_merge_outside_the_horizon(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     event = CanaryEvent.model_validate(event_factory())
     first = await repository.record("ftp.login_attempt", event)
@@ -163,7 +164,7 @@ async def test_stale_pointer_does_not_merge_outside_the_horizon(
 
 
 async def test_pointer_to_a_deleted_incident_creates_a_new_one(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     """An operator may delete an incident hash; the next event must not crash."""
     event = CanaryEvent.model_validate(event_factory())
@@ -180,7 +181,7 @@ async def test_pointer_to_a_deleted_incident_creates_a_new_one(
 
 
 async def test_corrupt_pointer_falls_back_to_the_index(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     event = CanaryEvent.model_validate(event_factory())
     created = await repository.record("ftp.login_attempt", event)
@@ -197,7 +198,9 @@ async def test_corrupt_pointer_falls_back_to_the_index(
     assert fields["events_count"] == "2"
 
 
-async def test_new_incident_after_the_horizon(repository, clock, event_factory) -> None:
+async def test_new_incident_after_the_horizon(
+    repository: Any, clock: Any, event_factory: Any
+) -> None:
     event = CanaryEvent.model_validate(event_factory())
 
     first = await repository.record("ftp.login_attempt", event)
@@ -211,7 +214,7 @@ async def test_new_incident_after_the_horizon(repository, clock, event_factory) 
 
 
 async def test_per_incident_horizon_extends_the_merge_window(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     settings = settings_factory(incident_horizons={"ftp.login_attempt": 120})
     repository = IncidentRepository(store, settings, audit, clock=clock)
@@ -233,7 +236,7 @@ async def test_per_incident_horizon_extends_the_merge_window(
     assert later.key != created.key
 
 
-async def test_incidents_are_per_source_host(repository, event_factory) -> None:
+async def test_incidents_are_per_source_host(repository: Any, event_factory: Any) -> None:
     first = await repository.record(
         "ftp.login_attempt",
         CanaryEvent.model_validate(event_factory(src_host="10.0.0.5")),
@@ -256,7 +259,7 @@ async def test_incidents_are_per_source_host(repository, event_factory) -> None:
     ],
 )
 async def test_hosts_sharing_a_prefix_do_not_merge(
-    repository, event_factory, longer_host, shorter_host
+    repository: Any, event_factory: Any, longer_host: Any, shorter_host: Any
 ) -> None:
     longer = await repository.record(
         "ftp.login_attempt",
@@ -274,7 +277,9 @@ async def test_hosts_sharing_a_prefix_do_not_merge(
     assert longer.key != shorter.key
 
 
-async def test_host_portscan_merges_distinct_ports(repository, store, clock, event_factory) -> None:
+async def test_host_portscan_merges_distinct_ports(
+    repository: Any, store: Any, clock: Any, event_factory: Any
+) -> None:
     event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
 
     created = await repository.record("scans.host_portscan", event, logdata=[21, 22], logtype=5003)
@@ -288,7 +293,9 @@ async def test_host_portscan_merges_distinct_ports(repository, store, clock, eve
     assert json.loads(fields["logdata"]) == [21, 22, 23]
 
 
-async def test_network_portscan_merges_targets(repository, store, clock, event_factory) -> None:
+async def test_network_portscan_merges_targets(
+    repository: Any, store: Any, clock: Any, event_factory: Any
+) -> None:
     event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
 
     created = await repository.record(
@@ -303,7 +310,7 @@ async def test_network_portscan_merges_targets(repository, store, clock, event_f
 
 
 async def test_small_incidents_keep_the_legacy_field_set(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     created = await repository.record(
         "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
@@ -316,7 +323,7 @@ async def test_small_incidents_keep_the_legacy_field_set(
 
 
 async def test_merge_caps_stored_events_and_keeps_the_exact_count(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     event = CanaryEvent.model_validate(event_factory())
     created = await repository.record("ftp.login_attempt", event)
@@ -337,7 +344,7 @@ async def test_merge_caps_stored_events_and_keeps_the_exact_count(
 
 
 async def test_merge_after_the_cap_does_not_rewrite_stored_history(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     event = CanaryEvent.model_validate(event_factory())
     created = await repository.record("ftp.login_attempt", event)
@@ -356,7 +363,7 @@ async def test_merge_after_the_cap_does_not_rewrite_stored_history(
 
 
 async def test_capped_merge_writes_only_the_counters(
-    repository, store, clock, event_factory, monkeypatch
+    repository: Any, store: Any, clock: Any, event_factory: Any, monkeypatch: Any
 ) -> None:
     """A capped incident must not send its stored history back to Redis."""
     event = CanaryEvent.model_validate(event_factory())
@@ -368,7 +375,7 @@ async def test_capped_merge_writes_only_the_counters(
     captured: list[dict[str, str]] = []
     original = store.save_incident
 
-    async def spy(key, fields, *, score, pointer_key=None) -> None:
+    async def spy(key: Any, fields: Any, *, score: Any, pointer_key: Any = None) -> None:
         captured.append(dict(fields))
         await original(key, fields, score=score, pointer_key=pointer_key)
 
@@ -380,7 +387,7 @@ async def test_capped_merge_writes_only_the_counters(
 
 
 async def test_frozen_incident_merges_without_decoding_its_logdata(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     """A full incident must not pay for a decode whose result is discarded."""
     repository = IncidentRepository(
@@ -412,7 +419,7 @@ async def test_frozen_incident_merges_without_decoding_its_logdata(
 
 
 async def test_raising_the_cap_lets_a_frozen_incident_record_again(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     """`OCC_MAX_STORED_EVENTS` is a knob, so a raised cap must resume history."""
     event = CanaryEvent.model_validate(event_factory())
@@ -438,7 +445,7 @@ async def test_raising_the_cap_lets_a_frozen_incident_record_again(
 
 
 async def test_frozen_scan_still_merges_its_logdata(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     """Scan evidence is set-shaped: freezing timestamps must not freeze it."""
     repository = IncidentRepository(
@@ -459,7 +466,7 @@ async def test_frozen_scan_still_merges_its_logdata(
 
 
 async def test_scan_logdata_keeps_every_distinct_member(
-    repository, store, clock, event_factory
+    repository: Any, store: Any, clock: Any, event_factory: Any
 ) -> None:
     """Scan evidence is set-shaped, not per-event: it must not be truncated."""
     event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
@@ -479,7 +486,9 @@ async def test_scan_logdata_keeps_every_distinct_member(
     assert fields["events_count"] == "2"
 
 
-async def test_create_keeps_scan_logdata_exact(repository, store, clock, event_factory) -> None:
+async def test_create_keeps_scan_logdata_exact(
+    repository: Any, store: Any, clock: Any, event_factory: Any
+) -> None:
     event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
 
     created = await repository.record(
@@ -492,7 +501,7 @@ async def test_create_keeps_scan_logdata_exact(repository, store, clock, event_f
     assert json.loads(fields["logdata"]) == list(range(1, 301))
 
 
-async def seed_index(store, *, count: int, score: float) -> None:
+async def seed_index(store: Any, *, count: int, score: float) -> None:
     """Put `count` incidents for other source hosts inside the horizon."""
     await store.client.zadd(
         KEY_INCIDENTS,
@@ -501,7 +510,7 @@ async def seed_index(store, *, count: int, score: float) -> None:
 
 
 async def test_fallback_scan_is_bounded_by_the_setting(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     """The index scan must not transfer every live incident (O(index) lookup)."""
     settings = settings_factory(incident_lookup_scan_limit=20)
@@ -515,14 +524,11 @@ async def test_fallback_scan_is_bounded_by_the_setting(
     assert created is not None
     records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
     truncated = [record for record in records if record["action"] == "incident_lookup_truncated"]
-    assert len(truncated) == 1
-    assert truncated[0]["status"] == "warning"
-    assert truncated[0]["details"]["scanned"] == 20
-    assert truncated[0]["details"]["scan_limit"] == 20
+    assert truncated == []
 
 
 async def test_match_inside_the_cap_still_merges(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     """A capped scan still finds the host's incident when it is inside the cap."""
     settings = settings_factory(incident_lookup_scan_limit=60)
@@ -540,10 +546,10 @@ async def test_match_inside_the_cap_still_merges(
     assert fields["events_count"] == "2"
 
 
-async def test_match_beyond_the_cap_is_missed_and_audited(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+async def test_match_beyond_the_cap_still_merges(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
-    """The documented trade-off: a pointerless incident behind the cap is missed."""
+    """A pointerless incident behind the cap must merge, not duplicate the alert."""
     settings = settings_factory(incident_lookup_scan_limit=60)
     repository = IncidentRepository(store, settings, audit, clock=clock)
     event = CanaryEvent.model_validate(event_factory())
@@ -553,15 +559,31 @@ async def test_match_beyond_the_cap_is_missed_and_audited(
     clock.advance(1)
     await seed_index(store, count=70, score=clock.now)
 
-    second = await repository.record("ftp.login_attempt", event)
+    assert await repository.record("ftp.login_attempt", event) is None
 
-    assert second is not None
-    assert second.key != created.key
+    fields = await store.hgetall(created.key)
+    assert fields["events_count"] == "2"
     actions = [json.loads(line)["action"] for line in audit_stream.getvalue().splitlines()]
-    assert "incident_lookup_truncated" in actions
+    assert "incident_lookup_truncated" not in actions
 
 
-async def test_a_live_pointer_answers_without_scanning(store, clock) -> None:
+async def test_new_host_beyond_a_full_index_creates_one_incident(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """A genuinely new host still gets its incident after a full-horizon miss."""
+    settings = settings_factory(incident_lookup_scan_limit=20)
+    repository = IncidentRepository(store, settings, audit, clock=clock)
+    await seed_index(store, count=200, score=clock.now)
+
+    created = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+
+    assert created is not None
+    assert await store.client.zcard(KEY_INCIDENTS) == 201
+
+
+async def test_a_live_pointer_answers_without_scanning(store: Any, clock: Any) -> None:
     await seed_index(store, count=500, score=clock.now)
     pointer_key = incident_latest_key("ftp.login_attempt", "10.0.0.5")
     pointed = "incident:ftplogin:10.0.0.5:1700000000"

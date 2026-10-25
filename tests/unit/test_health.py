@@ -9,6 +9,7 @@ import pytest
 
 from opencanary_correlator import metrics
 from opencanary_correlator.config import DEFAULT_HEALTH_HOST
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -30,7 +31,7 @@ async def http_get(port: int, path: str) -> bytes:
     return data
 
 
-async def start_server(store) -> HealthServer:
+async def start_server(store: Any) -> HealthServer:
     server = HealthServer(store, host="127.0.0.1", port=0)
     await server.start()
     return server
@@ -48,7 +49,7 @@ class DummyListener:
         return None
 
 
-async def test_health_server_defaults_to_all_interfaces(monkeypatch, fake_redis) -> None:
+async def test_health_server_defaults_to_all_interfaces(monkeypatch: Any, fake_redis: Any) -> None:
     captured: dict[str, object] = {}
 
     async def fake_start_server(
@@ -65,7 +66,7 @@ async def test_health_server_defaults_to_all_interfaces(monkeypatch, fake_redis)
     assert captured == {"host": DEFAULT_HEALTH_HOST, "port": 8080}
 
 
-async def test_health_server_binds_the_configured_host(monkeypatch, fake_redis) -> None:
+async def test_health_server_binds_the_configured_host(monkeypatch: Any, fake_redis: Any) -> None:
     captured: dict[str, object] = {}
 
     async def fake_start_server(
@@ -82,7 +83,7 @@ async def test_health_server_binds_the_configured_host(monkeypatch, fake_redis) 
     assert captured == {"host": "127.0.0.1", "port": 9090}
 
 
-async def test_healthz_reports_redis_ok(fake_redis) -> None:
+async def test_healthz_reports_redis_ok(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/healthz")
@@ -140,7 +141,7 @@ async def test_metrics_query_string_is_served() -> None:
     assert b"opencanary_events_total" in response
 
 
-async def test_unknown_path_returns_404(fake_redis) -> None:
+async def test_unknown_path_returns_404(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/unknown")
@@ -162,7 +163,7 @@ async def test_query_string_still_pings_redis(path: str) -> None:
     assert b'"status": "degraded"' in response
 
 
-async def test_query_string_keeps_healthy_response(fake_redis) -> None:
+async def test_query_string_keeps_healthy_response(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/healthz?x=1")
@@ -176,7 +177,7 @@ async def test_query_string_keeps_healthy_response(fake_redis) -> None:
 @pytest.mark.parametrize(
     "path", ["/healthzfoo", "/readyzbar", "/healthz/", "/metricsfoo", "/metrics/"]
 )
-async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis) -> None:
+async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, path)
@@ -186,7 +187,7 @@ async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis) -> No
     assert response.startswith(b"HTTP/1.1 404 Not Found")
 
 
-async def test_malformed_absolute_target_returns_404(fake_redis) -> None:
+async def test_malformed_absolute_target_returns_404(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "http://[::1")
@@ -196,7 +197,38 @@ async def test_malformed_absolute_target_returns_404(fake_redis) -> None:
     assert response.startswith(b"HTTP/1.1 404 Not Found")
 
 
-async def test_stop_is_idempotent(fake_redis) -> None:
+async def test_stop_is_idempotent(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     await server.stop()
     await server.stop()
+
+
+@pytest.mark.parametrize(
+    ("networks", "expected"),
+    [
+        (("127.0.0.1/32",), b"HTTP/1.1 200 OK"),
+        (("::1/128",), b"HTTP/1.1 403 Forbidden"),
+        (("10.0.0.0/8",), b"HTTP/1.1 403 Forbidden"),
+    ],
+)
+async def test_health_allowlist_gates_metrics_and_probes(
+    networks: tuple[str, ...], expected: bytes, fake_redis: Any
+) -> None:
+    server = HealthServer(
+        RedisStore(fake_redis),
+        host="127.0.0.1",
+        port=0,
+        allowed_networks=parse_allowed_networks(networks),
+    )
+    await server.start()
+    try:
+        metrics_response = await http_get(server.bound_port, "/metrics")
+        probe_response = await http_get(server.bound_port, "/healthz")
+    finally:
+        await server.stop()
+
+    assert metrics_response.startswith(expected)
+    assert probe_response.startswith(expected)
+    if expected.endswith(b"Forbidden"):
+        for response in (metrics_response, probe_response):
+            assert response.endswith(b'{"error": "forbidden"}')

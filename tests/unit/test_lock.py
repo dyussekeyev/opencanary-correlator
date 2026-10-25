@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from opencanary_correlator.storage.redis_store import RedisStore
 
 
-async def test_lock_release_removes_its_own_token(store) -> None:
+async def test_lock_release_removes_its_own_token(store: Any) -> None:
     async with store.lock("lock") as acquired:
         assert acquired
         assert await store.get_value("lock") is not None
@@ -13,7 +15,7 @@ async def test_lock_release_removes_its_own_token(store) -> None:
     assert await store.get_value("lock") is None
 
 
-async def test_lock_release_preserves_a_new_owner(store) -> None:
+async def test_lock_release_preserves_a_new_owner(store: Any) -> None:
     async with store.lock("lock") as acquired:
         assert acquired
         await store.set_value("lock", "new-owner")
@@ -21,7 +23,7 @@ async def test_lock_release_preserves_a_new_owner(store) -> None:
     assert await store.get_value("lock") == "new-owner"
 
 
-async def test_lock_release_with_a_stale_token_keeps_the_key(store) -> None:
+async def test_lock_release_with_a_stale_token_keeps_the_key(store: Any) -> None:
     """A replica whose TTL expired must never delete the current owner's lock."""
     await store.set_value("lock", "current-owner")
 
@@ -31,16 +33,16 @@ async def test_lock_release_with_a_stale_token_keeps_the_key(store) -> None:
     assert await store.get_value("lock") == "current-owner"
 
 
-async def test_lock_release_is_a_single_script_call(store, fake_redis) -> None:
+async def test_lock_release_is_a_single_script_call(store: Any, fake_redis: Any) -> None:
     """Compare-and-delete is one script, not WATCH/GET/MULTI/DEL/EXEC."""
     calls: list[str] = []
     original_evalsha = fake_redis.evalsha
 
     async def counting_evalsha(*args: object, **kwargs: object) -> object:
         calls.append("evalsha")
-        return await original_evalsha(*args, **kwargs)  # type: ignore[arg-type]
+        return await original_evalsha(*args, **kwargs)
 
-    fake_redis.evalsha = counting_evalsha  # type: ignore[method-assign]
+    fake_redis.evalsha = counting_evalsha
     racing_store = RedisStore(fake_redis)
 
     async def take_and_release() -> None:

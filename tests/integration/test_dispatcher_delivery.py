@@ -64,21 +64,18 @@ class MockHTTPServer:
             body = await reader.readexactly(int(headers.get("content-length", "0")))
             self.requests.append(SimpleNamespace(line=request_line, headers=headers, body=body))
             status, extra = self._responses[min(len(self.requests) - 1, len(self._responses) - 1)]
-            headers = "".join(f"{name}: {value}\r\n" for name, value in extra.items())
+            response_headers = "".join(f"{name}: {value}\r\n" for name, value in extra.items())
             if status == 204:
                 # A 204 response must not carry a body.
-                writer.write(
-                    f"HTTP/1.1 204 {_REASONS[204]}\r\n{headers}Connection: close\r\n\r\n".encode(
-                        "latin-1"
-                    )
-                )
+                raw = f"HTTP/1.1 204 {_REASONS[204]}\r\n{response_headers}Connection: close\r\n\r\n"
+                writer.write(raw.encode("latin-1"))
             else:
                 payload = b'{"ok": true}'
                 raw = (
                     f"HTTP/1.1 {status} {_REASONS[status]}\r\n"
                     "Content-Type: application/json\r\n"
                     f"Content-Length: {len(payload)}\r\n"
-                    f"{headers}Connection: close\r\n\r\n"
+                    f"{response_headers}Connection: close\r\n\r\n"
                 )
                 writer.write(raw.encode("latin-1") + payload)
             await writer.drain()
@@ -187,7 +184,7 @@ class Delays:
         await asyncio.sleep(0)
 
 
-async def test_webhook_delivers_over_a_real_socket(incident_factory) -> None:
+async def test_webhook_delivers_over_a_real_socket(incident_factory: Any) -> None:
     async with MockHTTPServer([(200, {})]) as server:
         dispatcher = WebhookDispatcher(url=server.url("/siem"))
         try:
@@ -204,7 +201,7 @@ async def test_webhook_delivers_over_a_real_socket(incident_factory) -> None:
     assert "FTP Login Attempt" in payload["title"]
 
 
-async def test_webhook_retries_server_errors_with_backoff(incident_factory) -> None:
+async def test_webhook_retries_server_errors_with_backoff(incident_factory: Any) -> None:
     delays = Delays()
     async with MockHTTPServer([(503, {}), (500, {}), (200, {})]) as server:
         dispatcher = WebhookDispatcher(
@@ -222,7 +219,7 @@ async def test_webhook_retries_server_errors_with_backoff(incident_factory) -> N
     assert delays.values == [0.1, 0.2]
 
 
-async def test_webhook_honours_retry_after(incident_factory) -> None:
+async def test_webhook_honours_retry_after(incident_factory: Any) -> None:
     delays = Delays()
     async with MockHTTPServer([(429, {"Retry-After": "2"}), (200, {})]) as server:
         dispatcher = WebhookDispatcher(url=server.url(), retry=no_jitter_policy(), sleep=delays)
@@ -235,7 +232,7 @@ async def test_webhook_honours_retry_after(incident_factory) -> None:
     assert delays.values == [2.0]
 
 
-async def test_webhook_does_not_retry_client_errors(incident_factory) -> None:
+async def test_webhook_does_not_retry_client_errors(incident_factory: Any) -> None:
     delays = Delays()
     async with MockHTTPServer([(400, {})]) as server:
         dispatcher = WebhookDispatcher(url=server.url(), retry=no_jitter_policy(), sleep=delays)
@@ -250,7 +247,9 @@ async def test_webhook_does_not_retry_client_errors(incident_factory) -> None:
     assert delays.values == []
 
 
-async def test_circuit_breaker_stops_calls_after_repeated_failures(incident_factory, store) -> None:
+async def test_circuit_breaker_stops_calls_after_repeated_failures(
+    incident_factory: Any, store: Any
+) -> None:
     async with MockHTTPServer([(503, {})]) as server:
         breaker = CircuitBreaker(store, "webhook", failure_threshold=1, cooldown=60)
         dispatcher = WebhookDispatcher(
@@ -270,7 +269,7 @@ async def test_circuit_breaker_stops_calls_after_repeated_failures(incident_fact
     assert len(server.requests) == 1
 
 
-async def test_circuit_breaker_is_scoped_to_one_endpoint(incident_factory, store) -> None:
+async def test_circuit_breaker_is_scoped_to_one_endpoint(incident_factory: Any, store: Any) -> None:
     async with (
         MockHTTPServer([(503, {})]) as dead,
         MockHTTPServer([(200, {})]) as alive,
@@ -305,7 +304,7 @@ async def test_circuit_breaker_is_scoped_to_one_endpoint(incident_factory, store
     assert len(alive.requests) == 1
 
 
-async def test_slack_and_discord_use_short_reports_over_http(incident_factory) -> None:
+async def test_slack_and_discord_use_short_reports_over_http(incident_factory: Any) -> None:
     incident = incident_factory()
     async with MockHTTPServer([(200, {}), (200, {})]) as server:
         slack = SlackDispatcher(url=server.url("/slack"))
@@ -325,7 +324,7 @@ async def test_slack_and_discord_use_short_reports_over_http(incident_factory) -
     assert "FTP Login Attempt" in discord_payload["content"]
 
 
-async def test_discord_accepts_204_from_a_real_server(incident_factory) -> None:
+async def test_discord_accepts_204_from_a_real_server(incident_factory: Any) -> None:
     async with MockHTTPServer([(204, {})]) as server:
         dispatcher = DiscordDispatcher(url=server.url("/discord"))
         try:
@@ -366,7 +365,7 @@ async def test_discord_switches_to_embed_for_long_reports() -> None:
     assert len(payload["embeds"][0]["description"]) == 4096
 
 
-async def test_smtp_delivers_through_a_real_server(incident_factory) -> None:
+async def test_smtp_delivers_through_a_real_server(incident_factory: Any) -> None:
     async with MockSMTPServer() as server:
         dispatcher = SmtpDispatcher(
             host="127.0.0.1",

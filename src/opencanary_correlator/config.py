@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal, Self
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.constants import INCIDENT_KEY_PREFIX, MAX_EVENT_COUNT
 
 _logger = logging.getLogger(__name__)
@@ -28,7 +30,12 @@ CommaSeparated = Annotated[list[str], NoDecode]
 #: Interface the probe listener binds to when nothing is configured. The wildcard
 #: is deliberate: Kubernetes probes and the Docker bridge arrive from another
 #: address, so a loopback default would silently break them.
+_LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "127.0.0.1", "::1"})
+_TELEGRAM_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
 DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
+
+#: Peers allowed to read the health and metrics endpoints when nothing is configured.
+DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 
 #: Legacy `.conf` key -> :class:`Settings` field.
 LEGACY_KEY_MAP: Final[dict[str, str]] = {
@@ -103,6 +110,13 @@ class Settings(BaseSettings):
     max_line_bytes: int = Field(default=65536, ge=1024, le=10 * 1024 * 1024)
     partial_line_timeout: float = Field(default=30.0, gt=0.0, le=3600.0)
     max_connections: int = Field(default=1000, ge=1, le=100_000)
+    receiver_allowed_ips: CommaSeparated = Field(
+        default_factory=list,
+        description=(
+            "Comma-separated CIDRs or addresses allowed to send events to the receivers. "
+            "Empty allows every peer."
+        ),
+    )
     event_queue_size: int = Field(default=10_000, ge=1, le=1_000_000)
     event_concurrency: int = Field(
         default=8,
@@ -181,6 +195,13 @@ class Settings(BaseSettings):
     # pod or the Docker bridge. Set 127.0.0.1 (or ::1) to keep the unauthenticated
     # listener on loopback and reach it through a sidecar or `docker exec`.
     health_host: str = Field(default=DEFAULT_HEALTH_HOST, max_length=253)
+    health_allowed_ips: CommaSeparated = Field(
+        default_factory=lambda: list(DEFAULT_HEALTH_ALLOWED_IPS),
+        description=(
+            "Comma-separated CIDRs or addresses allowed to read /healthz, /readyz and "
+            "/metrics. Defaults to loopback; an empty value also falls back to loopback."
+        ),
+    )
 
     @field_validator(
         "webhook_urls",
@@ -188,6 +209,8 @@ class Settings(BaseSettings):
         "discord_webhooks",
         "telegram_chat_ids",
         "smtp_to",
+        "receiver_allowed_ips",
+        "health_allowed_ips",
         mode="before",
     )
     @classmethod
@@ -211,7 +234,35 @@ class Settings(BaseSettings):
             scheme = urlparse(url).scheme
             if scheme not in {"http", "https"}:
                 raise ValueError(f"webhook URL must be http(s): {url!r}")
+            # Plain http leaves the payload (incident data, sometimes tokens in
+            # the URL path) readable on the wire; only loopback may use it.
+            if scheme == "http" and urlparse(url).hostname not in _LOOPBACK_HOSTS:
+                raise ValueError(f"webhook URL must use https unless it is loopback: {url!r}")
         return value
+
+    @field_validator("telegram_token")
+    @classmethod
+    def _validate_telegram_token(cls, value: SecretStr | None) -> SecretStr | None:
+        # Telegram tokens are "<bot id>:<secret>". The token is embedded in the
+        # request URL, so a malformed value must never reach the dispatcher.
+        if value is not None and not _TELEGRAM_TOKEN_RE.fullmatch(value.get_secret_value()):
+            raise ValueError("telegram_token must look like '<digits>:<secret>'")
+        return value
+
+    @field_validator("receiver_allowed_ips", "health_allowed_ips")
+    @classmethod
+    def _validate_allowed_ips(cls, value: list[str]) -> list[str]:
+        # Fail at startup on a bad entry: silently dropping it would widen or
+        # narrow the allowlist without anyone noticing.
+        parse_allowed_networks(value)
+        return value
+
+    @field_validator("health_allowed_ips")
+    @classmethod
+    def _health_allowlist_never_open(cls, value: list[str]) -> list[str]:
+        # An empty allowlist means "accept everyone" for receivers, but the health
+        # endpoint must never be open by accident: an empty value means loopback.
+        return value or list(DEFAULT_HEALTH_ALLOWED_IPS)
 
     @field_validator("incident_horizons", mode="before")
     @classmethod

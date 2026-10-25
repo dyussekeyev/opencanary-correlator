@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -15,14 +16,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_REDIS_URL = "redis://localhost:6379/0"
 
 
-def test_redis_url_is_required(monkeypatch) -> None:
+def test_redis_url_is_required(monkeypatch: Any) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
-def test_reads_values_from_environment(monkeypatch) -> None:
+def test_reads_values_from_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "rediss://redis.example:6380/1")
     monkeypatch.setenv("OCC_TCP_PORT", "1515")
     monkeypatch.setenv("OCC_LOG_LEVEL", "debug")
@@ -36,13 +37,13 @@ def test_reads_values_from_environment(monkeypatch) -> None:
     assert settings.webhook_urls == ["https://siem.example/hook", "https://backup.example/hook"]
 
 
-def test_accepts_json_encoded_lists(settings_factory) -> None:
+def test_accepts_json_encoded_lists(settings_factory: Any) -> None:
     settings = settings_factory(slack_webhooks='["https://hooks.slack.com/services/a"]')
 
     assert settings.slack_webhooks == ["https://hooks.slack.com/services/a"]
 
 
-def test_empty_comma_separated_values_become_empty_lists(settings_factory) -> None:
+def test_empty_comma_separated_values_become_empty_lists(settings_factory: Any) -> None:
     settings = settings_factory(discord_webhooks="", smtp_to="   ")
 
     assert settings.discord_webhooks == []
@@ -56,23 +57,41 @@ def test_empty_comma_separated_values_become_empty_lists(settings_factory) -> No
         pytest.param({"tcp_port": 0}, id="port-zero"),
         pytest.param({"tcp_port": 70000}, id="port-too-large"),
         pytest.param({"webhook_urls": ["ftp://siem.example"]}, id="webhook-not-http"),
+        pytest.param({"webhook_urls": ["http://siem.example/hook"]}, id="webhook-plain-http"),
+        pytest.param({"slack_webhooks": ["http://hooks.example/x"]}, id="slack-plain-http"),
+        pytest.param({"discord_webhooks": ["http://discord.example/x"]}, id="discord-plain-http"),
+        pytest.param({"telegram_token": "no-colon-token"}, id="telegram-bad-token"),
+        pytest.param({"telegram_token": "abc:secret"}, id="telegram-non-numeric-bot-id"),
         pytest.param({"smtp_from": "not-an-address"}, id="bad-sender"),
         pytest.param({"max_line_bytes": 10}, id="line-limit-too-small"),
         pytest.param({"event_concurrency": 0}, id="no-consumer-lanes"),
         pytest.param({"event_concurrency": 65}, id="too-many-lanes"),
     ],
 )
-def test_invalid_settings_are_rejected(settings_factory, overrides: dict) -> None:
+def test_invalid_settings_are_rejected(settings_factory: Any, overrides: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         settings_factory(**overrides)
 
 
-def test_event_concurrency_defaults_to_eight_lanes(settings_factory) -> None:
+def test_loopback_webhooks_may_use_plain_http(settings_factory: Any) -> None:
+    settings = settings_factory(webhook_urls=["http://127.0.0.1:9000/hook"])
+
+    assert settings.webhook_urls == ["http://127.0.0.1:9000/hook"]
+
+
+def test_valid_telegram_token_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(telegram_token="123456:AA-bb_cc")
+
+    assert settings.telegram_token is not None
+    assert settings.telegram_token.get_secret_value() == "123456:AA-bb_cc"
+
+
+def test_event_concurrency_defaults_to_eight_lanes(settings_factory: Any) -> None:
     assert settings_factory().event_concurrency == 8
     assert settings_factory(event_concurrency=1).event_concurrency == 1
 
 
-def test_secrets_never_appear_in_repr(settings_factory) -> None:
+def test_secrets_never_appear_in_repr(settings_factory: Any) -> None:
     settings = settings_factory(
         telegram_token="123456:telegram-secret",
         smtp_password="smtp-secret",
@@ -95,7 +114,7 @@ def test_env_example_documents_every_setting() -> None:
     assert documented == set(Settings.model_fields)
 
 
-def test_per_incident_horizons_are_read_from_the_environment(monkeypatch) -> None:
+def test_per_incident_horizons_are_read_from_the_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_INCIDENT_HORIZON", "60")
     monkeypatch.setenv(
@@ -119,23 +138,23 @@ def test_per_incident_horizons_are_read_from_the_environment(monkeypatch) -> Non
         pytest.param("not-json", id="malformed-json"),
     ],
 )
-def test_invalid_incident_horizons_are_rejected(settings_factory, value) -> None:
+def test_invalid_incident_horizons_are_rejected(settings_factory: Any, value: Any) -> None:
     with pytest.raises(ValidationError):
         settings_factory(incident_horizons=value)
 
 
 @pytest.mark.parametrize("value", [0, "0", "00", "+0", ""])
-def test_health_port_zero_or_empty_disables_the_endpoint(settings_factory, value) -> None:
+def test_health_port_zero_or_empty_disables_the_endpoint(settings_factory: Any, value: Any) -> None:
     settings = settings_factory(health_port=value)
 
     assert settings.health_port is None
 
 
-def test_health_port_defaults_to_8080(settings_factory) -> None:
+def test_health_port_defaults_to_8080(settings_factory: Any) -> None:
     assert settings_factory().health_port == 8080
 
 
-def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch) -> None:
+def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_HEALTH_PORT", "9090")
 
@@ -143,19 +162,44 @@ def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch) -> N
 
 
 @pytest.mark.parametrize("value", ["0", "00", " 0 ", ""])
-def test_health_port_disabled_from_the_environment(monkeypatch, value: str) -> None:
+def test_health_port_disabled_from_the_environment(monkeypatch: Any, value: str) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_HEALTH_PORT", value)
 
     assert Settings(_env_file=None).health_port is None
 
 
-def test_health_host_defaults_to_all_interfaces(settings_factory) -> None:
+def test_health_allowed_ips_default_to_loopback(settings_factory: Any) -> None:
+    assert settings_factory().health_allowed_ips == ["127.0.0.1/32", "::1/128"]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_health_allowed_ips_fall_back_to_loopback(settings_factory: Any, value: str) -> None:
+    assert settings_factory(health_allowed_ips=value).health_allowed_ips == [
+        "127.0.0.1/32",
+        "::1/128",
+    ]
+
+
+def test_health_allowed_ips_reads_from_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_ALLOWED_IPS", "10.0.0.0/8, 192.0.2.7")
+
+    assert Settings(_env_file=None).health_allowed_ips == ["10.0.0.0/8", "192.0.2.7"]
+
+
+@pytest.mark.parametrize("value", ["10.0.0.0/33", "not-an-address"])
+def test_invalid_health_allowed_ips_are_rejected(settings_factory: Any, value: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(health_allowed_ips=value)
+
+
+def test_health_host_defaults_to_all_interfaces(settings_factory: Any) -> None:
     assert settings_factory().health_host == DEFAULT_HEALTH_HOST
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
-def test_health_host_reads_a_custom_value_from_the_environment(monkeypatch, host: str) -> None:
+def test_health_host_reads_a_custom_value_from_the_environment(monkeypatch: Any, host: str) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_HEALTH_HOST", f"  {host}  ")
 
@@ -163,21 +207,21 @@ def test_health_host_reads_a_custom_value_from_the_environment(monkeypatch, host
 
 
 @pytest.mark.parametrize("value", ["", "   "])
-def test_blank_health_host_binds_every_interface(monkeypatch, value: str) -> None:
+def test_blank_health_host_binds_every_interface(monkeypatch: Any, value: str) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_HEALTH_HOST", value)
 
     assert Settings(_env_file=None).health_host == DEFAULT_HEALTH_HOST
 
 
-def test_empty_incident_horizons_are_allowed(settings_factory) -> None:
+def test_empty_incident_horizons_are_allowed(settings_factory: Any) -> None:
     settings = settings_factory(incident_horizons={})
 
     assert settings.incident_horizons == {}
     assert settings.horizon_for("ftp.login_attempt") == settings.incident_horizon
 
 
-def test_smtp_tls_modes_are_mutually_exclusive(settings_factory) -> None:
+def test_smtp_tls_modes_are_mutually_exclusive(settings_factory: Any) -> None:
     settings = settings_factory(smtp_starttls=False, smtp_use_tls=True)
 
     assert settings.smtp_use_tls is True
@@ -261,7 +305,7 @@ def test_legacy_json_is_imported(tmp_path: Path) -> None:
     assert not hasattr(settings, "twilio_sid")
 
 
-def test_legacy_importer_logs_dropped_keys(tmp_path: Path, caplog) -> None:
+def test_legacy_importer_logs_dropped_keys(tmp_path: Path, caplog: Any) -> None:
     path = tmp_path / "legacy.conf"
     path.write_text(json.dumps({"twilio.sid": "AC123", "unknown.key": 1}), encoding="utf-8")
     caplog.set_level(logging.INFO, logger="opencanary_correlator.config")
@@ -284,34 +328,34 @@ def test_legacy_values_can_be_overridden_by_explicit_arguments(tmp_path: Path) -
     assert settings.incident_horizon == 5.0
 
 
-def test_max_stored_events_defaults_to_the_console_limit(settings_factory) -> None:
+def test_max_stored_events_defaults_to_the_console_limit(settings_factory: Any) -> None:
     assert settings_factory().max_stored_events == 100
 
 
 @pytest.mark.parametrize("value", [0, -1, 10_001])
-def test_max_stored_events_is_bounded(settings_factory, value) -> None:
+def test_max_stored_events_is_bounded(settings_factory: Any, value: Any) -> None:
     with pytest.raises(ValidationError):
         settings_factory(max_stored_events=value)
 
 
-def test_max_stored_events_can_be_raised_from_the_environment(monkeypatch) -> None:
+def test_max_stored_events_can_be_raised_from_the_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_MAX_STORED_EVENTS", "500")
 
     assert Settings(_env_file=None).max_stored_events == 500
 
 
-def test_lookup_scan_limit_defaults_to_a_bounded_window(settings_factory) -> None:
+def test_lookup_scan_limit_defaults_to_a_bounded_window(settings_factory: Any) -> None:
     assert settings_factory().incident_lookup_scan_limit == 100
 
 
 @pytest.mark.parametrize("value", [0, -1, 10_001])
-def test_lookup_scan_limit_is_bounded(settings_factory, value) -> None:
+def test_lookup_scan_limit_is_bounded(settings_factory: Any, value: Any) -> None:
     with pytest.raises(ValidationError):
         settings_factory(incident_lookup_scan_limit=value)
 
 
-def test_lookup_scan_limit_can_be_raised_from_the_environment(monkeypatch) -> None:
+def test_lookup_scan_limit_can_be_raised_from_the_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("OCC_INCIDENT_LOOKUP_SCAN_LIMIT", "500")
 

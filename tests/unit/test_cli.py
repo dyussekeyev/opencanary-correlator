@@ -8,6 +8,7 @@ import json
 import logging
 import logging.handlers
 import signal
+from typing import Any, cast
 
 import pytest
 
@@ -22,7 +23,7 @@ from opencanary_correlator.cli import (
     run_correlator,
     safe_redis_url,
 )
-from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.constants import KEY_LOGS
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.storage.redis_store import RedisStore
@@ -36,7 +37,8 @@ class RecordingDispatcher(BaseDispatcher):
     def __init__(self) -> None:
         self.incidents: list[Incident] = []
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+        assert isinstance(incident, Incident)
         self.incidents.append(incident)
         return DispatchResult(dispatcher=self.name, status="success")
 
@@ -55,7 +57,7 @@ def test_safe_redis_url_masks_the_password() -> None:
     assert masked == "redis://user:***@redis.example:6380/1"
 
 
-def test_check_config_prints_redacted_summary(monkeypatch, capsys) -> None:
+def test_check_config_prints_redacted_summary(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://user:supersecret@redis.example:6379/0")
     monkeypatch.setenv("OCC_SLACK_WEBHOOKS", "https://hooks.slack.test/x")
 
@@ -69,7 +71,7 @@ def test_check_config_prints_redacted_summary(monkeypatch, capsys) -> None:
     assert payload["channels"] == ["slack"]
 
 
-def test_check_config_accepts_env_health_port_zero(monkeypatch, capsys) -> None:
+def test_check_config_accepts_env_health_port_zero(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("OCC_HEALTH_PORT", "0")
 
@@ -80,7 +82,7 @@ def test_check_config_accepts_env_health_port_zero(monkeypatch, capsys) -> None:
     assert json.loads(captured.out)["health_port"] is None
 
 
-def test_check_config_cli_health_port_zero_overrides_the_env(monkeypatch, capsys) -> None:
+def test_check_config_cli_health_port_zero_overrides_the_env(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("OCC_HEALTH_PORT", "9090")
 
@@ -91,7 +93,7 @@ def test_check_config_cli_health_port_zero_overrides_the_env(monkeypatch, capsys
     assert json.loads(captured.out)["health_port"] is None
 
 
-def test_check_config_reports_the_configured_health_host(monkeypatch, capsys) -> None:
+def test_check_config_reports_the_configured_health_host(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("OCC_HEALTH_HOST", "127.0.0.1")
 
@@ -103,13 +105,21 @@ def test_check_config_reports_the_configured_health_host(monkeypatch, capsys) ->
 
 
 async def test_run_correlator_binds_health_to_the_configured_host(
-    fake_redis, settings_factory, free_tcp_port, monkeypatch, audit
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, monkeypatch: Any, audit: Any
 ) -> None:
     captured: dict[str, object] = {}
 
     class RecordingHealth:
-        def __init__(self, store, *, host, port, audit=None) -> None:
-            captured.update(host=host, port=port)
+        def __init__(
+            self,
+            store: Any,
+            *,
+            host: Any,
+            port: Any,
+            audit: Any = None,
+            allowed_networks: Any = (),
+        ) -> None:
+            captured.update(host=host, port=port, allowed_networks=allowed_networks)
 
         async def start(self) -> None:
             return None
@@ -135,10 +145,14 @@ async def test_run_correlator_binds_health_to_the_configured_host(
         stop_event=stop_event,
     )
 
-    assert captured == {"host": "127.0.0.1", "port": 8080}
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8080
+    networks = captured["allowed_networks"]
+    assert isinstance(networks, tuple)
+    assert [str(net) for net in networks] == ["127.0.0.1/32", "::1/128"]
 
 
-def test_check_config_rejects_invalid_override(monkeypatch, capsys) -> None:
+def test_check_config_rejects_invalid_override(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
 
     code = main(["--check-config", "--redis-url", "http://localhost:6379/0"])
@@ -147,7 +161,7 @@ def test_check_config_rejects_invalid_override(monkeypatch, capsys) -> None:
     assert "redis_url" in capsys.readouterr().err
 
 
-def test_check_config_without_redis_url_fails(monkeypatch, capsys) -> None:
+def test_check_config_without_redis_url_fails(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
 
     code = main(["--check-config"])
@@ -156,7 +170,7 @@ def test_check_config_without_redis_url_fails(monkeypatch, capsys) -> None:
     assert "redis_url" in capsys.readouterr().err
 
 
-async def test_build_dispatchers_follows_settings(settings_factory, store) -> None:
+async def test_build_dispatchers_follows_settings(settings_factory: Any, store: Any) -> None:
     settings = settings_factory(
         webhook_urls=["https://siem.test/hook"],
         slack_webhooks=["https://hooks.slack.test/x"],
@@ -181,7 +195,9 @@ async def test_build_dispatchers_follows_settings(settings_factory, store) -> No
         await asyncio.gather(*(dispatcher.aclose() for dispatcher in dispatchers))
 
 
-async def test_build_dispatchers_respects_disabled_channels(settings_factory, store) -> None:
+async def test_build_dispatchers_respects_disabled_channels(
+    settings_factory: Any, store: Any
+) -> None:
     settings = settings_factory(
         slack_enabled=False,
         slack_webhooks=["https://hooks.slack.test/x"],
@@ -195,12 +211,12 @@ async def test_build_dispatchers_respects_disabled_channels(settings_factory, st
 
 
 async def test_build_dispatchers_passes_implicit_tls_to_smtp(
-    settings_factory, store, monkeypatch
+    settings_factory: Any, store: Any, monkeypatch: Any
 ) -> None:
-    captured: dict = {}
+    captured: dict[str, Any] = {}
 
     class RecordingSmtp:
-        def __init__(self, **kwargs) -> None:
+        def __init__(self, **kwargs: Any) -> None:
             captured.update(kwargs)
 
     monkeypatch.setattr("opencanary_correlator.cli.SmtpDispatcher", RecordingSmtp)
@@ -219,12 +235,12 @@ async def test_build_dispatchers_passes_implicit_tls_to_smtp(
 
 
 async def test_build_dispatchers_scopes_breakers_to_each_endpoint(
-    settings_factory, store, monkeypatch
+    settings_factory: Any, store: Any, monkeypatch: Any
 ) -> None:
     names: list[str] = []
 
     class RecordingBreaker:
-        def __init__(self, _store, name: str) -> None:
+        def __init__(self, _store: Any, name: str) -> None:
             names.append(name)
 
     monkeypatch.setattr("opencanary_correlator.cli.CircuitBreaker", RecordingBreaker)
@@ -288,7 +304,7 @@ async def wait_for_port(port: int, timeout: float = 3.0) -> None:
 
 
 async def test_run_correlator_starts_and_stops_cleanly(
-    fake_redis, settings_factory, free_tcp_port, event_factory
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, event_factory: Any
 ) -> None:
     store = RedisStore(fake_redis)
     settings = settings_factory(
@@ -372,13 +388,16 @@ class ExplodingHealth:
 
 
 async def test_run_correlator_fails_fast_when_redis_is_down(
-    settings_factory, audit, audit_stream
+    settings_factory: Any, audit: Any, audit_stream: Any
 ) -> None:
     store = UnreachableStore()
 
     with pytest.raises(CorrelatorStartupError, match="Redis is not reachable"):
         await run_correlator(
-            settings_factory(health_port=None), store=store, dispatchers=[], audit=audit
+            settings_factory(health_port=None),
+            store=cast(Any, store),
+            dispatchers=[],
+            audit=audit,
         )
 
     records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
@@ -391,7 +410,7 @@ async def test_run_correlator_fails_fast_when_redis_is_down(
     assert store.closed is False
 
 
-def test_main_reports_an_unreachable_redis_and_exits_1(monkeypatch, capsys) -> None:
+def test_main_reports_an_unreachable_redis_and_exits_1(monkeypatch: Any, capsys: Any) -> None:
     """The documented behaviour: one startup_failed line, one message, exit 1."""
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
     store = UnreachableStore()
@@ -409,7 +428,7 @@ def test_main_reports_an_unreachable_redis_and_exits_1(monkeypatch, capsys) -> N
     assert store.closed is True
 
 
-def test_main_reports_a_missing_legacy_config(monkeypatch, capsys, tmp_path) -> None:
+def test_main_reports_a_missing_legacy_config(monkeypatch: Any, capsys: Any, tmp_path: Any) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
     missing = tmp_path / "absent.conf"
 
@@ -421,7 +440,9 @@ def test_main_reports_a_missing_legacy_config(monkeypatch, capsys, tmp_path) -> 
     assert "absent.conf" in captured.err
 
 
-def test_main_reports_a_malformed_legacy_config(monkeypatch, capsys, tmp_path) -> None:
+def test_main_reports_a_malformed_legacy_config(
+    monkeypatch: Any, capsys: Any, tmp_path: Any
+) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
     broken = tmp_path / "broken.conf"
     broken.write_text("{not json", encoding="utf-8")
@@ -434,7 +455,7 @@ def test_main_reports_a_malformed_legacy_config(monkeypatch, capsys, tmp_path) -
 
 
 async def test_a_failure_during_startup_is_audited_with_its_type(
-    store, settings_factory, audit, audit_stream
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any
 ) -> None:
     settings = settings_factory(
         health_port=None,
@@ -449,7 +470,7 @@ async def test_a_failure_during_startup_is_audited_with_its_type(
             store=store,
             dispatchers=[],
             audit=audit,
-            health=ExplodingHealth(),
+            health=cast(Any, ExplodingHealth()),
         )
 
     records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
@@ -461,7 +482,7 @@ async def test_a_failure_during_startup_is_audited_with_its_type(
     assert records[-1]["action"] == "shutdown"
 
 
-def test_redis_url_flag_alone_satisfies_the_required_setting(monkeypatch, capsys) -> None:
+def test_redis_url_flag_alone_satisfies_the_required_setting(monkeypatch: Any, capsys: Any) -> None:
     """`--redis-url` exists to supply the required URL, so it must reach validation."""
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
 
@@ -472,7 +493,7 @@ def test_redis_url_flag_alone_satisfies_the_required_setting(monkeypatch, capsys
     assert json.loads(captured.out)["redis_url"] == "redis://127.0.0.1:6390/0"
 
 
-def test_log_level_flag_overrides_the_environment(monkeypatch, capsys) -> None:
+def test_log_level_flag_overrides_the_environment(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("OCC_LOG_LEVEL", "WARNING")
 
@@ -482,7 +503,7 @@ def test_log_level_flag_overrides_the_environment(monkeypatch, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["log_level"] == "DEBUG"
 
 
-def test_channel_names_counts_every_telegram_chat(settings_factory) -> None:
+def test_channel_names_counts_every_telegram_chat(settings_factory: Any) -> None:
     settings = settings_factory(
         telegram_token="123:abc",
         telegram_chat_ids=["-1001", "-1002"],
@@ -494,13 +515,13 @@ def test_channel_names_counts_every_telegram_chat(settings_factory) -> None:
     assert channel_names(settings) == ["telegram", "telegram", "smtp"]
 
 
-def test_channel_names_skips_smtp_without_a_recipient(settings_factory) -> None:
+def test_channel_names_skips_smtp_without_a_recipient(settings_factory: Any) -> None:
     settings = settings_factory(smtp_enabled=True, smtp_host="smtp.example", smtp_to=[])
 
     assert channel_names(settings) == []
 
 
-def test_build_receivers_wires_every_enabled_listener(settings_factory, audit) -> None:
+def test_build_receivers_wires_every_enabled_listener(settings_factory: Any, audit: Any) -> None:
     settings = settings_factory(
         tcp_enabled=True,
         syslog_enabled=True,
@@ -508,22 +529,25 @@ def test_build_receivers_wires_every_enabled_listener(settings_factory, audit) -
         rate_limit_events_per_minute=0,
     )
 
-    receivers = build_receivers(settings, object(), audit, None)
+    receivers = build_receivers(settings, cast(Any, object()), audit, None)
 
     assert [receiver.name for receiver in receivers] == ["tcp_json", "syslog_tcp", "syslog_udp"]
-    assert receivers[0].port == settings.tcp_port
-    assert receivers[1].port == receivers[2].port == settings.syslog_port
+    tcp, syslog_tcp, syslog_udp = (cast(Any, receiver) for receiver in receivers)
+    assert tcp.port == settings.tcp_port
+    assert syslog_tcp.port == syslog_udp.port == settings.syslog_port
 
 
-def test_build_receivers_skips_disabled_listeners(settings_factory, audit) -> None:
+def test_build_receivers_skips_disabled_listeners(settings_factory: Any, audit: Any) -> None:
     settings = settings_factory(tcp_enabled=False, syslog_enabled=False)
 
-    assert build_receivers(settings, object(), audit, None) == []
+    assert build_receivers(settings, cast(Any, object()), audit, None) == []
 
 
-def test_build_receivers_keeps_syslog_tcp_when_udp_is_disabled(settings_factory, audit) -> None:
+def test_build_receivers_keeps_syslog_tcp_when_udp_is_disabled(
+    settings_factory: Any, audit: Any
+) -> None:
     settings = settings_factory(tcp_enabled=False, syslog_enabled=True, syslog_udp_enabled=False)
 
-    assert [receiver.name for receiver in build_receivers(settings, object(), audit, None)] == [
-        "syslog_tcp"
-    ]
+    assert [
+        receiver.name for receiver in build_receivers(settings, cast(Any, object()), audit, None)
+    ] == ["syslog_tcp"]

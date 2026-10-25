@@ -29,7 +29,7 @@ async def no_sleep(_seconds: float) -> None:
     return None
 
 
-def make_client(handler) -> httpx.AsyncClient:
+def make_client(handler: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
@@ -45,7 +45,7 @@ def test_breaker_name_is_per_endpoint_and_hides_the_secret() -> None:
     assert name != breaker_name("slack", endpoint)
 
 
-def scripted_handler(responses, calls):
+def scripted_handler(responses: Any, calls: Any) -> Any:
     """Return responses in order (repeating the last), recording each request."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -53,18 +53,19 @@ def scripted_handler(responses, calls):
         item = responses[min(len(calls) - 1, len(responses) - 1)]
         if isinstance(item, Exception):
             raise item
+        assert isinstance(item, httpx.Response)
         return item
 
     return handler
 
 
-def fast_retry(**overrides) -> RetryPolicy:
-    params = {"attempts": 3, "base_delay": 0.0, "max_delay": 0.0, "jitter": 0.0}
+def fast_retry(**overrides: Any) -> RetryPolicy:
+    params: dict[str, Any] = {"attempts": 3, "base_delay": 0.0, "max_delay": 0.0, "jitter": 0.0}
     params.update(overrides)
     return RetryPolicy(**params)
 
 
-async def test_webhook_posts_incident_and_reports_success(incident_factory) -> None:
+async def test_webhook_posts_incident_and_reports_success(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(200)], calls))
     dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client)
@@ -81,7 +82,7 @@ async def test_webhook_posts_incident_and_reports_success(incident_factory) -> N
     assert "PASSWORD" not in json.dumps(payload)
 
 
-async def test_webhook_retries_server_errors(incident_factory) -> None:
+async def test_webhook_retries_server_errors(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(
         scripted_handler([httpx.Response(500), httpx.Response(503), httpx.Response(200)], calls)
@@ -96,7 +97,7 @@ async def test_webhook_retries_server_errors(incident_factory) -> None:
     assert len(calls) == 3
 
 
-async def test_webhook_exhausts_retries(incident_factory) -> None:
+async def test_webhook_exhausts_retries(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(500)], calls))
     dispatcher = WebhookDispatcher(
@@ -110,7 +111,7 @@ async def test_webhook_exhausts_retries(incident_factory) -> None:
     assert len(calls) == 3
 
 
-async def test_webhook_honours_retry_after(incident_factory) -> None:
+async def test_webhook_honours_retry_after(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(
         scripted_handler(
@@ -128,7 +129,7 @@ async def test_webhook_honours_retry_after(incident_factory) -> None:
     assert len(calls) == 2
 
 
-async def test_webhook_does_not_retry_client_errors(incident_factory) -> None:
+async def test_webhook_does_not_retry_client_errors(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(400)], calls))
     dispatcher = WebhookDispatcher(
@@ -141,7 +142,7 @@ async def test_webhook_does_not_retry_client_errors(incident_factory) -> None:
     assert len(calls) == 1
 
 
-async def test_webhook_retries_transport_errors(incident_factory) -> None:
+async def test_webhook_retries_transport_errors(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.ConnectError("no route")], calls))
     dispatcher = WebhookDispatcher(
@@ -155,7 +156,9 @@ async def test_webhook_retries_transport_errors(incident_factory) -> None:
     assert len(calls) == 3
 
 
-async def test_circuit_breaker_skips_after_repeated_failures(store, incident_factory) -> None:
+async def test_circuit_breaker_skips_after_repeated_failures(
+    store: Any, incident_factory: Any
+) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(500)], calls))
     breaker = CircuitBreaker(store, "webhook", failure_threshold=2, cooldown=60)
@@ -176,7 +179,7 @@ async def test_circuit_breaker_skips_after_repeated_failures(store, incident_fac
     assert len(calls) == 6
 
 
-async def test_slack_uses_the_compact_report(incident_factory) -> None:
+async def test_slack_uses_the_compact_report(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(200)], calls))
     dispatcher = SlackDispatcher(url="https://hooks.slack.test/x", client=client)
@@ -187,7 +190,7 @@ async def test_slack_uses_the_compact_report(incident_factory) -> None:
     assert json.loads(calls[0].content)["text"].startswith("Canary Incident: FTP Login Attempt.")
 
 
-async def test_telegram_posts_chat_and_truncated_text(incident_factory) -> None:
+async def test_telegram_posts_chat_and_truncated_text(incident_factory: Any) -> None:
     class LongIncident:
         key = "k"
 
@@ -213,8 +216,24 @@ async def test_telegram_posts_chat_and_truncated_text(incident_factory) -> None:
     assert len(payload["text"]) == 4096
 
 
+async def test_telegram_token_never_appears_in_the_dispatch_result(incident_factory: Any) -> None:
+    token = "123456:very-secret-token"
+
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"cannot reach {request.url}")
+
+    client = make_client(failing_handler)
+    dispatcher = TelegramDispatcher(token=token, chat_id="-100500", client=client)
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "error"
+    assert token not in repr(result)
+    assert "very-secret-token" not in repr(result)
+
+
 @pytest.mark.parametrize("status", [200, 204])
-async def test_discord_accepts_both_success_statuses(incident_factory, status: int) -> None:
+async def test_discord_accepts_both_success_statuses(incident_factory: Any, status: int) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(status)], calls))
     dispatcher = DiscordDispatcher(url="https://discord.test/webhook", client=client)
@@ -250,10 +269,10 @@ async def test_discord_uses_embed_for_long_reports() -> None:
     assert len(payload["embeds"][0]["description"]) == DISCORD_MAX_EMBED_DESCRIPTION
 
 
-async def test_smtp_sends_email(incident_factory) -> None:
-    sent: list[tuple[object, dict]] = []
+async def test_smtp_sends_email(incident_factory: Any) -> None:
+    sent: list[tuple[Any, dict[str, Any]]] = []
 
-    async def fake_send(message, **kwargs) -> Any:
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
         sent.append((message, kwargs))
         return ({}, "ok")
 
@@ -276,10 +295,10 @@ async def test_smtp_sends_email(incident_factory) -> None:
     assert kwargs["use_tls"] is False
 
 
-async def test_smtp_uses_implicit_tls(incident_factory) -> None:
-    sent: list[dict] = []
+async def test_smtp_uses_implicit_tls(incident_factory: Any) -> None:
+    sent: list[dict[str, Any]] = []
 
-    async def fake_send(message, **kwargs) -> Any:
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
         sent.append(kwargs)
         return ({}, "ok")
 
@@ -300,10 +319,10 @@ async def test_smtp_uses_implicit_tls(incident_factory) -> None:
     assert sent[0]["use_tls"] is True
 
 
-async def test_smtp_retries_and_reports_failure(incident_factory) -> None:
+async def test_smtp_retries_and_reports_failure(incident_factory: Any) -> None:
     attempts = 0
 
-    async def failing_send(message, **kwargs) -> Any:
+    async def failing_send(message: Any, **kwargs: Any) -> Any:
         nonlocal attempts
         attempts += 1
         raise aiosmtplib.SMTPException("relay down")
@@ -324,7 +343,7 @@ async def test_smtp_retries_and_reports_failure(incident_factory) -> None:
     assert attempts == 3
 
 
-async def test_smtp_without_recipients_is_skipped(incident_factory) -> None:
+async def test_smtp_without_recipients_is_skipped(incident_factory: Any) -> None:
     dispatcher = SmtpDispatcher(
         host="smtp.test",
         port=25,
@@ -338,7 +357,7 @@ async def test_smtp_without_recipients_is_skipped(incident_factory) -> None:
 
 
 @pytest.mark.parametrize("status", [200, 201, 202, 204])
-async def test_expected_statuses_are_configurable(incident_factory, status: int) -> None:
+async def test_expected_statuses_are_configurable(incident_factory: Any, status: int) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(status)], calls))
     dispatcher = WebhookDispatcher(

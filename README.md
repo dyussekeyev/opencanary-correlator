@@ -196,8 +196,9 @@ Two settings carry the throughput:
   horizon. The pointer falls back to the index when it is missing or stale, so
   an upgrade or a deleted incident stays correct, and that fallback inspects at
   most `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` (default `100`) newest index members, so
-  per-event cost stays flat as the index grows. A fallback cut short by the cap
-  is audited as `incident_lookup_truncated` rather than assumed empty.
+  per-event cost stays flat as the index grows. When that capped fallback finds
+  nothing, the full horizon window is read once before a new incident is created,
+  so a live incident behind the cap is merged instead of duplicated.
 
 Per-event cost no longer depends on how large an incident already is: a single
 host flooding 10,000 events into one incident took 77.2 s before stored history
@@ -236,8 +237,14 @@ another address; the endpoint has no authentication, so a wildcard binding
 exposes incident and delivery counters to anything that can reach the port. With
 a loopback binding, probe it from the same host, a sidecar, or `docker exec`.
 
+`OCC_HEALTH_ALLOWED_IPS` restricts which peers may read `/healthz`, `/readyz` and
+`/metrics`, as a comma-separated list of addresses or CIDRs. It defaults to
+`127.0.0.1/32,::1/128`; an empty value also means loopback. Other peers receive
+`403`. Widen it (for example to a Kubernetes or Docker subnet) only when the probe
+source address falls outside loopback.
+
 The container `HEALTHCHECK` follows both variables: it dials `OCC_HEALTH_HOST`
-when one is set (mapping `0.0.0.0`/`::` back to `127.0.0.1`) and skips the request
+(`127.0.0.1` when it is unset, blank, `0.0.0.0` or `::`; `::1` and explicit addresses are used as given) and skips the request
 entirely when the port is `0`.
 
 Audit records are JSON lines on stdout — see
@@ -246,9 +253,13 @@ Audit records are JSON lines on stdout — see
 ## Docker
 
 ```bash
-cp .env.example .env          # fill in channels; compose supplies Redis
+cp .env.example .env          # fill in channels and OCC_REDIS_PASSWORD
 docker compose up -d --build
 ```
+
+The bundled Redis requires a password: `OCC_REDIS_PASSWORD` has no default, and
+compose refuses to start without it. Use letters, digits, `-` and `_` only, since
+the password is embedded in the correlator's `OCC_REDIS_URL` unescaped.
 
 The image runs as an unprivileged user, accepts canary JSON on `1514/tcp`, and
 includes the syslog receiver for `5514/tcp` + `5514/udp`. Base images (Python,
@@ -267,15 +278,42 @@ The health port stays container-internal. Inspect it with
 yourself if an external probe needs it.
 
 Compose passes `OCC_HEALTH_HOST` through from the shell or `.env`, defaulting to
-`0.0.0.0`. `OCC_HEALTH_HOST=127.0.0.1 docker compose up -d` keeps the listener
-and its counters inside the container while the image `HEALTHCHECK` keeps
-reporting `healthy`; a published mapping to that port then refuses connections
-instead of answering them.
+`127.0.0.1`. The health port is not published, so the listener and its counters stay
+inside the container while the image `HEALTHCHECK` keeps reporting `healthy`.
+Set `OCC_HEALTH_HOST=0.0.0.0` only together with a published health port.
 
 The compose file starts Redis and the correlator on a private network. Restrict
 the published intake ports (`1514`, `5514`) to your canary network at the
 firewall or cloud security-group level; they accept untrusted traffic by
 design.
+
+### Transport limitation: honeypot traffic is plaintext
+
+The stock OpenCanary `SocketHandler` (and `SyslogHandler`) cannot speak TLS, so
+events travel from each honeypot to the correlator as unencrypted JSON. The
+correlator does not add TLS on its intake ports, by design: changing the honeypot
+side is out of scope. Anyone on the network path can read or forge events.
+
+If the path between a honeypot and the correlator is not trusted, wrap it in a
+tunnel that you operate. The correlator keeps listening on plain loopback or the
+private interface behind it; the tunnel is the only thing that reaches it.
+
+- **SSH local/remote forwarding.** On the honeypot, forward a local port to the
+  correlator's intake port through a key-only SSH session, for example
+  `ssh -N -L 127.0.0.1:1514:127.0.0.1:1514 correlator-host` with the OpenCanary
+  `logger` pointed at `127.0.0.1:1514`. Restrict the key with
+  `permitopen="127.0.0.1:1514"` and `no-pty` in `authorized_keys`. Keep the
+  autossh or systemd unit that restarts it.
+- **WireGuard or IPsec site-to-site VPN.** Put the honeypots and the correlator
+  on one tunnel subnet and point the intake to the tunnel address. Both are
+  kernel-level, so the application needs no change. IPsec (strongSwan) is the
+  usual choice where a managed gateway already exists.
+- **Stunnel or a TLS reverse proxy** is an option only if you control the
+  receiving end. The honeypot still sends plaintext to a local proxy, so the
+  proxy must run on the honeypot itself.
+
+Whichever you choose, do not expose the intake ports directly to the internet.
+Restrict them to the tunnel or canary network as described above.
 
 ## Quality gates
 
@@ -335,8 +373,7 @@ once.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) and the refactoring plan in
-[docs/EXECPLAN-refactor.md](docs/EXECPLAN-refactor.md).
+See [docs/architecture.md](docs/architecture.md).
 
 ## License
 

@@ -31,7 +31,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `shutdown` | `info` | graceful stop finished | `receivers` |
 | `receiver_started` | `info` | a receiver is listening | `receiver`, `host`, `port` |
 | `receiver_stopped` | `info` | a receiver closed | `receiver`, `accepted` |
-| `connection_rejected` | `warning` | connection cap or per-IP budget exceeded | `reason: connection_limit` / `connection_rate_limited`, `peer` |
+| `connection_rejected` | `warning` | connection cap, per-IP budget or source allowlist refused the peer | `reason: connection_limit` / `connection_rate_limited` / `peer_not_allowed`, `peer` |
 | `connection_closed` | `warning` | a connection was closed for a policy reason | `reason`: `line_too_large`, `partial_line_timeout`, `connection_limit`, `connection_rate_limited` |
 | `connection_limiter_error` | `error` | the Redis limiter failed while accepting | `error_type` |
 | `event_rejected` | `warning` | one line/datagram failed parsing or validation | `reason`, `peer`, plus reason-specific fields |
@@ -45,7 +45,6 @@ a compatibility risk, because consumers only rely on these five keys.
 | `incident_created` | `info` | a new incident hash was written | `incident`, `key`, `node_id`, `src_host` |
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
-| `incident_lookup_truncated` | `warning` | the fallback index scan hit `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` without finding an incident for this host, so a second incident may be created where an uncapped scan would have merged. Emitted per event, so it appears on every first-seen host once the live-incident count exceeds the cap | `incident`, `src_host`, `scanned`, `scan_limit` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 
