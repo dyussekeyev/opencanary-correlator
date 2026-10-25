@@ -163,8 +163,9 @@ endpoint never blocks the others and never blocks ingestion.
   Both scan windows use a **fixed** TTL: the expiry is anchored when the window
   is created and is never extended by later packets, so sustained scanning
   cannot keep the window (or a stale threshold count) alive indefinitely.
-- Duplicate events are dropped with a SHA-256 fingerprint (`OCC_DEDUP_TTL`), so a
-  retransmitted log never inflates an incident.
+- Duplicate events are dropped with a SHA-256 fingerprint (`OCC_DEDUP_TTL`,
+  default 60 s), so a retransmitted log never inflates an incident. The Python 2
+  correlator counted every repeat, so set `OCC_DEDUP_TTL=0` to merge them again.
 - Stored incident history is capped at `OCC_MAX_STORED_EVENTS` (default `100`,
   the number of entries the legacy console renders). `events_count` always stays
   exact: once the cap is reached the timestamp CSV and `logdata` are **frozen**

@@ -700,18 +700,37 @@ waits for the TCP listener, sends `SIGTERM`, and requires exit code 0 with
 `TerminateProcess` bypasses the handler, which is exactly the gap it exists to
 close.
 
-## Open items
+## Accepted limits
 
-1. Reduce the non-Redis cost of an event. A native runner spends 0.34-0.83 ms
-   per event outside Redis (parsing, Pydantic validation, the merge logic,
-   receiver and queue), against 0.17-0.38 ms in round trips, so the network is
-   no longer the place where a hot incident is won. The single-script merge was
-   investigated and rejected on this evidence — see
-   [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md). The
-   residual has since been decomposed: the protocol layer is not part of it, and
-   the discarded `logdata` decode on a frozen incident — the largest single item
-   — has been removed. What is left per hot event is six round trips plus
-   `from_fields`, `audit_emit` and parse/validate.
+No item in plan §5 is open. What is written here instead is the set of limits
+that were accepted **with a measurement or a decision behind them**, so a reader
+can tell them apart from work nobody got to:
+
+1. **A hot event costs six round trips plus ~0.1 ms of Python, and that is the
+   floor of this design.** A native runner spends 0.17-0.38 ms in round trips and
+   0.34-0.83 ms outside them, so the wire is no longer the dominant term. Every
+   candidate for lowering it was costed rather than dismissed: collapsing the six
+   commands into one Lua script was investigated and rejected on measurement
+   ([EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md)), `hiredis`
+   was refuted at +0.4 µs on a full `HGETALL`, and orjson/Pydantic tuning cannot
+   pay for itself when the pure-Python share is ~24 µs of a ~280 µs event. The
+   discarded `logdata` decode on a frozen incident — the largest single item — is
+   gone. Going further means moving the lock or the dedup hop into the same
+   script, which changes what `save_incident` guarantees, so it belongs in a new
+   plan with its own acceptance rather than in a performance patch.
+2. **Duplicate suppression is on by default, and the Python 2 correlator had
+   none.** A byte-identical event inside `OCC_DEDUP_TTL` (default 60 s) is dropped
+   instead of merged, so `events_count` matches distinct events rather than
+   retransmissions. This is the intended behaviour of the module that owns
+   deduplication, and setting `OCC_DEDUP_TTL=0` restores the old counting for an
+   operator who wants every retransmission merged.
+3. **`events_truncated` is authoritative for "history is frozen".** The frozen
+   merge skips the timestamp append and the `logdata` decode, so an incident
+   whose flag says `True` while its `events_list` is shorter than
+   `OCC_MAX_STORED_EVENTS` — hand-edited state, or a cap lowered after the fact —
+   does not resume appending. Nothing writes that combination; the flag is set by
+   the same merge that fills the list, and raising the cap puts the count back
+   under the limit and does resume.
 
 Closed since the previous revision:
 
