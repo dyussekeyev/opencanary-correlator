@@ -115,7 +115,12 @@ therefore never touches correlation logic.
    The incident is then merged (`events_count += 1`, append timestamp, merge
    `logdata`) or created, and one Lua script writes the hash, the ZSET entry and
    the pointer atomically. Only creation returns an incident for delivery; a
-   merge deliberately produces no alert.
+   merge deliberately produces no alert. A merge into an incident whose history
+   is already full at `OCC_MAX_STORED_EVENTS` writes the counters only, and skips
+   the timestamp append and the stored-history decode entirely, because both
+   would return the stored value unchanged (see `docs/validation.md`). Scan
+   incidents are exempt: their `logdata` is a deduplicated set that must stay
+   exact.
 8. **Deliver** — incidents fan out to every dispatcher concurrently, each
    bounded by `OCC_DISPATCH_TIMEOUT`. A timeout, exception or non-success
    result is audited as `alert_dispatch` with status `error`; other channels
