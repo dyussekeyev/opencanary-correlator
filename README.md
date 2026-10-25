@@ -237,7 +237,7 @@ exposes incident and delivery counters to anything that can reach the port. With
 a loopback binding, probe it from the same host, a sidecar, or `docker exec`.
 
 The container `HEALTHCHECK` follows both variables: it dials `OCC_HEALTH_HOST`
-when one is set (mapping `0.0.0.0`/`::` back to `127.0.0.1`) and skips the request
+(`127.0.0.1` when it is unset, blank, `0.0.0.0` or `::`; `::1` and explicit addresses are used as given) and skips the request
 entirely when the port is `0`.
 
 Audit records are JSON lines on stdout — see

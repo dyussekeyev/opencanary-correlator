@@ -93,6 +93,10 @@ The legacy Redis key layout and incident field names are preserved so existing c
 
 **2026-10-25 — the loopback binding, exercised in compose and in CI.** `OCC_HEALTH_HOST` was configurable but nothing proved it worked outside the unit tests, and the compose file inherited it only implicitly through `env_file`. Compose now interpolates it (`OCC_HEALTH_HOST: "${OCC_HEALTH_HOST:-0.0.0.0}"`), so `OCC_HEALTH_HOST=127.0.0.1 docker compose up -d` narrows the listener without editing the file, and the CI `docker` job recreates the service that way against a temporary `127.0.0.1:18080:8080` mapping: the container must report `healthy` (the `HEALTHCHECK` dials `127.0.0.1` for a wildcard and the configured address otherwise), `/healthz` must answer `200` on loopback inside the container, and the published mapping must be **refused** - the same mapping with the wildcard default answers `200`, so the assertion is not vacuous. Executed locally on Docker Desktop 29.9.2: `healthy`, inside `200`, host connection dropped with `RemoteDisconnected`, wildcard `200`; `docker compose down -v` with the base file alone still removed the container, network and volume, so the extra `-f` override does not leak state.
 
+## 3. Plan of Work
+
+The work replaces the legacy Python 2 tree with the new `src/opencanary_correlator/` package, built alongside it and deleted in Milestone 6. Modules, in order: `constants.py` and `schemas.py` (Milestone 2); `audit.py` and `config.py` (Milestone 2); `connectors/base.py`, `connectors/receivers/` and `connectors/dispatchers/` (Milestones 3 and 5); `storage/keys.py`, `storage/redis_store.py`, `storage/queries.py`, `core/windows.py`, `core/incident.py`, `core/rules/` and `core/engine.py` (Milestone 4); `cli.py` (Milestone 5). The file-level steps are listed in section 4; the table below records the disposition of each legacy file.
+
 ### Audit findings (21 files, 1,216 LOC, last commit `294470d`, 2019-03-14)
 
 | Legacy artifact | Problem | Disposition |

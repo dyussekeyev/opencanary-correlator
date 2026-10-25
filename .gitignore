@@ -64,3 +64,25 @@ target/
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+
+# Secrets and local configuration (only the template is versioned)
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Local data and database dumps
+*.rdb
+*.aof
+*.sqlite
+*.sqlite3
+
+# Test and tool caches
+.hypothesis/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
