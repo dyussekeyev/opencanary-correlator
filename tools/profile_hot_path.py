@@ -20,11 +20,21 @@ Two independent views, because they measure different things:
     number of Redis commands per event taken from ``INFO commandstats``. That
     separates ``commands x round trip`` from the Python time around it.
 
+``commands``
+    Decomposes the residual the `pipeline` mode leaves unexplained. One command
+    costs more than one PING, and this mode separates the parts: a raw RESP PING
+    over the same socket (kernel loopback plus asyncio streams), a redis-py PING
+    (library plumbing), the same hash read with and without ``decode_responses``
+    (string decoding), and - when ``hiredis`` is installed - the same commands
+    with the C parser instead of the pure-Python one.
+
     python tools/profile_hot_path.py cpu --iterations 20000
     python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15
+    python tools/profile_hot_path.py commands --redis-url redis://localhost:6379/15
 
 Use a **disposable** database: the pipeline mode creates incidents for synthetic
-hosts ``10.44.x.y`` and removes them afterwards.
+hosts ``10.44.x.y`` and removes them afterwards, and the commands mode writes
+``profile-cmd:*`` keys and deletes them on the way out.
 """
 
 from __future__ import annotations
@@ -38,14 +48,19 @@ import pstats
 import statistics
 import sys
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
+from urllib.parse import urlsplit
+
+from redis import _parsers
+from redis.asyncio import Redis
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.engine import CorrelationEngine
-from opencanary_correlator.core.incident import IncidentRepository
+from opencanary_correlator.core.incident import INCIDENT_TYPES, IncidentRepository
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
 from opencanary_correlator.schemas import CanaryEvent
@@ -54,7 +69,16 @@ from opencanary_correlator.storage.redis_store import RedisStore
 PROFILE_HOST_PREFIX = "10.44."
 DEFAULT_ITERATIONS = 20_000
 DEFAULT_PIPELINE_EVENTS = 2_000
+DEFAULT_COMMAND_ITERATIONS = 500
 TOP_FUNCTIONS = 18
+COMMAND_WARMUP = 20
+STRING_KEY = "profile-cmd:string"
+HASH_KEY = "profile-cmd:hash"
+POINTER_KEY = "profile-cmd:pointer"
+INDEX_KEY = "profile-cmd:index"
+PROFILE_COMMAND_PREFIX = "profile-cmd:"
+#: The only two fields a merge still needs once the stored history is capped.
+MERGE_FIELDS = ("events_count", "events_truncated")
 
 BASE_EVENT: dict[str, Any] = {
     "dst_host": "10.0.0.2",
@@ -112,6 +136,54 @@ def summarise(samples: list[float]) -> dict[str, float]:
     }
 
 
+def measure_merge(iterations: int) -> dict[str, dict[str, float]]:
+    """Time the pure-Python half of a merge into a capped incident.
+
+    The `pipeline` mode counts only parse/validate/fingerprint as CPU, so the
+    rebuild-merge-write logic and the audit record show up in its residual.
+    Measured here on the same incident shape the pipeline produces.
+    """
+    incident_cls = INCIDENT_TYPES["ftp.login_attempt"]
+    fields = incident_fields()
+    details: dict[str, Any] = {
+        "incident": "ftp.login_attempt",
+        "key": HASH_KEY,
+        "events_count": 100,
+        "events_truncated": True,
+    }
+    audit_logger = AuditLogger("profile", stream=io.StringIO())
+    rebuilt = incident_cls.from_fields(HASH_KEY, fields)
+    for _ in range(200):
+        incident_cls.from_fields(HASH_KEY, fields)
+        audit_logger.emit("incident_updated", "info", details)
+
+    def merge_step(index: int) -> None:
+        rebuilt.events_list, _changed = incident_cls.append_timestamp(
+            rebuilt.events_list, 1_700_000_100, limit=100
+        )
+        rebuilt.logdata = incident_cls.merge_logdata(
+            rebuilt.logdata, BASE_EVENT["logdata"], limit=100
+        )
+        rebuilt.to_fields()
+
+    return {
+        "from_fields": summarise(
+            _timed(lambda index: incident_cls.from_fields(HASH_KEY, fields), iterations)
+        ),
+        "merge_and_to_fields": summarise(_timed(merge_step, iterations)),
+        "decode_logdata": summarise(
+            _timed(lambda index: json.loads(fields["logdata"]), iterations)
+        ),
+        "split_events_list": summarise(
+            _timed(lambda index: fields["events_list"].split(","), iterations)
+        ),
+        "to_fields": summarise(_timed(lambda index: rebuilt.to_fields(), iterations)),
+        "audit_emit": summarise(
+            _timed(lambda index: audit_logger.emit("incident_updated", "info", details), iterations)
+        ),
+    }
+
+
 def run_cpu(iterations: int) -> dict[str, Any]:
     """Time and profile the pure-Python part of ingestion."""
     lines = build_lines(iterations)
@@ -162,6 +234,7 @@ def run_cpu(iterations: int) -> dict[str, Any]:
             "model_validate": summarise(validate),
             "event_fingerprint": summarise(fingerprint),
         },
+        "merge_stages_us": measure_merge(iterations),
         "cpu_per_event_us": round(
             sum(statistics.fmean(samples) for samples in (parse, validate, fingerprint)) * 1e6, 3
         ),
@@ -267,6 +340,17 @@ async def run_pipeline(redis_url: str, events: int, hosts: int = 0) -> dict[str,
         handle_samples.append(time.perf_counter() - started)
     deltas = diff_counts(before, await counter.snapshot())
 
+    # A second pass over the same hosts, timed around `record()` alone: every
+    # event merges into the incident the first pass created, so this is the hot
+    # merge with its exact command count.
+    before = await counter.snapshot()
+    record_samples: list[float] = []
+    for event in events_parsed:
+        started = time.perf_counter()
+        await repository.record("ftp.login_attempt", event)
+        record_samples.append(time.perf_counter() - started)
+    record_deltas = diff_counts(before, await counter.snapshot())
+
     # `INFO commandstats` counts the commands a Lua script runs internally too.
     # Each event runs two scripts: the incident write (HSET x2 + ZADD) and the
     # lock release (GET + DEL). Those five never reach the wire, so subtracting
@@ -318,6 +402,8 @@ async def run_pipeline(redis_url: str, events: int, hosts: int = 0) -> dict[str,
         },
         "dedup": summarise(dedup_samples),
         "handle_event": summarise(handle_samples),
+        "record": summarise(record_samples),
+        "record_commands_per_call": round(sum(record_deltas.values()) / events, 2),
         "rule_matches_only": summarise(match_samples),
         "parse": summarise(parse_samples),
         "validate": summarise(validate_samples),
@@ -347,11 +433,36 @@ def print_human(summary: dict[str, Any]) -> None:
             print(
                 f"  {stage:<18} mean {values['mean_us']:>8.2f} us   p95 {values['p95_us']:>8.2f} us"
             )
+        print("\nmerge into a capped incident (pure Python, per call):")
+        for stage, values in summary["merge_stages_us"].items():
+            print(
+                f"  {stage:<20} mean {values['mean_us']:>8.2f} us   p95 {values['p95_us']:>8.2f} us"
+            )
         print("\ntop functions by own time per event:")
         for entry in summary["top_functions"][:10]:
             own = entry["tottime_us_per_event"]
             cumulative = entry["cumtime_us_per_event"]
             print(f"  {own:>8.2f} us  cum {cumulative:>8.2f} us  {entry['function'][:76]}")
+    elif summary["mode"] == "commands":
+        print(f"raw RESP PING (socket + asyncio only): {summary['raw_resp_ping']['mean_us']} us")
+        print(f"hiredis available: {summary['hiredis_available']}")
+        scenarios = ["ping", "hmget_two", "hgetall", "hset", "save_incident", "dedup"]
+        header = "variant".ljust(9) + "".join(name.rjust(16) for name in scenarios)
+        print("\n" + header)
+        for variant, values in summary["variants_us"].items():
+            row = variant.ljust(9) + "".join(
+                f"{values[name]['mean_us']:>16.1f}" for name in scenarios
+            )
+            print(row)
+        print("\ninterleaved deltas (median / p25 / p75, us; positive = second is slower):")
+        for label, values in summary["paired_deltas_us"].items():
+            print(
+                f"  {label:<28} {values['median_us']:>8.1f}  {values['p25_us']:>7.1f}"
+                f"  {values['p75_us']:>7.1f}"
+            )
+        print("\nderived (us):")
+        for name, value in summary["derived_us"].items():
+            print(f"  {name:<28} {value:>8.1f}")
     else:
         rtt = summary["rtt_us"]
         handle = summary["handle_event"]
@@ -380,6 +491,228 @@ def print_human(summary: dict[str, Any]) -> None:
         )
 
 
+def incident_fields() -> dict[str, str]:
+    """A capped incident hash, the shape a hot merge reads and rewrites."""
+    events = ",".join(str(1_700_000_000 + index) for index in range(100))
+    logdata = json.dumps(
+        [{"USERNAME": f"user{index}", "PASSWORD": "x" * 8} for index in range(100)]
+    )
+    return {
+        "node_id": "bench-1",
+        "src_host": f"{PROFILE_HOST_PREFIX}0.1",
+        "src_port": "40000",
+        "dst_host": "10.0.0.2",
+        "dst_port": "21",
+        "logtype": "2000",
+        "created": "1700000000",
+        "events_list": events,
+        "events_count": "100",
+        "events_truncated": "True",
+        "acknowledged": "False",
+        "notified": "False",
+        "updated": "True",
+        "description": "FTP Login Attempt",
+        "logdata": logdata,
+    }
+
+
+async def _sample(call: Callable[[], Awaitable[Any]], iterations: int) -> dict[str, float]:
+    """Time one awaitable call, discarding the warm-up."""
+    for _ in range(COMMAND_WARMUP):
+        await call()
+    samples: list[float] = []
+    for _ in range(iterations):
+        started = time.perf_counter()
+        await call()
+        samples.append(time.perf_counter() - started)
+    return summarise(samples)
+
+
+async def measure_raw_ping(redis_url: str, iterations: int) -> dict[str, float]:
+    """PING written by hand, so only the kernel loopback and asyncio remain."""
+    parts = urlsplit(redis_url)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 6379
+    reader, writer = await asyncio.open_connection(host, port)
+    request = b"*1\r\n$4\r\nPING\r\n"
+    samples: list[float] = []
+    try:
+        for index in range(iterations + COMMAND_WARMUP):
+            started = time.perf_counter()
+            writer.write(request)
+            await writer.drain()
+            reply = await reader.readline()
+            elapsed = time.perf_counter() - started
+            if reply != b"+PONG\r\n":
+                raise SystemExit(f"unexpected PING reply: {reply!r}")
+            if index >= COMMAND_WARMUP:
+                samples.append(elapsed)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    return summarise(samples)
+
+
+def build_clients(redis_url: str) -> dict[str, Redis]:
+    """One client per parser/decoding variant available on this interpreter."""
+    clients: dict[str, Redis] = {
+        "str": Redis.from_url(redis_url, decode_responses=True),
+        "bytes": Redis.from_url(redis_url, decode_responses=False),
+    }
+    # redis-py 6 keeps the parser classes private and names the asyncio one
+    # `_AsyncHiredisParser` (older releases exported `HiredisParser`), so the
+    # class is resolved dynamically: absence means "hiredis not installed",
+    # which is a valid state of the tool, not an error.
+    parser_class = getattr(_parsers, "_AsyncHiredisParser", None) or getattr(
+        _parsers, "HiredisParser", None
+    )
+    if parser_class is None:
+        return clients
+    clients["hiredis"] = Redis.from_url(redis_url, decode_responses=True, parser_class=parser_class)
+    return clients
+
+
+async def _hmget(client: Redis, key: str, names: Sequence[str]) -> list[Any]:
+    """Read selected hash fields, awaiting the coroutine redis-py returns."""
+    pending = cast(Awaitable[Any], client.hmget(key, list(names)))
+    return cast(list[Any], await pending)
+
+
+async def measure_client(store: RedisStore, iterations: int) -> dict[str, dict[str, float]]:
+    """Time the commands one hot event issues against one client variant."""
+    fields = incident_fields()
+    await store.client.set(STRING_KEY, "x" * 64)
+    await store.hset_mapping(HASH_KEY, fields)
+    counter = 0
+
+    def next_dedup() -> str:
+        nonlocal counter
+        counter += 1
+        return f"profile-cmd-{counter}"
+
+    return {
+        "ping": await _sample(lambda: store.client.ping(), iterations),
+        "hgetall": await _sample(lambda: store.hgetall(HASH_KEY), iterations),
+        "hmget_two": await _sample(
+            lambda: _hmget(store.client, HASH_KEY, ("events_count", "events_truncated")),
+            iterations,
+        ),
+        "hset": await _sample(lambda: store.hset_mapping(HASH_KEY, fields), iterations),
+        "save_incident": await _sample(
+            lambda: store.save_incident(
+                HASH_KEY, fields, score=1_700_000_000, pointer_key=POINTER_KEY
+            ),
+            iterations,
+        ),
+        "dedup": await _sample(lambda: store.acquire_dedup(next_dedup(), ttl=5.0), iterations),
+    }
+
+
+async def _paired(
+    first: Callable[[], Awaitable[Any]],
+    second: Callable[[], Awaitable[Any]],
+    iterations: int,
+) -> dict[str, float]:
+    """Median of ``second - first`` with the two calls interleaved.
+
+    A shared host drifts by tens of microseconds between runs, which is the same
+    order as the deltas this mode is looking for (a parser swap, string
+    decoding). Differencing two interleaved calls inside one loop cancels that
+    drift, and the median ignores the occasional stall.
+    """
+    for _ in range(COMMAND_WARMUP):
+        await first()
+        await second()
+    deltas: list[float] = []
+    for index in range(iterations):
+        started = time.perf_counter()
+        if index % 2 == 0:
+            await first()
+            middle = time.perf_counter()
+            await second()
+            finished = time.perf_counter()
+            deltas.append((finished - middle) - (middle - started))
+        else:
+            await second()
+            middle = time.perf_counter()
+            await first()
+            finished = time.perf_counter()
+            deltas.append((middle - started) - (finished - middle))
+    return {
+        "median_us": round(statistics.median(deltas) * 1e6, 3),
+        "mean_us": round(statistics.fmean(deltas) * 1e6, 3),
+        "p25_us": round(_percentile(deltas, 0.25) * 1e6, 3),
+        "p75_us": round(_percentile(deltas, 0.75) * 1e6, 3),
+    }
+
+
+async def run_commands(redis_url: str, iterations: int) -> dict[str, Any]:
+    """Decompose the per-command cost above a bare round trip."""
+    raw = await measure_raw_ping(redis_url, iterations)
+    clients = build_clients(redis_url)
+    stores = {name: RedisStore(client) for name, client in clients.items()}
+    fields = incident_fields()
+    variants: dict[str, dict[str, dict[str, float]]] = {}
+    paired: dict[str, dict[str, float]] = {}
+    try:
+        for name, store in stores.items():
+            if not await store.ping():
+                raise SystemExit(f"Redis is not reachable: {redis_url}")
+            variants[name] = await measure_client(store, iterations)
+
+        text = stores["str"]
+        pairs: dict[str, tuple[Callable[[], Awaitable[Any]], Callable[[], Awaitable[Any]]]] = {
+            "hgetall over hmget(2 fields)": (
+                lambda: _hmget(text.client, HASH_KEY, MERGE_FIELDS),
+                lambda: text.hgetall(HASH_KEY),
+            ),
+            "hgetall over ping": (lambda: text.client.ping(), lambda: text.hgetall(HASH_KEY)),
+            "bytes over str hgetall": (
+                lambda: text.hgetall(HASH_KEY),
+                lambda: stores["bytes"].hgetall(HASH_KEY),
+            ),
+            "save_incident over ping": (
+                lambda: text.client.ping(),
+                lambda: text.save_incident(
+                    HASH_KEY, fields, score=1_700_000_000, pointer_key=POINTER_KEY
+                ),
+            ),
+        }
+        if "hiredis" in stores:
+            hired = stores["hiredis"]
+            pairs["hiredis over str hgetall"] = (
+                lambda: text.hgetall(HASH_KEY),
+                lambda: hired.hgetall(HASH_KEY),
+            )
+            pairs["hiredis over str ping"] = (
+                lambda: text.client.ping(),
+                lambda: hired.client.ping(),
+            )
+        for label, (first, second) in pairs.items():
+            paired[label] = await _paired(first, second, iterations)
+    finally:
+        for client in clients.values():
+            for key in (STRING_KEY, HASH_KEY, POINTER_KEY):
+                await client.delete(key)
+            await client.zrem(KEY_INCIDENTS, HASH_KEY)
+            await client.aclose()
+
+    derived = {
+        "redis_py_over_raw_ping": round(variants["str"]["ping"]["mean_us"] - raw["mean_us"], 3),
+    }
+    parts = urlsplit(redis_url)
+    return {
+        "mode": "commands",
+        "iterations": iterations,
+        "redis": f"{parts.hostname or '127.0.0.1'}:{parts.port or 6379}",
+        "hiredis_available": "hiredis" in variants,
+        "raw_resp_ping": raw,
+        "variants_us": variants,
+        "paired_deltas_us": paired,
+        "derived_us": derived,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -395,6 +728,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="0 = a new host per event, 1 = hot merge into one incident",
     )
+    commands = sub.add_parser("commands", help="decompose the per-command cost")
+    commands.add_argument("--redis-url", required=True)
+    commands.add_argument("--iterations", type=int, default=DEFAULT_COMMAND_ITERATIONS)
     return parser
 
 
@@ -403,6 +739,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.mode == "cpu":
         summary = run_cpu(args.iterations)
+    elif args.mode == "commands":
+        summary = asyncio.run(run_commands(args.redis_url, args.iterations))
     else:
         summary = asyncio.run(run_pipeline(args.redis_url, args.events, args.hosts))
     print_human(summary)
