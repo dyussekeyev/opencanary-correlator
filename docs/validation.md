@@ -483,13 +483,44 @@ include. Nothing in it is protocol parsing.
   codebase's `RedisStore.hgetall()` coerces with `str()`, which is slower than
   decoding (the `bytes` row in the tool is measuring the wrapper, not the
   decoder, and is not used as evidence).
-- **The merge path is the next lever, and it is not the wire.** 87 % of the merge
-  is `json.loads` of the stored `logdata` list, performed on every event only to
-  discover that the list is already at `OCC_MAX_STORED_EVENTS` and must be
-  returned unchanged. Skipping `append_timestamp`/`merge_logdata` when
-  `events_truncated` is set is a behavioural no-op for a frozen history and is
-  worth ~49 µs per hot merge here - a sixth of the residual, and the largest
-  single item left that is not a round trip.
+- **The merge path was the next lever, and it is not the wire.** 87 % of the
+  merge was `json.loads` of the stored `logdata` list, performed on every event
+  only to discover that the list is already at `OCC_MAX_STORED_EVENTS` and must
+  be returned unchanged. That decode is now skipped, with the measurement below;
+  what remains of a frozen merge is `from_fields` at 4.1 µs.
+
+#### Frozen merge without the decode (implemented)
+
+A merge into a full incident used to run `append_timestamp`, `merge_logdata` and
+`to_fields`, and then discard two of the three results: the history was at the
+cap, so the rebuilt CSV and the decoded list came back unchanged. The repository
+now decides "frozen" first - `events_truncated` together with an `events_count`
+at or above the cap - and when the incident class is append-only it skips the
+whole trio: one event adds one timestamp and one log entry under the same limit,
+so a full timestamp list already proves a full log list. A raised
+`OCC_MAX_STORED_EVENTS` brings the count back under the cap and recording
+resumes, which is `test_raising_the_cap_lets_a_frozen_incident_record_again`.
+`scans.host_portscan` and `scans.network_portscan` opt out through
+`LOG_DATA_IS_APPEND_ONLY = False`: their log list is a deduplicated set of ports
+or targets that must stay exact, and it is cheap to merge anyway.
+
+The three stages, measured in-process in the `python:3.11-slim` container at
+20 000 iterations (`tools/profile_hot_path.py cpu`):
+
+| Stage | mean |
+|---|---|
+| `from_fields` (still runs) | 4.1 µs |
+| `merge_and_to_fields` (skipped when frozen) | **49.2 µs** |
+| — of which `decode_logdata` | 43.2 µs |
+| — of which `split_events_list` | 3.9 µs |
+
+So the Python half of a frozen merge fell from ~53.4 µs to ~4.1 µs. The
+end-to-end check is `tools/bench_ingest.py --events 10000 --hosts 1 --concurrency 1`
+with fakeredis, three runs per build, stashing only `core/incident.py` between
+them to hold everything else constant: **12.090 / 12.162 / 12.194 s** before and
+**11.498 / 11.513 / 11.773 s** after, medians 12.162 s → 11.513 s (**‑5.3 %**,
+~65 µs per event). The ranges do not overlap, so the 49 µs of skipped Python
+accounts for the win without a call to optimism about the rest.
 
 **Trade-off, stated plainly.** The cap is only consulted when the pointer is
 missing or stale. If a live incident for that host exists but sits behind more
@@ -556,9 +587,13 @@ fakeredis is CPU-bound in one process.
   incidents in the window than the knob allows sees one line per first-seen
   host. That is the intended signal that the cap is binding: raise the knob if
   the index is that large, or accept the bounded scan.
-- A hot merge still decodes the whole stored `logdata` list to discover it is at
-  the cap: 44-46 µs of a ~51 µs merge, measured above. It is the largest
-  remaining non-round-trip cost and is not yet removed.
+- A frozen merge no longer decodes its stored `logdata` (44-46 µs of a ~53 µs
+  merge, measured above), so what is left of it is `from_fields` at 4.1 µs. The
+  trade is that `events_truncated` is now authoritative for "history is frozen":
+  an incident whose flag says `True` but whose `events_list` is shorter than the
+  cap - hand-edited state, or a cap lowered after the fact - would skip an append
+  the previous build would have made. Nothing writes that combination; the flag
+  is set by the same merge that fills the list.
 - Memory is bounded by the queue, not by incident size: 10 000 events into **one**
   incident peaked at the same RSS as 10 000 events over 100 hosts, because the
   stored history is capped (see the memory table below).
@@ -674,8 +709,9 @@ close.
    investigated and rejected on this evidence — see
    [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md). The
    residual has since been decomposed: the protocol layer is not part of it, and
-   the largest remaining item is the discarded `logdata` decode on a frozen
-   incident — see “What the residual is” above.
+   the discarded `logdata` decode on a frozen incident — the largest single item
+   — has been removed. What is left per hot event is six round trips plus
+   `from_fields`, `audit_emit` and parse/validate.
 
 Closed since the previous revision:
 

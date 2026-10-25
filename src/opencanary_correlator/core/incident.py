@@ -49,6 +49,10 @@ class Incident(BaseModel):
 
     INCIDENT_NAME: ClassVar[str] = "incident"
     DESCRIPTION: ClassVar[str] = "Not available"
+    # Whether every event appends exactly one entry to both `events_list` and
+    # `logdata`, which is what makes a full timestamp list prove a full log list.
+    # Port scans replace it with a deduplicated set that must stay exact.
+    LOG_DATA_IS_APPEND_ONLY: ClassVar[bool] = True
 
     key: str
     node_id: str
@@ -280,6 +284,7 @@ class IncidentSMBFileOpen(Incident):
 class IncidentHostPortScan(Incident):
     INCIDENT_NAME = "scans.host_portscan"
     DESCRIPTION = "Host Port Scan"
+    LOG_DATA_IS_APPEND_ONLY = False
 
     @classmethod
     def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
@@ -303,6 +308,7 @@ class IncidentHostPortScan(Incident):
 class IncidentNetworkPortScan(Incident):
     INCIDENT_NAME = "scans.network_portscan"
     DESCRIPTION = "Network Port Scan"
+    LOG_DATA_IS_APPEND_ONLY = False
 
     @classmethod
     def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
@@ -463,20 +469,32 @@ class IncidentRepository:
                 if fields:
                     cap = self._settings.max_stored_events
                     merged = incident_cls.from_fields(existing_key, fields)
-                    merged.events_list, timestamps_changed = incident_cls.append_timestamp(
-                        merged.events_list, now, limit=cap
-                    )
+                    # A stored incident is frozen once its timestamp list is full.
+                    # The flag plus a count already at the cap answer that without
+                    # splitting the CSV, and when the cap was raised in the
+                    # meantime the count is below it, so recording resumes.
+                    frozen = merged.events_truncated and merged.events_count >= cap
+                    if not frozen:
+                        merged.events_list, appended = incident_cls.append_timestamp(
+                            merged.events_list, now, limit=cap
+                        )
+                        frozen = not appended
                     merged.events_count += 1
                     merged.updated = True
-                    stored_logdata = incident_cls.merge_logdata(
-                        merged.logdata, new_logdata, limit=cap
-                    )
-                    logdata_changed = stored_logdata != (merged.logdata or "")
-                    merged.logdata = stored_logdata
-                    stored_events = len(merged.events_list.split(",")) if merged.events_list else 0
-                    merged.events_truncated = (
-                        merged.events_truncated or merged.events_count > stored_events
-                    )
+                    merged.events_truncated = merged.events_truncated or frozen
+                    if frozen and incident_cls.LOG_DATA_IS_APPEND_ONLY:
+                        # One event adds one timestamp and one log entry, capped at
+                        # the same limit, so a full timestamp list means
+                        # `merge_logdata` would decode the whole stored list (44-46
+                        # us of a ~51 us merge) only to return it unchanged. For a
+                        # frozen history the decode is discarded, so it is skipped.
+                        logdata_changed = False
+                    else:
+                        stored_logdata = incident_cls.merge_logdata(
+                            merged.logdata, new_logdata, limit=cap
+                        )
+                        logdata_changed = stored_logdata != (merged.logdata or "")
+                        merged.logdata = stored_logdata
                     if merged.events_truncated:
                         # The stored history is full: send the counters only, so a
                         # 10k-event incident stops costing a full-field rewrite
@@ -486,7 +504,7 @@ class IncidentRepository:
                             "events_truncated": "True",
                             "updated": "True",
                         }
-                        if timestamps_changed:
+                        if not frozen:
                             updates["events_list"] = merged.events_list
                         if logdata_changed:
                             updates["logdata"] = merged.logdata or "[]"

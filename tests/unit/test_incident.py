@@ -379,6 +379,85 @@ async def test_capped_merge_writes_only_the_counters(
     assert set(captured[0]) <= {"events_count", "events_truncated", "updated"}
 
 
+async def test_frozen_incident_merges_without_decoding_its_logdata(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    """A full incident must not pay for a decode whose result is discarded."""
+    repository = IncidentRepository(
+        store, settings_factory(max_stored_events=2), audit, clock=clock
+    )
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    # The cap holds timestamps, so it is full one event before the count exceeds it.
+    clock.advance(1)
+    await repository.record("ftp.login_attempt", event)
+    clock.advance(1)
+    await repository.record("ftp.login_attempt", event)
+
+    frozen = await store.hgetall(created.key)
+    assert frozen["events_truncated"] == "True"
+    # Deliberately unparseable: a merge that decodes the stored list would raise,
+    # and the stored bytes must survive untouched either way.
+    await store.hset_mapping(created.key, {"logdata": "[not json"})
+
+    clock.advance(5)
+    assert await repository.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+    assert fields["events_count"] == "4"
+    assert fields["logdata"] == "[not json"
+    assert fields["events_list"] == frozen["events_list"]
+    assert fields["events_truncated"] == "True"
+
+
+async def test_raising_the_cap_lets_a_frozen_incident_record_again(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    """`OCC_MAX_STORED_EVENTS` is a knob, so a raised cap must resume history."""
+    event = CanaryEvent.model_validate(event_factory())
+    narrow = IncidentRepository(store, settings_factory(max_stored_events=2), audit, clock=clock)
+    created = await narrow.record("ftp.login_attempt", event)
+    assert created is not None
+    clock.advance(1)
+    await narrow.record("ftp.login_attempt", event)
+    clock.advance(1)
+    await narrow.record("ftp.login_attempt", event)
+    frozen = await store.hgetall(created.key)
+    assert frozen["events_truncated"] == "True"
+
+    clock.advance(5)
+    wide = IncidentRepository(store, settings_factory(max_stored_events=5), audit, clock=clock)
+    assert await wide.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+    assert fields["events_list"] == f"{frozen['events_list']},{int(clock.now)}"
+    assert len(json.loads(fields["logdata"])) == 3
+    assert fields["events_count"] == "4"
+    assert fields["events_truncated"] == "True"
+
+
+async def test_frozen_scan_still_merges_its_logdata(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    """Scan evidence is set-shaped: freezing timestamps must not freeze it."""
+    repository = IncidentRepository(
+        store, settings_factory(max_stored_events=2), audit, clock=clock
+    )
+    event = CanaryEvent.model_validate(event_factory(logtype=5001, logdata={}))
+    created = await repository.record("scans.host_portscan", event, logdata=[1, 2], logtype=5003)
+    assert created is not None
+    clock.advance(5)
+    await repository.record("scans.host_portscan", event, logdata=[3], logtype=5003)
+    clock.advance(5)
+    await repository.record("scans.host_portscan", event, logdata=[4], logtype=5003)
+
+    fields = await store.hgetall(created.key)
+
+    assert fields["events_truncated"] == "True"
+    assert json.loads(fields["logdata"]) == [1, 2, 3, 4]
+
+
 async def test_scan_logdata_keeps_every_distinct_member(
     repository, store, clock, event_factory
 ) -> None:
