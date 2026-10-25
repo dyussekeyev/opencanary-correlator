@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.incident import (
     IncidentFTPLogin,
     IncidentHostPortScan,
@@ -410,6 +411,93 @@ async def test_create_keeps_scan_logdata_exact(repository, store, clock, event_f
     fields = await store.hgetall(created.key)
 
     assert json.loads(fields["logdata"]) == list(range(1, 301))
+
+
+async def seed_index(store, *, count: int, score: float) -> None:
+    """Put `count` incidents for other source hosts inside the horizon."""
+    await store.client.zadd(
+        KEY_INCIDENTS,
+        {f"incident:ftplogin:10.9.0.{index}:{int(score)}": score for index in range(count)},
+    )
+
+
+async def test_fallback_scan_is_bounded_by_the_setting(
+    store, settings_factory, audit, audit_stream, clock, event_factory
+) -> None:
+    """The index scan must not transfer every live incident (O(index) lookup)."""
+    settings = settings_factory(incident_lookup_scan_limit=20)
+    repository = IncidentRepository(store, settings, audit, clock=clock)
+    await seed_index(store, count=200, score=clock.now)
+
+    created = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+
+    assert created is not None
+    records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
+    truncated = [record for record in records if record["action"] == "incident_lookup_truncated"]
+    assert len(truncated) == 1
+    assert truncated[0]["status"] == "warning"
+    assert truncated[0]["details"]["scanned"] == 20
+    assert truncated[0]["details"]["scan_limit"] == 20
+
+
+async def test_match_inside_the_cap_still_merges(
+    store, settings_factory, audit, clock, event_factory
+) -> None:
+    """A capped scan still finds the host's incident when it is inside the cap."""
+    settings = settings_factory(incident_lookup_scan_limit=60)
+    repository = IncidentRepository(store, settings, audit, clock=clock)
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    await store.delete(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+    clock.advance(1)
+    await seed_index(store, count=50, score=clock.now)
+
+    assert await repository.record("ftp.login_attempt", event) is None
+
+    fields = await store.hgetall(created.key)
+    assert fields["events_count"] == "2"
+
+
+async def test_match_beyond_the_cap_is_missed_and_audited(
+    store, settings_factory, audit, audit_stream, clock, event_factory
+) -> None:
+    """The documented trade-off: a pointerless incident behind the cap is missed."""
+    settings = settings_factory(incident_lookup_scan_limit=60)
+    repository = IncidentRepository(store, settings, audit, clock=clock)
+    event = CanaryEvent.model_validate(event_factory())
+    created = await repository.record("ftp.login_attempt", event)
+    assert created is not None
+    await store.delete(incident_latest_key("ftp.login_attempt", "10.0.0.5"))
+    clock.advance(1)
+    await seed_index(store, count=70, score=clock.now)
+
+    second = await repository.record("ftp.login_attempt", event)
+
+    assert second is not None
+    assert second.key != created.key
+    actions = [json.loads(line)["action"] for line in audit_stream.getvalue().splitlines()]
+    assert "incident_lookup_truncated" in actions
+
+
+async def test_a_live_pointer_answers_without_scanning(store, clock) -> None:
+    await seed_index(store, count=500, score=clock.now)
+    pointer_key = incident_latest_key("ftp.login_attempt", "10.0.0.5")
+    pointed = "incident:ftplogin:10.0.0.5:1700000000"
+    await store.hset_mapping(pointer_key, {"key": pointed, "score": str(int(clock.now))})
+
+    lookup = await store.find_recent_incident(
+        "incident:ftplogin:10.0.0.5:",
+        min_score=clock.now - 60,
+        pointer_key=pointer_key,
+        scan_limit=10,
+    )
+
+    assert lookup.key == pointed
+    assert lookup.scanned == 0
+    assert lookup.truncated is False
 
 
 async def test_incident_classes_are_registered() -> None:

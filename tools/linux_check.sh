@@ -92,7 +92,8 @@ trap cleanup EXIT
 
 # The project itself is not installed in the image (sources are mounted), so
 # subprocess-based tests and `python -m opencanary_correlator` need PYTHONPATH.
-container_env=(-e COVERAGE_FILE=/tmp/.coverage -e PYTHONPATH=/src/src -e PYTHONDONTWRITEBYTECODE=1)
+container_env=(-e COVERAGE_FILE=/tmp/.coverage -e PYTHONPATH=/src/src -e PYTHONDONTWRITEBYTECODE=1 \
+    -e RUFF_CACHE_DIR=/tmp/.ruff_cache -e MYPY_CACHE_DIR=/tmp/.mypy_cache)
 if [[ "$use_redis" -eq 1 ]]; then
     docker rm --force "$REDIS_CONTAINER" >/dev/null 2>&1 || true
     docker run --detach --rm --name "$REDIS_CONTAINER" \
@@ -126,7 +127,17 @@ if [[ ${#pytest_args[@]} -gt 0 ]]; then
     pytest_cmd+=("${pytest_args[@]}")
 fi
 
-echo "linux check: pytest on python 3.11 in a container (redis=${use_redis})"
+# mypy and ruff answer per platform: under Linux `sys.platform` narrows to
+# `"linux"`, so a `if sys.platform != "win32"` runtime guard is reported as
+# unreachable there and not on the host, and a Windows-side run cannot see it.
+# The gates therefore run where the CI lint job runs them.
+static_cmd=()
+if [[ ${#pytest_args[@]} -eq 0 ]]; then
+    static_cmd=(sh -c 'python -m ruff check . && python -m ruff format --check . \
+        && python -m mypy src tools && exec "$@"' sh)
+fi
+
+echo "linux check: ruff, mypy and pytest on python 3.11 in a container (redis=${use_redis})"
 status=0
 MSYS_NO_PATHCONV=1 docker run --rm \
     --add-host=host.docker.internal:host-gateway \
@@ -134,11 +145,11 @@ MSYS_NO_PATHCONV=1 docker run --rm \
     --workdir /src \
     "${container_env[@]}" \
     "$IMAGE" \
-    "${pytest_cmd[@]}" || status=$?
+    "${static_cmd[@]}" "${pytest_cmd[@]}" || status=$?
 
 if [[ "$status" -eq 0 ]]; then
     echo "linux check: passed"
 else
-    echo "linux check: FAILED (pytest exit $status)" >&2
+    echo "linux check: FAILED (exit $status)" >&2
 fi
 exit "$status"

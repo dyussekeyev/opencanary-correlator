@@ -44,7 +44,11 @@ The workflow has executed on GitHub (run [40114309203](https://github.com/dyusse
 The CI test job can be reproduced locally with `tools/linux_check.sh`, which
 mounts the tree into a cached `python:3.11-slim` image built from `uv.lock` and
 runs pytest against a disposable `redis:7-alpine`: `294 passed`, coverage
-91.33 %, 18 s. POSIX-only tests carry `@pytest.mark.linux`, and
+91.33 %, 18 s. The same container now runs `ruff check`, `ruff format --check`
+and `mypy src tools` first, because mypy answers per platform: PR #7 was green
+locally and red in CI on `warn_unreachable` for a `sys.platform != "win32"`
+guard, and then on a `ctypes.WinDLL` that the POSIX stub does not declare - both
+invisible to a Windows-side `mypy`. POSIX-only tests carry `@pytest.mark.linux`, and
 `.githooks/pre-push` (installed by `tools/install_hooks.sh`) runs the same check
 before a push that touches Python, tests or dependencies.
 
@@ -401,12 +405,117 @@ Desktop's, so only the ratio is the result.
   event while the index is populated. Round trips come second at 0.53 ms, and
   the per-command overhead third.
 
+#### Bounded lookup (implemented)
+
+`RedisStore.find_recent_incident()` now takes `scan_limit`, passed to Redis as
+`ZREVRANGEBYSCORE … LIMIT 0 <n>` (`OCC_INCIDENT_LOOKUP_SCAN_LIMIT`, default
+**100**, bounded 1..10000). Because the reply is ordered newest-first, a match
+inside the cap is still the newest incident for that prefix; a miss that the cap
+cut short comes back as `truncated` and is audited as
+`incident_lookup_truncated` instead of being silently trusted. A pointer hit is
+unchanged and scans nothing.
+
+The measurement is an A/B on one build: same `redis:7-alpine` container on
+Docker Desktop, database flushed between runs, only the knob differs, 1 000
+events against 1 000 hosts so every event is a first-seen host and takes the
+fallback path.
+
+| `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` | Live incidents at the end | `handle_event` | residual |
+|---|---|---|---|
+| 10 000 (effectively unbounded) | 1 000 | 6 513.9 µs | 3 525.7 µs |
+| 100 (new default) | 1 000 | 4 465.6 µs | 1 438.4 µs |
+
+That is **‑31 %** per event (‑59 % of the residual) with an identical command
+count - six round trips and eleven commands per event in both runs. The decisive
+check is flatness: doubling the index to 2 000 incidents with the cap on leaves
+the residual at **1 377.1 µs**, whereas the same doubling without a cap moved it
+from 1 402 µs to 5 517 µs earlier in this document. The term that grew with the
+index is gone; what remains is per-command cost, not state size.
+
+The absolute numbers are Docker Desktop's (PING ≈ 500 µs here), so the ratio and
+the flatness are the result, not the microseconds.
+
+#### What the residual is (measured, not inferred)
+
+Two hypotheses were on the table for the 53 % residual of a hot merge: the
+pure-Python RESP parser (`hiredis` as a dependency) and `decode_responses`
+turning every bulk string into `str`. Both were measured with `tools/
+profile_hot_path.py commands`, which alternates two calls inside one loop and
+reports the median of the per-iteration difference - single-run means on this
+host bounce by ±30 µs, which is the same size as the effect being hunted.
+
+Interleaved deltas in the Linux container (2 000 pairs, RTT ≈ 120 µs):
+
+| Pair | median delta | p25 / p75 |
+|---|---|---|
+| full `HGETALL` (15 fields, ~5.5 KB) over `HMGET` of 2 fields | **+13.6 µs** | 12.2 / 18.7 |
+| full `HGETALL` over `PING` | +19.4 µs | 18.1 / 22.1 |
+| `save_incident` (15 fields, 3 keys, 1 script) over `PING` | **+74.9 µs** | 71.9 / 81.0 |
+| `hiredis` over the pure-Python parser, full `HGETALL` | **+0.4 µs** | −1.8 / 2.6 |
+| `hiredis` over the pure-Python parser, `PING` | **+0.1 µs** | −5.9 / 3.6 |
+
+The pure-Python half of a merge into a capped incident (`cpu` mode, per call):
+
+| Stage | mean | share of the merge |
+|---|---|---|
+| `Incident.from_fields` (validating the stored hash) | 3.8 µs | 7 % |
+| `append_timestamp` + `merge_logdata` + `to_fields` | 51-53 µs | 100 % |
+| — of which `json.loads` of the stored `logdata` | **44-46 µs** | 87 % |
+| — of which splitting the 100-entry `events_list` CSV | 4.7 µs | 9 % |
+| `to_fields` alone | 2.1 µs | 4 % |
+| `audit.emit` (JSON + redaction) | 19-21 µs | - |
+
+**The accounting.** A hot merge pays ~104 µs of payload above six round trips
+(19 + 75 + the small pointer read), ~78 µs of Python (`from_fields` + merge +
+audit) and six asyncio wakes; that is the 370 µs residual measured in the same
+container, with the remainder being scheduling the PING baseline does not
+include. Nothing in it is protocol parsing.
+
+**Decisions**
+
+- **`hiredis` — no, and now with a number.** It moves a full 5.5 KB hash read by
+  0.4 µs (median of 2 000 paired differences), because the bytes rarely reach
+  the parser: the reply is one multi-bulk of fifteen strings and the C parser has
+  nothing to accelerate. The dependency is not justified; `profile_hot_path.py`
+  picks it up automatically if someone installs it and re-checks.
+- **`decode_responses` — no change.** The decoding share is below the noise
+  floor, and the obvious A/B is a trap: with `decode_responses=False` this
+  codebase's `RedisStore.hgetall()` coerces with `str()`, which is slower than
+  decoding (the `bytes` row in the tool is measuring the wrapper, not the
+  decoder, and is not used as evidence).
+- **The merge path is the next lever, and it is not the wire.** 87 % of the merge
+  is `json.loads` of the stored `logdata` list, performed on every event only to
+  discover that the list is already at `OCC_MAX_STORED_EVENTS` and must be
+  returned unchanged. Skipping `append_timestamp`/`merge_logdata` when
+  `events_truncated` is set is a behavioural no-op for a frozen history and is
+  worth ~49 µs per hot merge here - a sixth of the residual, and the largest
+  single item left that is not a round trip.
+
+**Trade-off, stated plainly.** The cap is only consulted when the pointer is
+missing or stale. If a live incident for that host exists but sits behind more
+than `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` newer incidents - possible with state
+written by a build that predates the pointer, or pointers deleted by an operator
+- a second incident is created where an uncapped scan would have merged. The
+alternative, walking the index until the match appears, is the O(index) cost this
+section measures. The truncation is always audited, and raising the knob trades
+that risk back against cost.
+
 Reproduce with:
 
 ```bash
 uv run python tools/profile_hot_path.py cpu --iterations 20000
 uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000
 uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000 --hosts 1
+uv run python tools/profile_hot_path.py commands --redis-url redis://localhost:6379/15 --iterations 2000
+```
+
+The `commands` mode compares the pure-Python parser with `hiredis` when it is
+installed, so the parser question can be re-asked after a redis-py upgrade
+without editing the tool:
+
+```bash
+uv pip install hiredis && uv run --no-sync python tools/profile_hot_path.py commands \
+    --redis-url redis://localhost:6379/15 --iterations 2000 && uv pip uninstall hiredis
 ```
 
 ### fakeredis reference (not a capacity number)
@@ -435,12 +544,55 @@ fakeredis is CPU-bound in one process.
   console shows the first 100 timestamps and reports the rest through
   `events_skipped`. Raise it only when incidents are read directly from Redis,
   because the console renders 100 and nothing more.
+- `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` bounds the fallback lookup, not the fast path.
+  A merge is only missed when the host pointer is absent *and* its incident sits
+  behind the newest N members of the index; the miss is audited as
+  `incident_lookup_truncated` and creates a second incident. In a deployment
+  where every replica writes pointers this cannot happen, because the pointer is
+  written atomically with the incident.
+- The warning is emitted per event, so a deployment that keeps more live
+  incidents in the window than the knob allows sees one line per first-seen
+  host. That is the intended signal that the cap is binding: raise the knob if
+  the index is that large, or accept the bounded scan.
+- A hot merge still decodes the whole stored `logdata` list to discover it is at
+  the cap: 44-46 µs of a ~51 µs merge, measured above. It is the largest
+  remaining non-round-trip cost and is not yet removed.
+- Memory is bounded by the queue, not by incident size: 10 000 events into **one**
+  incident peaked at the same RSS as 10 000 events over 100 hosts, because the
+  stored history is capped (see the memory table below).
 - Numbers from Docker Desktop on Windows are dominated by the host/NAT proxy
   (0.1–0.7 ms per round trip, varying with host load) and are not quoted as
   capacity. The Linux numbers above are the reference.
 
-RSS was not recorded: the Windows `GetProcessMemoryInfo` probe used by the
-benchmark returned no data, so no memory figure is claimed.
+### Resident memory
+
+`tools/bench_ingest.py` reports `rss_mib` (before, after, peak) from
+`opencanary_correlator.utils.memory`, which reads `/proc/self/status` on Linux,
+`resource.getrusage()` on the other POSIX systems and `GetProcessMemoryInfo()` on
+Windows. The Windows probe previously returned nothing because
+`PROCESS_MEMORY_COUNTERS` was declared with `c_ulong` fields, which is 4 bytes on
+64-bit Windows; the sizes are `SIZE_T` and the call now answers (a bare
+interpreter reports 17.2 MiB). A platform that cannot answer reports `null`
+rather than an invented number.
+
+`redis:7-alpine` on a Docker network, `python:3.11-slim` test image, 8 lanes
+(1 lane for the single-host run):
+
+| Run | Events | Hosts | Incidents | Elapsed | Peak RSS |
+|---|---|---|---|---|---|
+| New host per event | 10 000 | 100 | 100 | 11.1 s (900 events/s) | **70.9 MiB** |
+| Hot merge, one incident | 10 000 | 1 | 1 | 18.3 s (546 events/s) | **70.0 MiB** |
+
+RSS starts at ~48 MiB for the interpreter plus imports and peaks at ~70 MiB in
+both shapes, so the queue and the connection pools set the footprint, not the
+incident: 10 000 events into a single incident cost no more memory than 10 000
+events spread over 100. The 250 MB budget in the acceptance record is met with
+room to spare; the figure is the process's own resident set, not the container's.
+
+The single-host row is quoted for memory, not throughput: it is one lane and one
+incident, which serialises every event by design. The 100-host row is the shape
+the throughput criterion refers to (11.1 s here, against 5.1-12.0 s for the same
+commit on the native CI runner).
 
 ## Opt-in real-infrastructure checks
 
@@ -472,7 +624,10 @@ close.
    receiver and queue), against 0.17-0.38 ms in round trips, so the network is
    no longer the place where a hot incident is won. The single-script merge was
    investigated and rejected on this evidence — see
-   [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md).
+   [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md). The
+   residual has since been decomposed: the protocol layer is not part of it, and
+   the largest remaining item is the discarded `logdata` decode on a frozen
+   incident — see “What the residual is” above.
 
 Closed since the previous revision:
 

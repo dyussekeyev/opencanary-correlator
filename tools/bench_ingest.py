@@ -31,6 +31,7 @@ from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.storage.redis_store import RedisStore
+from opencanary_correlator.utils.memory import current_rss_bytes, peak_rss_bytes
 
 BENCH_HOST_PREFIX = "10.42."
 SEED_HOST_PREFIX = "10.43."
@@ -133,9 +134,15 @@ async def seed_incidents(store: RedisStore, count: int) -> int:
     return count
 
 
+def to_mib(value: int | None) -> float | None:
+    """Convert bytes to MiB, keeping an unavailable figure visibly unavailable."""
+    return None if value is None else round(value / 1024 / 1024, 1)
+
+
 async def run(args: argparse.Namespace) -> int:
     """Execute one benchmark run and print a JSON summary."""
     store, backend = await make_store(args.redis_url)
+    rss_before = current_rss_bytes()
     settings = Settings(
         redis_url=args.redis_url or "redis://localhost:6379/0",
         _env_file=None,
@@ -189,6 +196,14 @@ async def run(args: argparse.Namespace) -> int:
         "elapsed_seconds": round(elapsed, 3),
         "events_per_second": round(receiver.stats.accepted / elapsed) if elapsed else 0,
         "incidents": len([key for key in incidents if f":{BENCH_HOST_PREFIX}" in key]),
+        # Resident memory while the run is carried out, so the footprint is a
+        # measurement rather than an opinion. `null` means the platform could not
+        # answer; it is never filled in.
+        "rss_mib": {
+            "before": to_mib(rss_before),
+            "after": to_mib(current_rss_bytes()),
+            "peak": to_mib(peak_rss_bytes()),
+        },
     }
     print(json.dumps(summary, indent=2))
     writer.close()

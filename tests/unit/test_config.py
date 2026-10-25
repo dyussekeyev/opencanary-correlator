@@ -279,3 +279,20 @@ def test_max_stored_events_can_be_raised_from_the_environment(monkeypatch) -> No
     monkeypatch.setenv("OCC_MAX_STORED_EVENTS", "500")
 
     assert Settings(_env_file=None).max_stored_events == 500
+
+
+def test_lookup_scan_limit_defaults_to_a_bounded_window(settings_factory) -> None:
+    assert settings_factory().incident_lookup_scan_limit == 100
+
+
+@pytest.mark.parametrize("value", [0, -1, 10_001])
+def test_lookup_scan_limit_is_bounded(settings_factory, value) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(incident_lookup_scan_limit=value)
+
+
+def test_lookup_scan_limit_can_be_raised_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_INCIDENT_LOOKUP_SCAN_LIMIT", "500")
+
+    assert Settings(_env_file=None).incident_lookup_scan_limit == 500
