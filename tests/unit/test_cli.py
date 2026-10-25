@@ -9,9 +9,13 @@ import logging
 import logging.handlers
 import signal
 
+import pytest
+
 from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.cli import (
+    CorrelatorStartupError,
     build_dispatchers,
+    build_receivers,
     channel_names,
     install_signal_handlers,
     main,
@@ -290,3 +294,189 @@ async def test_run_correlator_starts_and_stops_cleanly(
         isinstance(handler, RedisLogHandler)
         for handler in logging.getLogger("opencanary_correlator").handlers
     )
+
+
+class UnreachableStore:
+    """Redis stand-in whose server is down.
+
+    Only the two methods the startup path reaches before giving up exist here, so
+    the test also fails if a later refactor starts doing Redis work before the
+    health check.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def ping(self) -> bool:
+        return False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class ExplodingHealth:
+    """Health server that refuses to start, to exercise the startup failure path."""
+
+    async def start(self) -> None:
+        raise RuntimeError("health listener failed")
+
+    async def stop(self) -> None:
+        return None
+
+
+async def test_run_correlator_fails_fast_when_redis_is_down(
+    settings_factory, audit, audit_stream
+) -> None:
+    store = UnreachableStore()
+
+    with pytest.raises(CorrelatorStartupError, match="Redis is not reachable"):
+        await run_correlator(
+            settings_factory(health_port=None), store=store, dispatchers=[], audit=audit
+        )
+
+    records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
+    assert [(record["action"], record["status"]) for record in records] == [
+        ("startup_failed", "error")
+    ]
+    assert records[0]["details"]["reason"] == "redis_unavailable"
+    # The caller supplied the store, so run_correlator must not close it behind
+    # its back; only the store it opened itself is released (next test).
+    assert store.closed is False
+
+
+def test_main_reports_an_unreachable_redis_and_exits_1(monkeypatch, capsys) -> None:
+    """The documented behaviour: one startup_failed line, one message, exit 1."""
+    monkeypatch.delenv("OCC_REDIS_URL", raising=False)
+    store = UnreachableStore()
+    monkeypatch.setattr(RedisStore, "from_url", lambda *args, **kwargs: store)
+
+    code = main(["--redis-url", "redis://127.0.0.1:6390/0"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "cannot start: Redis is not reachable" in captured.err
+    lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    assert lines[-1]["action"] == "startup_failed"
+    assert lines[-1]["details"]["reason"] == "redis_unavailable"
+    # run_correlator opened this store itself, so it closes it on the way out.
+    assert store.closed is True
+
+
+def test_main_reports_a_missing_legacy_config(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.delenv("OCC_REDIS_URL", raising=False)
+    missing = tmp_path / "absent.conf"
+
+    code = main(["--config", str(missing)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "cannot load configuration" in captured.err
+    assert "absent.conf" in captured.err
+
+
+def test_main_reports_a_malformed_legacy_config(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.delenv("OCC_REDIS_URL", raising=False)
+    broken = tmp_path / "broken.conf"
+    broken.write_text("{not json", encoding="utf-8")
+
+    code = main(["--config", str(broken)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "cannot load configuration" in captured.err
+
+
+async def test_a_failure_during_startup_is_audited_with_its_type(
+    store, settings_factory, audit, audit_stream
+) -> None:
+    settings = settings_factory(
+        health_port=None,
+        tcp_enabled=False,
+        syslog_enabled=False,
+        rate_limit_events_per_minute=0,
+    )
+
+    with pytest.raises(RuntimeError, match="health listener failed"):
+        await run_correlator(
+            settings,
+            store=store,
+            dispatchers=[],
+            audit=audit,
+            health=ExplodingHealth(),
+        )
+
+    records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
+    failures = [record for record in records if record["action"] == "startup_failed"]
+    assert len(failures) == 1
+    assert failures[0]["status"] == "error"
+    assert failures[0]["details"]["error_type"] == "RuntimeError"
+    # The finally block still runs, so the shutdown record follows the failure.
+    assert records[-1]["action"] == "shutdown"
+
+
+def test_redis_url_flag_alone_satisfies_the_required_setting(monkeypatch, capsys) -> None:
+    """`--redis-url` exists to supply the required URL, so it must reach validation."""
+    monkeypatch.delenv("OCC_REDIS_URL", raising=False)
+
+    code = main(["--check-config", "--redis-url", "redis://127.0.0.1:6390/0"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert json.loads(captured.out)["redis_url"] == "redis://127.0.0.1:6390/0"
+
+
+def test_log_level_flag_overrides_the_environment(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_LOG_LEVEL", "WARNING")
+
+    code = main(["--check-config", "--log-level", "DEBUG"])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["log_level"] == "DEBUG"
+
+
+def test_channel_names_counts_every_telegram_chat(settings_factory) -> None:
+    settings = settings_factory(
+        telegram_token="123:abc",
+        telegram_chat_ids=["-1001", "-1002"],
+        smtp_enabled=True,
+        smtp_host="smtp.example",
+        smtp_to=["ops@example"],
+    )
+
+    assert channel_names(settings) == ["telegram", "telegram", "smtp"]
+
+
+def test_channel_names_skips_smtp_without_a_recipient(settings_factory) -> None:
+    settings = settings_factory(smtp_enabled=True, smtp_host="smtp.example", smtp_to=[])
+
+    assert channel_names(settings) == []
+
+
+def test_build_receivers_wires_every_enabled_listener(settings_factory, audit) -> None:
+    settings = settings_factory(
+        tcp_enabled=True,
+        syslog_enabled=True,
+        syslog_udp_enabled=True,
+        rate_limit_events_per_minute=0,
+    )
+
+    receivers = build_receivers(settings, object(), audit, None)
+
+    assert [receiver.name for receiver in receivers] == ["tcp_json", "syslog_tcp", "syslog_udp"]
+    assert receivers[0].port == settings.tcp_port
+    assert receivers[1].port == receivers[2].port == settings.syslog_port
+
+
+def test_build_receivers_skips_disabled_listeners(settings_factory, audit) -> None:
+    settings = settings_factory(tcp_enabled=False, syslog_enabled=False)
+
+    assert build_receivers(settings, object(), audit, None) == []
+
+
+def test_build_receivers_keeps_syslog_tcp_when_udp_is_disabled(settings_factory, audit) -> None:
+    settings = settings_factory(tcp_enabled=False, syslog_enabled=True, syslog_udp_enabled=False)
+
+    assert [receiver.name for receiver in build_receivers(settings, object(), audit, None)] == [
+        "syslog_tcp"
+    ]
