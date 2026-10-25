@@ -285,6 +285,8 @@ unset):
 # disposable database, never production
 OCC_TEST_REDIS_URL=redis://localhost:6379/15 pytest tests/integration/test_real_redis.py -v
 python tools/bench_ingest.py --redis-url redis://localhost:6379/15 --events 10000 --hosts 100
+# Redis p99 from a second client: idle, then while the benchmark runs
+python tools/latency_probe.py --redis-url redis://localhost:6379/15 --duration 5
 ```
 
 ### Linux parity check
