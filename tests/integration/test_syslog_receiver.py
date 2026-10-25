@@ -96,7 +96,7 @@ async def send_udp(port: int, payload: bytes) -> None:
 # --- TCP framing ------------------------------------------------------------
 
 
-async def test_octet_counted_json_frame_is_accepted(sink, audit) -> None:
+async def test_octet_counted_json_frame_is_accepted(sink: Any, audit: Any) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     try:
         _reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -112,7 +112,7 @@ async def test_octet_counted_json_frame_is_accepted(sink, audit) -> None:
     assert events[0].logdata["USERNAME"] == "admin"
 
 
-async def test_octet_counted_frame_split_across_writes(sink, audit) -> None:
+async def test_octet_counted_frame_split_across_writes(sink: Any, audit: Any) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     frame = octet_frame(b"<134>canary-1 opencanary: " + json_body())
     try:
@@ -134,7 +134,7 @@ async def test_octet_counted_frame_split_across_writes(sink, audit) -> None:
     assert len(sink.events) == 1
 
 
-async def test_newline_framing_is_supported(sink, audit) -> None:
+async def test_newline_framing_is_supported(sink: Any, audit: Any) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     try:
         _reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -149,7 +149,7 @@ async def test_newline_framing_is_supported(sink, audit) -> None:
     assert sink.events[0].node_id == "canary-1"
 
 
-def make_syslog_handler(port: int, socktype: int) -> logging.handlers.SysLogHandler:
+def make_syslog_handler(port: int, socktype: socket.SocketKind) -> logging.handlers.SysLogHandler:
     """Build the same handler opencanaryd uses for syslog output."""
     handler = logging.handlers.SysLogHandler(
         address=("127.0.0.1", port),
@@ -159,7 +159,7 @@ def make_syslog_handler(port: int, socktype: int) -> logging.handlers.SysLogHand
     return handler
 
 
-async def test_python_syslog_handler_over_tcp_is_accepted(sink, audit) -> None:
+async def test_python_syslog_handler_over_tcp_is_accepted(sink: Any, audit: Any) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     handler = make_syslog_handler(receiver.bound_port, socket.SOCK_STREAM)
     logger = logging.getLogger("tests.opencanary.syslog.tcp")
@@ -178,7 +178,7 @@ async def test_python_syslog_handler_over_tcp_is_accepted(sink, audit) -> None:
     assert events[0].logtype is LogType.LOG_FTP_LOGIN_ATTEMPT
 
 
-async def test_python_syslog_handler_over_udp_is_accepted(sink, audit) -> None:
+async def test_python_syslog_handler_over_udp_is_accepted(sink: Any, audit: Any) -> None:
     receiver = await make_udp_receiver(sink, audit)
     handler = make_syslog_handler(receiver.bound_port, socket.SOCK_DGRAM)
     logger = logging.getLogger("tests.opencanary.syslog.udp")
@@ -197,7 +197,7 @@ async def test_python_syslog_handler_over_udp_is_accepted(sink, audit) -> None:
     assert events[0].logtype is LogType.LOG_FTP_LOGIN_ATTEMPT
 
 
-async def test_plain_text_body_becomes_synthetic_event(sink, audit) -> None:
+async def test_plain_text_body_becomes_synthetic_event(sink: Any, audit: Any) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     try:
         _reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -214,7 +214,9 @@ async def test_plain_text_body_becomes_synthetic_event(sink, audit) -> None:
     assert events[0].logdata["message"] == "failed login"
 
 
-async def test_malformed_pri_is_rejected_without_closing(sink, audit, audit_stream) -> None:
+async def test_malformed_pri_is_rejected_without_closing(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
     receiver = await make_tcp_receiver(sink, audit)
     try:
         _reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -231,7 +233,9 @@ async def test_malformed_pri_is_rejected_without_closing(sink, audit, audit_stre
     assert ("event_rejected", "malformed_syslog") in audit_actions(audit_stream)
 
 
-async def test_oversized_octet_frame_closes_connection(sink, audit, audit_stream) -> None:
+async def test_oversized_octet_frame_closes_connection(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
     receiver = await make_tcp_receiver(sink, audit, max_line_bytes=128)
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", receiver.bound_port)
@@ -248,7 +252,7 @@ async def test_oversized_octet_frame_closes_connection(sink, audit, audit_stream
 # --- UDP --------------------------------------------------------------------
 
 
-async def test_udp_json_message_is_accepted(sink, audit) -> None:
+async def test_udp_json_message_is_accepted(sink: Any, audit: Any) -> None:
     receiver = await make_udp_receiver(sink, audit)
     try:
         await send_udp(receiver.bound_port, b"<134>canary-1 opencanary: " + json_body())
@@ -260,7 +264,7 @@ async def test_udp_json_message_is_accepted(sink, audit) -> None:
     assert events[0].logtype is LogType.LOG_FTP_LOGIN_ATTEMPT
 
 
-async def test_udp_plain_text_message_is_accepted(sink, audit) -> None:
+async def test_udp_plain_text_message_is_accepted(sink: Any, audit: Any) -> None:
     receiver = await make_udp_receiver(sink, audit)
     try:
         await send_udp(receiver.bound_port, b"<134>Oct 24 10:00:00 canary-2 app: hello")
@@ -272,7 +276,7 @@ async def test_udp_plain_text_message_is_accepted(sink, audit) -> None:
     assert events[0].logdata["message"] == "hello"
 
 
-async def test_udp_oversized_datagram_is_rejected(sink, audit, audit_stream) -> None:
+async def test_udp_oversized_datagram_is_rejected(sink: Any, audit: Any, audit_stream: Any) -> None:
     receiver = await make_udp_receiver(sink, audit, max_line_bytes=64)
     try:
         await send_udp(receiver.bound_port, b"x" * 200)
@@ -284,7 +288,7 @@ async def test_udp_oversized_datagram_is_rejected(sink, audit, audit_stream) -> 
     assert ("event_rejected", "datagram_too_large") in audit_actions(audit_stream)
 
 
-async def test_udp_stop_is_idempotent(sink, audit) -> None:
+async def test_udp_stop_is_idempotent(sink: Any, audit: Any) -> None:
     receiver = await make_udp_receiver(sink, audit)
     await receiver.stop()
     await receiver.stop()

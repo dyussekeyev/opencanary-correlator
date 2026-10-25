@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,16 @@ from opencanary_correlator.healthcheck import (
     parse_health_port,
     probe,
 )
+
+
+def recording_probe(calls: list[tuple[str, int]]) -> Callable[[str, int], bool]:
+    """Probe stand-in that records each (host, port) and reports success."""
+
+    def probe(host: str, port: int) -> bool:
+        calls.append((host, port))
+        return True
+
+    return probe
 
 
 class FakeConnection:
@@ -55,7 +66,7 @@ def test_parse_health_port_rejects_invalid_values(raw: str) -> None:
         parse_health_port(raw)
 
 
-def test_probe_accepts_only_200(monkeypatch) -> None:
+def test_probe_accepts_only_200(monkeypatch: Any) -> None:
     statuses = iter([200, 503])
     monkeypatch.setattr(
         "opencanary_correlator.healthcheck.HTTPConnection",
@@ -66,7 +77,7 @@ def test_probe_accepts_only_200(monkeypatch) -> None:
     assert probe("127.0.0.1", 8080) is False
 
 
-def test_probe_returns_false_when_nothing_listens(monkeypatch) -> None:
+def test_probe_returns_false_when_nothing_listens(monkeypatch: Any) -> None:
     class BrokenConnection(FakeConnection):
         def request(self, method: str, path: str) -> None:
             raise OSError("connection refused")
@@ -101,7 +112,7 @@ def test_parse_health_host(raw: str | None, expected: str) -> None:
 def test_main_uses_the_default_port_and_loopback_when_unset() -> None:
     probed: list[tuple[str, int]] = []
 
-    assert main(environ={}, probe_fn=lambda host, port: probed.append((host, port)) or True) == 0
+    assert main(environ={}, probe_fn=recording_probe(probed)) == 0
 
     assert probed == [(LOOPBACK_HOST, DEFAULT_HEALTH_PORT)]
 
@@ -112,7 +123,7 @@ def test_main_probes_the_configured_port() -> None:
     assert (
         main(
             environ={"OCC_HEALTH_PORT": "9090"},
-            probe_fn=lambda host, port: probed.append((host, port)) or True,
+            probe_fn=recording_probe(probed),
         )
         == 0
     )
@@ -127,7 +138,7 @@ def test_main_dials_the_configured_host() -> None:
     assert (
         main(
             environ={"OCC_HEALTH_PORT": "9090", "OCC_HEALTH_HOST": "::1"},
-            probe_fn=lambda host, port: probed.append((host, port)) or True,
+            probe_fn=recording_probe(probed),
         )
         == 0
     )
@@ -141,7 +152,7 @@ def test_main_maps_a_wildcard_binding_to_loopback() -> None:
     assert (
         main(
             environ={"OCC_HEALTH_PORT": "8080", "OCC_HEALTH_HOST": "0.0.0.0"},  # noqa: S104 - input
-            probe_fn=lambda host, port: probed.append((host, port)) or True,
+            probe_fn=recording_probe(probed),
         )
         == 0
     )
@@ -153,12 +164,12 @@ def test_main_maps_a_wildcard_binding_to_loopback() -> None:
 def test_main_succeeds_without_a_probe_when_disabled(value: str) -> None:
     probed: list[tuple[str, int]] = []
 
-    assert main(environ={"OCC_HEALTH_PORT": value}, probe_fn=lambda *args: probed.append(args)) == 0
+    assert main(environ={"OCC_HEALTH_PORT": value}, probe_fn=recording_probe(probed)) == 0
 
     assert probed == []
 
 
-def test_main_reports_a_failed_probe(capsys) -> None:
+def test_main_reports_a_failed_probe(capsys: Any) -> None:
     assert main(environ={"OCC_HEALTH_PORT": "8080"}, probe_fn=lambda _host, _port: False) == 1
 
     assert "health probe failed on 127.0.0.1:8080" in capsys.readouterr().err
@@ -191,7 +202,7 @@ def test_main_probes_a_real_listener() -> None:
         thread.join(timeout=5)
 
 
-def test_main_reports_an_invalid_port(capsys) -> None:
-    assert main(environ={"OCC_HEALTH_PORT": "not-a-port"}, probe_fn=lambda _port: True) == 1
+def test_main_reports_an_invalid_port(capsys: Any) -> None:
+    assert main(environ={"OCC_HEALTH_PORT": "not-a-port"}, probe_fn=lambda _host, _port: True) == 1
 
     assert "invalid OCC_HEALTH_PORT" in capsys.readouterr().err

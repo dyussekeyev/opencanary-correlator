@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import fakeredis.aioredis
 import pytest
@@ -65,7 +66,7 @@ def test_summary_of_no_samples_is_null_not_zero() -> None:
     assert summary["p99_us"] is None
 
 
-def test_probe_stops_when_the_stop_event_is_set(monkeypatch) -> None:
+def test_probe_stops_when_the_stop_event_is_set(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         latency_probe.Redis,
         "from_url",
@@ -92,7 +93,7 @@ def test_probe_stops_when_the_stop_event_is_set(monkeypatch) -> None:
     assert summary["errors"] == 0
 
 
-def test_probe_honours_the_duration_cap(monkeypatch) -> None:
+def test_probe_honours_the_duration_cap(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         latency_probe.Redis,
         "from_url",
@@ -106,7 +107,7 @@ def test_probe_honours_the_duration_cap(monkeypatch) -> None:
     assert rtt["samples"] > 0
 
 
-def test_main_prints_one_json_document(monkeypatch, capsys) -> None:
+def test_main_prints_one_json_document(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setattr(
         latency_probe.Redis,
         "from_url",
@@ -121,7 +122,7 @@ def test_main_prints_one_json_document(monkeypatch, capsys) -> None:
 
 
 @pytest.mark.parametrize("duration", [0.0, -1.0])
-def test_a_non_positive_duration_returns_an_empty_summary(monkeypatch, duration) -> None:
+def test_a_non_positive_duration_returns_an_empty_summary(monkeypatch: Any, duration: Any) -> None:
     monkeypatch.setattr(
         latency_probe.Redis,
         "from_url",

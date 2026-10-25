@@ -7,12 +7,13 @@ import io
 import json
 import logging
 import logging.handlers
+from typing import Any
 
 import pytest
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.cli import run_correlator
-from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.health import HealthServer
@@ -29,7 +30,8 @@ class RecordingDispatcher(BaseDispatcher):
     def __init__(self) -> None:
         self.incidents: list[Incident] = []
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+        assert isinstance(incident, Incident)
         self.incidents.append(incident)
         return DispatchResult(dispatcher=self.name, status="success")
 
@@ -68,7 +70,7 @@ async def http_get(port: int, path: str) -> bytes:
 
 
 async def test_health_endpoint_follows_the_runtime(
-    fake_redis, settings_factory, free_tcp_port
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any
 ) -> None:
     store = RedisStore(fake_redis)
     settings = settings_factory(
@@ -109,7 +111,7 @@ async def test_health_endpoint_follows_the_runtime(
 
 
 async def test_full_stack_ingests_correlates_and_notifies(
-    fake_redis, settings_factory, free_tcp_port, event_factory
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, event_factory: Any
 ) -> None:
     store = RedisStore(fake_redis)
     settings = settings_factory(
@@ -188,7 +190,7 @@ async def test_full_stack_ingests_correlates_and_notifies(
 async def deliver_scan_events(
     *,
     store: RedisStore,
-    settings,
+    settings: Any,
     dispatcher: RecordingDispatcher,
     logger_name: str,
     payloads: list[dict[str, object]],
@@ -231,7 +233,7 @@ async def deliver_scan_events(
 
 
 async def test_host_portscan_through_the_wire(
-    fake_redis, settings_factory, free_tcp_port, event_factory
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, event_factory: Any
 ) -> None:
     """Five SYN packets to five ports of one canary produce one host-scan alert."""
     store = RedisStore(fake_redis)
@@ -275,7 +277,7 @@ async def test_host_portscan_through_the_wire(
 
 
 async def test_network_portscan_through_the_wire(
-    fake_redis, settings_factory, free_tcp_port, event_factory
+    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, event_factory: Any
 ) -> None:
     """The same source scanning two canaries on one port produces a network alert."""
     store = RedisStore(fake_redis)

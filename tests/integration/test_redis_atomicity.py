@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+from typing import Any
 
 import pytest
 
 from opencanary_correlator.audit import AuditLogger
-from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
@@ -29,13 +30,16 @@ class CountingDispatcher(BaseDispatcher):
         self.incidents: list[Incident] = []
         self._lock = asyncio.Lock()
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+        assert isinstance(incident, Incident)
         async with self._lock:
             self.incidents.append(incident)
         return DispatchResult(dispatcher=self.name, status="success")
 
 
-def build_engine(store: RedisStore, settings, audit, dispatcher: CountingDispatcher):
+def build_engine(
+    store: RedisStore, settings: Any, audit: Any, dispatcher: CountingDispatcher
+) -> Any:
     repository = IncidentRepository(store, settings, audit)
     return CorrelationEngine(
         rules=build_rules(store, repository, settings),
@@ -47,7 +51,7 @@ def build_engine(store: RedisStore, settings, audit, dispatcher: CountingDispatc
 
 
 async def test_duplicate_events_across_replicas_notify_once(
-    fake_redis, settings_factory, event_factory
+    fake_redis: Any, settings_factory: Any, event_factory: Any
 ) -> None:
     store = RedisStore(fake_redis)
     settings = settings_factory()
@@ -65,7 +69,7 @@ async def test_duplicate_events_across_replicas_notify_once(
 
 
 async def test_concurrent_distinct_events_merge_into_one_incident(
-    fake_redis, settings_factory, event_factory
+    fake_redis: Any, settings_factory: Any, event_factory: Any
 ) -> None:
     store = RedisStore(fake_redis)
     settings = settings_factory()

@@ -30,7 +30,7 @@ async def http_get(port: int, path: str) -> bytes:
     return data
 
 
-async def start_server(store) -> HealthServer:
+async def start_server(store: Any) -> HealthServer:
     server = HealthServer(store, host="127.0.0.1", port=0)
     await server.start()
     return server
@@ -48,7 +48,7 @@ class DummyListener:
         return None
 
 
-async def test_health_server_defaults_to_all_interfaces(monkeypatch, fake_redis) -> None:
+async def test_health_server_defaults_to_all_interfaces(monkeypatch: Any, fake_redis: Any) -> None:
     captured: dict[str, object] = {}
 
     async def fake_start_server(
@@ -65,7 +65,7 @@ async def test_health_server_defaults_to_all_interfaces(monkeypatch, fake_redis)
     assert captured == {"host": DEFAULT_HEALTH_HOST, "port": 8080}
 
 
-async def test_health_server_binds_the_configured_host(monkeypatch, fake_redis) -> None:
+async def test_health_server_binds_the_configured_host(monkeypatch: Any, fake_redis: Any) -> None:
     captured: dict[str, object] = {}
 
     async def fake_start_server(
@@ -82,7 +82,7 @@ async def test_health_server_binds_the_configured_host(monkeypatch, fake_redis) 
     assert captured == {"host": "127.0.0.1", "port": 9090}
 
 
-async def test_healthz_reports_redis_ok(fake_redis) -> None:
+async def test_healthz_reports_redis_ok(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/healthz")
@@ -140,7 +140,7 @@ async def test_metrics_query_string_is_served() -> None:
     assert b"opencanary_events_total" in response
 
 
-async def test_unknown_path_returns_404(fake_redis) -> None:
+async def test_unknown_path_returns_404(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/unknown")
@@ -162,7 +162,7 @@ async def test_query_string_still_pings_redis(path: str) -> None:
     assert b'"status": "degraded"' in response
 
 
-async def test_query_string_keeps_healthy_response(fake_redis) -> None:
+async def test_query_string_keeps_healthy_response(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "/healthz?x=1")
@@ -176,7 +176,7 @@ async def test_query_string_keeps_healthy_response(fake_redis) -> None:
 @pytest.mark.parametrize(
     "path", ["/healthzfoo", "/readyzbar", "/healthz/", "/metricsfoo", "/metrics/"]
 )
-async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis) -> None:
+async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, path)
@@ -186,7 +186,7 @@ async def test_path_prefix_is_not_a_health_endpoint(path: str, fake_redis) -> No
     assert response.startswith(b"HTTP/1.1 404 Not Found")
 
 
-async def test_malformed_absolute_target_returns_404(fake_redis) -> None:
+async def test_malformed_absolute_target_returns_404(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
         response = await http_get(server.bound_port, "http://[::1")
@@ -196,7 +196,7 @@ async def test_malformed_absolute_target_returns_404(fake_redis) -> None:
     assert response.startswith(b"HTTP/1.1 404 Not Found")
 
 
-async def test_stop_is_idempotent(fake_redis) -> None:
+async def test_stop_is_idempotent(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     await server.stop()
     await server.stop()

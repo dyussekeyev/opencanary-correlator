@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -90,7 +91,7 @@ def test_emit_returns_the_written_record() -> None:
     assert record.status == "error"
 
 
-def test_emit_falls_back_to_stderr_when_stream_is_broken(capsys) -> None:
+def test_emit_falls_back_to_stderr_when_stream_is_broken(capsys: Any) -> None:
     logger = AuditLogger("correlator", stream=BrokenStream())
 
     logger.emit("shutdown", "info", {})

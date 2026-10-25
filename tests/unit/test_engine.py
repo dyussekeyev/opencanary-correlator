@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
-from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
@@ -22,7 +23,8 @@ class RecordingDispatcher(BaseDispatcher):
     def __init__(self) -> None:
         self.incidents: list[Incident] = []
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+        assert isinstance(incident, Incident)
         self.incidents.append(incident)
         return DispatchResult(dispatcher=self.name, status="success")
 
@@ -32,7 +34,7 @@ class FailingDispatcher(BaseDispatcher):
 
     name = "failing"
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         raise RuntimeError("channel down")
 
 
@@ -41,7 +43,7 @@ class SlowDispatcher(BaseDispatcher):
 
     name = "slow"
 
-    async def dispatch(self, incident: Incident) -> DispatchResult:
+    async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         await asyncio.sleep(1)
         return DispatchResult(dispatcher=self.name, status="success")
 
@@ -58,7 +60,9 @@ class BrokenRule(Rule):
         raise RuntimeError("rule bug")
 
 
-def make_engine(store, settings, audit, clock, dispatchers, rules=None) -> CorrelationEngine:
+def make_engine(
+    store: Any, settings: Any, audit: Any, clock: Any, dispatchers: Any, rules: Any = None
+) -> CorrelationEngine:
     repository = IncidentRepository(store, settings, audit, clock=clock)
     engine_rules = rules if rules is not None else build_rules(store, repository, settings)
     return CorrelationEngine(
@@ -71,16 +75,16 @@ def make_engine(store, settings, audit, clock, dispatchers, rules=None) -> Corre
     )
 
 
-def audit_actions(audit_stream) -> list[str]:
+def audit_actions(audit_stream: Any) -> list[str]:
     return [json.loads(line)["action"] for line in audit_stream.getvalue().splitlines()]
 
 
-def login_event(event_factory) -> CanaryEvent:
+def login_event(event_factory: Any) -> CanaryEvent:
     return CanaryEvent.model_validate(event_factory())
 
 
 async def test_login_event_creates_incident_and_notifies(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     dispatcher = RecordingDispatcher()
     engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
@@ -94,7 +98,7 @@ async def test_login_event_creates_incident_and_notifies(
 
 
 async def test_duplicate_event_is_deduplicated(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     dispatcher = RecordingDispatcher()
     engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
@@ -107,7 +111,7 @@ async def test_duplicate_event_is_deduplicated(
 
 
 async def test_unknown_logtype_is_audited(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     dispatcher = RecordingDispatcher()
     engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
@@ -120,7 +124,7 @@ async def test_unknown_logtype_is_audited(
 
 
 async def test_failing_dispatcher_does_not_block_others(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     recording = RecordingDispatcher()
     engine = make_engine(
@@ -143,7 +147,7 @@ async def test_failing_dispatcher_does_not_block_others(
 
 
 async def test_slow_dispatcher_times_out(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     engine = make_engine(
         store,
@@ -164,7 +168,7 @@ async def test_slow_dispatcher_times_out(
 
 
 async def test_broken_rule_does_not_prevent_other_rules(
-    store, settings_factory, audit, audit_stream, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
     dispatcher = RecordingDispatcher()
     repository = IncidentRepository(store, settings_factory(), audit, clock=clock)
@@ -178,7 +182,7 @@ async def test_broken_rule_does_not_prevent_other_rules(
 
 
 async def test_incident_is_persisted_without_dispatchers(
-    store, settings_factory, audit, clock, event_factory
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
     engine = make_engine(store, settings_factory(), audit, clock, [])
 
