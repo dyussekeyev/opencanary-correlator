@@ -38,6 +38,12 @@ jobs:
         run: uv sync --extra dev --python "$(command -v python)"
       - name: Dependency consistency
         run: uv pip check
+      # Audits the exact locked set, not the resolver's view, so a published
+      # advisory against a pinned version fails the build.
+      - name: Known-vulnerability audit of the locked dependencies
+        run: |
+          uv export --frozen --no-hashes --no-emit-project --extra dev > /tmp/requirements.txt
+          uvx pip-audit==2.10.1 -r /tmp/requirements.txt --progress-spinner off
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
@@ -78,6 +84,10 @@ jobs:
         run: uv sync --extra dev --python "$(command -v python)"
       - name: Pytest
         run: uv run pytest
+      # The overall 85% gate in pyproject can hide gaps in the critical packages,
+      # so they get their own floor. Reads the .coverage data written by the run above.
+      - name: Critical-module coverage floor (core, storage, receivers)
+        run: uv run coverage report --include="*/core/*,*/storage/*,*/connectors/receivers/*" --fail-under=90
 
   # Records numbers, never gates on them: two invocations of one commit
   # measured 5.145 s and 12.040 s for the same workload, because a shared
@@ -338,6 +348,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Generate the Redis password for this job
+        run: |
+          # Random per run, written to GITHUB_ENV so every later compose step sees
+          # it (compose refuses to start without it). Never printed.
+          echo "OCC_REDIS_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
       - name: Start Redis and the correlator
         run: docker compose up -d --build --wait
       - name: Send a SocketJSONHandler event
