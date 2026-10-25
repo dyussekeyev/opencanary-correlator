@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
 from opencanary_correlator import metrics
+from opencanary_correlator.config import DEFAULT_HEALTH_HOST
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -32,6 +34,52 @@ async def start_server(store) -> HealthServer:
     server = HealthServer(store, host="127.0.0.1", port=0)
     await server.start()
     return server
+
+
+class DummyListener:
+    """Stand-in for the server object `asyncio.start_server` returns."""
+
+    sockets: tuple[object, ...] = ()
+
+    def close(self) -> None:
+        return None
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+async def test_health_server_defaults_to_all_interfaces(monkeypatch, fake_redis) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_start_server(
+        handler: Any, host: str | None = None, port: int | None = None
+    ) -> DummyListener:
+        captured.update(host=host, port=port)
+        return DummyListener()
+
+    monkeypatch.setattr("opencanary_correlator.health.asyncio.start_server", fake_start_server)
+    server = HealthServer(RedisStore(fake_redis))
+
+    await server.start()
+
+    assert captured == {"host": DEFAULT_HEALTH_HOST, "port": 8080}
+
+
+async def test_health_server_binds_the_configured_host(monkeypatch, fake_redis) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_start_server(
+        handler: Any, host: str | None = None, port: int | None = None
+    ) -> DummyListener:
+        captured.update(host=host, port=port)
+        return DummyListener()
+
+    monkeypatch.setattr("opencanary_correlator.health.asyncio.start_server", fake_start_server)
+    server = HealthServer(RedisStore(fake_redis), host="127.0.0.1", port=9090)
+
+    await server.start()
+
+    assert captured == {"host": "127.0.0.1", "port": 9090}
 
 
 async def test_healthz_reports_redis_ok(fake_redis) -> None:

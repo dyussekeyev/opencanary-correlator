@@ -30,8 +30,11 @@ balancer.
 ```
 
 `--health-port` adds a tiny HTTP listener (`/healthz`, `/readyz`, `/metrics`) for
-probes and Prometheus scraping. Configuration is read once at startup; every
-credential comes from the environment or `.env`.
+probes and Prometheus scraping. It binds every interface by default and follows
+`OCC_HEALTH_HOST` when the operator wants it on loopback only; the endpoint is
+unauthenticated, so a wildcard binding should be firewalled or fronted by the
+network policy. Configuration is read once at startup; every credential comes
+from the environment or `.env`.
 
 ## Package map
 
@@ -221,7 +224,8 @@ dispatcher name.
 
 The endpoint never pings Redis, so it remains scrapeable during a Redis failure;
 use `/readyz` for dependency health. Disabling `OCC_HEALTH_PORT` disables both
-health and metrics.
+health and metrics, and `OCC_HEALTH_HOST` chooses the interface they listen on
+(`0.0.0.0` by default, `127.0.0.1`/`::1` for loopback-only).
 
 ## Failure semantics
 

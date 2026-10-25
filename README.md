@@ -230,6 +230,16 @@ carry only low-cardinality labels, never incident keys or payload data.
 The endpoint does not ping Redis, so it stays scrapeable during a Redis outage.
 Set `OCC_HEALTH_PORT=0` to disable both the health and metrics listener.
 
+Set `OCC_HEALTH_HOST=127.0.0.1` (or `::1`) to keep the listener on loopback. The
+default is `0.0.0.0`, because Kubernetes probes and the Docker bridge arrive from
+another address; the endpoint has no authentication, so a wildcard binding
+exposes incident and delivery counters to anything that can reach the port. With
+a loopback binding, probe it from the same host, a sidecar, or `docker exec`.
+
+The container `HEALTHCHECK` follows both variables: it dials `OCC_HEALTH_HOST`
+when one is set (mapping `0.0.0.0`/`::` back to `127.0.0.1`) and skips the request
+entirely when the port is `0`.
+
 Audit records are JSON lines on stdout — see
 [docs/audit-events.md](docs/audit-events.md).
 
@@ -244,9 +254,10 @@ The image runs as an unprivileged user, accepts canary JSON on `1514/tcp`, and
 includes the syslog receiver for `5514/tcp` + `5514/udp`. Base images (Python,
 the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
 build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
-that reads `OCC_HEALTH_PORT` from the container environment; changing the port,
-or setting it to `0` to disable the endpoint, keeps the health status meaningful
-instead of probing a dead 8080.
+that reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
+changing the port, narrowing the binding to loopback, or setting the port to `0`
+to disable the endpoint keeps the health status meaningful instead of probing a
+dead 8080 or the wrong address.
 
 Compose publishes both intake ports, so external canaries can reach the handler
 without editing the file; set `OCC_SYSLOG_ENABLED=true` (and

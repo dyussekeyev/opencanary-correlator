@@ -1,4 +1,4 @@
-"""Container health probe: follows OCC_HEALTH_PORT instead of hard-coded 8080."""
+"""Container health probe: follows OCC_HEALTH_PORT and OCC_HEALTH_HOST."""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ import pytest
 
 from opencanary_correlator.healthcheck import (
     DEFAULT_HEALTH_PORT,
+    LOOPBACK_HOST,
     main,
+    parse_health_host,
     parse_health_port,
     probe,
 )
@@ -60,8 +62,8 @@ def test_probe_accepts_only_200(monkeypatch) -> None:
         lambda *args, **kwargs: FakeConnection(next(statuses)),
     )
 
-    assert probe(8080) is True
-    assert probe(8080) is False
+    assert probe("127.0.0.1", 8080) is True
+    assert probe("127.0.0.1", 8080) is False
 
 
 def test_probe_returns_false_when_nothing_listens(monkeypatch) -> None:
@@ -74,41 +76,92 @@ def test_probe_returns_false_when_nothing_listens(monkeypatch) -> None:
         lambda *args, **kwargs: BrokenConnection(0),
     )
 
-    assert probe(8080) is False
+    assert probe("127.0.0.1", 8080) is False
 
 
-def test_main_uses_the_default_port_when_unset() -> None:
-    probed: list[int] = []
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, LOOPBACK_HOST),
+        ("", LOOPBACK_HOST),
+        ("   ", LOOPBACK_HOST),
+        ("0.0.0.0", LOOPBACK_HOST),  # noqa: S104 - a value to parse, not a bind address
+        ("::", LOOPBACK_HOST),
+        ("[::]", LOOPBACK_HOST),
+        ("127.0.0.1", "127.0.0.1"),
+        (" 127.0.0.1 ", "127.0.0.1"),
+        ("::1", "::1"),
+        ("172.17.0.2", "172.17.0.2"),
+    ],
+)
+def test_parse_health_host(raw: str | None, expected: str) -> None:
+    assert parse_health_host(raw) == expected
 
-    assert main(environ={}, probe_fn=lambda port: probed.append(port) or True) == 0
 
-    assert probed == [DEFAULT_HEALTH_PORT]
+def test_main_uses_the_default_port_and_loopback_when_unset() -> None:
+    probed: list[tuple[str, int]] = []
+
+    assert main(environ={}, probe_fn=lambda host, port: probed.append((host, port)) or True) == 0
+
+    assert probed == [(LOOPBACK_HOST, DEFAULT_HEALTH_PORT)]
 
 
 def test_main_probes_the_configured_port() -> None:
-    probed: list[int] = []
+    probed: list[tuple[str, int]] = []
 
     assert (
-        main(environ={"OCC_HEALTH_PORT": "9090"}, probe_fn=lambda port: probed.append(port) or True)
+        main(
+            environ={"OCC_HEALTH_PORT": "9090"},
+            probe_fn=lambda host, port: probed.append((host, port)) or True,
+        )
         == 0
     )
 
-    assert probed == [9090]
+    assert probed == [(LOOPBACK_HOST, 9090)]
+
+
+def test_main_dials_the_configured_host() -> None:
+    """A loopback-only listener would otherwise be probed on the wrong address."""
+    probed: list[tuple[str, int]] = []
+
+    assert (
+        main(
+            environ={"OCC_HEALTH_PORT": "9090", "OCC_HEALTH_HOST": "::1"},
+            probe_fn=lambda host, port: probed.append((host, port)) or True,
+        )
+        == 0
+    )
+
+    assert probed == [("::1", 9090)]
+
+
+def test_main_maps_a_wildcard_binding_to_loopback() -> None:
+    probed: list[tuple[str, int]] = []
+
+    assert (
+        main(
+            environ={"OCC_HEALTH_PORT": "8080", "OCC_HEALTH_HOST": "0.0.0.0"},  # noqa: S104 - input
+            probe_fn=lambda host, port: probed.append((host, port)) or True,
+        )
+        == 0
+    )
+
+    assert probed == [(LOOPBACK_HOST, 8080)]
 
 
 @pytest.mark.parametrize("value", ["0", ""])
 def test_main_succeeds_without_a_probe_when_disabled(value: str) -> None:
-    probed: list[int] = []
+    probed: list[tuple[str, int]] = []
 
-    assert main(environ={"OCC_HEALTH_PORT": value}, probe_fn=probed.append) == 0
+    assert main(environ={"OCC_HEALTH_PORT": value}, probe_fn=lambda *args: probed.append(args)) == 0
 
     assert probed == []
 
 
 def test_main_reports_a_failed_probe(capsys) -> None:
-    assert main(environ={"OCC_HEALTH_PORT": "8080"}, probe_fn=lambda _port: False) == 1
+    assert main(environ={"OCC_HEALTH_PORT": "8080"}, probe_fn=lambda _host, _port: False) == 1
 
-    assert "health probe failed" in capsys.readouterr().err
+    assert "health probe failed on 127.0.0.1:8080" in capsys.readouterr().err
 
 
 def test_main_probes_a_real_listener() -> None:
@@ -130,6 +183,8 @@ def test_main_probes_a_real_listener() -> None:
     try:
         port = int(server.server_address[1])
         assert main(environ={"OCC_HEALTH_PORT": str(port)}) == 0
+        # The listener is loopback-only, so a probe against 0.0.0.0 would fail.
+        assert main(environ={"OCC_HEALTH_PORT": str(port), "OCC_HEALTH_HOST": "127.0.0.1"}) == 0
     finally:
         server.shutdown()
         server.server_close()
