@@ -1,8 +1,6 @@
 # ExecPlan: Bounded incident event storage
 
-Status: **milestones 1-4 implemented** (2026-10-24); milestone 5 partially
-(unit/query tests and the benchmark are in, the throughput target is not met);
-milestone 6 pending. See [Implementation notes](#implementation-notes).
+Status: **closed 2026-10-25 with deviations.** Milestones 1-4 implemented. Milestone 5 is closed with the ≤ 5 s throughput target not met (unit and query tests and the benchmark are in; steps 10-11 were not written). Milestone 6 is done. See [Implementation notes](#implementation-notes).
 
 ## 1. Goal
 
@@ -54,10 +52,8 @@ Non-goals:
       write once the cap is reached. (2026-10-24)
 - [x] Milestone 4: Query compatibility — `events_skipped` derived from
       `events_count`, `events_truncated` exposed, legacy fallback. (2026-10-24)
-- [ ] Milestone 5: Tests and benchmark — unit and query tests are in (10 new
-      tests); the single-host benchmark improved 4.4x but misses the 5 s target,
-      so the round-trip consolidation below is still required.
-- [ ] Milestone 6: Documentation and sign-off — README, architecture, validation
+- [x] Milestone 5: Tests and benchmark, closed with deviations (2026-10-25): unit and query tests are in; the single-host benchmark improved 4.4x but misses the 5 s target, so the round-trip consolidation was evaluated in [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md) and not implemented; steps 10-11 are not written.
+- [x] Milestone 6: Documentation and sign-off (2026-10-25) — README, architecture, validation
       record, progress entry in the main exec-plan.
 
 ## 3. Plan of Work
@@ -250,11 +246,11 @@ are additive and ignored by older code.
 
 | Workload | Before | After |
 |---|---|---|
-| 10,000 events, one source host, repository merges only | 77.2 s recorded earlier | **13.3 s**, 754 merges/s, hash **5,918 bytes** |
+| 10,000 events, one source host, repository merges only | 77.2 s recorded earlier | **13.3 s** in a repository-only run, 754 merges/s, hash **5,918 bytes** |
 | Same workload through the receiver (`bench_ingest.py --hosts 1 --concurrency 1 --queue-size 20000`) | — | 17.4 s, 0 dropped, 1 incident |
 | Stored history at 10,000 events | ~0.6 MB, 10,000 timestamps | 100 timestamps, 100 log entries, `events_count = 10000`, `events_truncated = True` |
 
-The target of **≤ 5 s** is **not met**. The byte cost is gone (the hash no
+**Decision (2026-10-25): the ≤ 5 s target is closed as not met for this plan.** Native Linux runs of the same commit gave 5.1 s and 12.0 s, so the number is dominated by runner noise and per-command overhead. The round-trip consolidation was evaluated in [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md) and not implemented. Steps 10-11 of Concrete Steps (200-event atomicity test and the opt-in 1,000-event `MEMORY USAGE` test) were not written; the existing atomicity test covers 20 concurrent events. The byte cost is gone (the hash no
 longer grows), so what remains is round trips: a merge still costs six commands
 (dedup, lock acquire, pointer read, hash read, save script, lock release). At
 ~0.2 ms per local round trip that is ~13 s for 10k events. Closing the gap needs

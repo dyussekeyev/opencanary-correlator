@@ -113,8 +113,10 @@ therefore never touches correlation logic.
    missing, points outside the horizon, or points at a deleted incident, so
    older replicas stay correct during a rolling upgrade. That scan reads at most
    `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` members (`ZREVRANGEBYSCORE … LIMIT 0 N`,
-   default 100), newest first, and reports a capped miss as
-   `incident_lookup_truncated`, so ingestion cannot become O(index size) again.
+   default 100), newest first. A capped miss is not trusted: the whole horizon
+   window is read once, so a live incident behind the cap is merged rather than
+   duplicated. That full read runs only for a host with no pointer and no match,
+   and it creates the pointer for later events.
    The incident is then merged (`events_count += 1`, append timestamp, merge
    `logdata`) or created, and one Lua script writes the hash, the ZSET entry and
    the pointer atomically. Only creation returns an incident for delivery; a

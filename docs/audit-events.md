@@ -45,7 +45,6 @@ a compatibility risk, because consumers only rely on these five keys.
 | `incident_created` | `info` | a new incident hash was written | `incident`, `key`, `node_id`, `src_host` |
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
-| `incident_lookup_truncated` | `warning` | the fallback index scan hit `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` without finding an incident for this host, so a second incident may be created where an uncapped scan would have merged. Emitted per event, so it appears on every first-seen host once the live-incident count exceeds the cap | `incident`, `src_host`, `scanned`, `scan_limit` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 

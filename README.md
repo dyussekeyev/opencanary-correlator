@@ -196,8 +196,9 @@ Two settings carry the throughput:
   horizon. The pointer falls back to the index when it is missing or stale, so
   an upgrade or a deleted incident stays correct, and that fallback inspects at
   most `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` (default `100`) newest index members, so
-  per-event cost stays flat as the index grows. A fallback cut short by the cap
-  is audited as `incident_lookup_truncated` rather than assumed empty.
+  per-event cost stays flat as the index grows. When that capped fallback finds
+  nothing, the full horizon window is read once before a new incident is created,
+  so a live incident behind the cap is merged instead of duplicated.
 
 Per-event cost no longer depends on how large an incident already is: a single
 host flooding 10,000 events into one incident took 77.2 s before stored history
