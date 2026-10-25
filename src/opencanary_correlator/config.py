@@ -10,32 +10,36 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal, Self
-from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
-from opencanary_correlator.constants import INCIDENT_KEY_PREFIX, MAX_EVENT_COUNT
+from opencanary_correlator.config_validation import (
+    DEFAULT_HEALTH_ALLOWED_IPS,
+    DEFAULT_HEALTH_HOST,
+    MAX_INCIDENT_HORIZON_SECONDS,
+    decode_incident_horizons,
+    disable_health_port,
+    health_allowlist_or_loopback,
+    normalise_health_host,
+    normalise_log_level,
+    require_email_address,
+    require_http_urls,
+    require_redis_scheme,
+    split_comma_separated,
+    validate_allowed_ips,
+    validate_incident_horizons,
+    validate_telegram_token,
+)
+from opencanary_correlator.constants import MAX_EVENT_COUNT
 
 _logger = logging.getLogger(__name__)
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
-
-#: Interface the probe listener binds to when nothing is configured. The wildcard
-#: is deliberate: Kubernetes probes and the Docker bridge arrive from another
-#: address, so a loopback default would silently break them.
-_LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "127.0.0.1", "::1"})
-_TELEGRAM_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
-DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
-
-#: Peers allowed to read the health and metrics endpoints when nothing is configured.
-DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 
 #: Legacy `.conf` key -> :class:`Settings` field.
 LEGACY_KEY_MAP: Final[dict[str, str]] = {
@@ -72,9 +76,6 @@ LEGACY_INCIDENT_HORIZON_KEYS: Final[dict[str, str]] = {
     "scans.host_portscan_horizon": "scans.host_portscan",
     "scans.network_portscan_horizon": "scans.network_portscan",
 }
-
-#: Upper bound for a per-incident horizon, in seconds (one week).
-MAX_INCIDENT_HORIZON_SECONDS: Final[float] = 7 * 24 * 3600.0
 
 #: Legacy keys that are intentionally not migrated to the new settings.
 LEGACY_DROPPED_PREFIXES: Final[tuple[str, ...]] = (
@@ -215,99 +216,52 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _split_comma_separated(cls, value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("["):
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return [text]
-        return [item.strip() for item in text.split(",") if item.strip()]
+        return split_comma_separated(value)
 
     @field_validator("webhook_urls", "slack_webhooks", "discord_webhooks")
     @classmethod
     def _require_http_urls(cls, value: list[str]) -> list[str]:
-        for url in value:
-            scheme = urlparse(url).scheme
-            if scheme not in {"http", "https"}:
-                raise ValueError(f"webhook URL must be http(s): {url!r}")
-            # Plain http leaves the payload (incident data, sometimes tokens in
-            # the URL path) readable on the wire; only loopback may use it.
-            if scheme == "http" and urlparse(url).hostname not in _LOOPBACK_HOSTS:
-                raise ValueError(f"webhook URL must use https unless it is loopback: {url!r}")
-        return value
+        return require_http_urls(value)
 
     @field_validator("telegram_token")
     @classmethod
     def _validate_telegram_token(cls, value: SecretStr | None) -> SecretStr | None:
-        # Telegram tokens are "<bot id>:<secret>". The token is embedded in the
-        # request URL, so a malformed value must never reach the dispatcher.
-        if value is not None and not _TELEGRAM_TOKEN_RE.fullmatch(value.get_secret_value()):
-            raise ValueError("telegram_token must look like '<digits>:<secret>'")
-        return value
+        return validate_telegram_token(value)
 
     @field_validator("receiver_allowed_ips", "health_allowed_ips")
     @classmethod
     def _validate_allowed_ips(cls, value: list[str]) -> list[str]:
-        # Fail at startup on a bad entry: silently dropping it would widen or
-        # narrow the allowlist without anyone noticing.
-        parse_allowed_networks(value)
-        return value
+        return validate_allowed_ips(value)
 
     @field_validator("health_allowed_ips")
     @classmethod
     def _health_allowlist_never_open(cls, value: list[str]) -> list[str]:
-        # An empty allowlist means "accept everyone" for receivers, but the health
-        # endpoint must never be open by accident: an empty value means loopback.
-        return value or list(DEFAULT_HEALTH_ALLOWED_IPS)
+        return health_allowlist_or_loopback(value)
 
     @field_validator("incident_horizons", mode="before")
     @classmethod
     def _decode_incident_horizons(cls, value: Any) -> Any:
-        if value is None or value == "":
-            return {}
-        if isinstance(value, str):
-            try:
-                return json.loads(value)
-            except json.JSONDecodeError as exc:
-                raise ValueError("incident_horizons must be a JSON object") from exc
-        return value
+        return decode_incident_horizons(value)
 
     @field_validator("incident_horizons")
     @classmethod
     def _validate_incident_horizons(cls, value: dict[str, float]) -> dict[str, float]:
-        unknown = sorted(set(value) - set(INCIDENT_KEY_PREFIX))
-        if unknown:
-            raise ValueError("unknown incident names in incident_horizons: " + ", ".join(unknown))
-        for incident_name, seconds in value.items():
-            if not 0 <= seconds <= MAX_INCIDENT_HORIZON_SECONDS:
-                raise ValueError(
-                    f"{incident_name} horizon must be between 0 and "
-                    f"{MAX_INCIDENT_HORIZON_SECONDS:.0f} seconds"
-                )
-        return value
+        return validate_incident_horizons(value)
 
     @field_validator("redis_url")
     @classmethod
     def _require_redis_scheme(cls, value: str) -> str:
-        if not value.startswith(("redis://", "rediss://", "unix://")):
-            raise ValueError("redis_url must start with redis://, rediss:// or unix://")
-        return value
+        return require_redis_scheme(value)
 
     @field_validator("log_level", mode="before")
     @classmethod
     def _normalise_log_level(cls, value: Any) -> Any:
-        return value.upper() if isinstance(value, str) else value
+        return normalise_log_level(value)
 
     @field_validator("smtp_from")
     @classmethod
     def _require_email_address(cls, value: str) -> str:
-        if "@" not in value or value.startswith("@") or value.endswith("@"):
-            raise ValueError("smtp_from must be an email address")
-        return value
+        return require_email_address(value)
 
     @model_validator(mode="after")
     def _validate_smtp_tls(self) -> Self:
@@ -324,27 +278,12 @@ class Settings(BaseSettings):
     @field_validator("health_host", mode="before")
     @classmethod
     def _normalise_health_host(cls, value: Any) -> Any:
-        """Trim the configured bind address; an empty value means “all interfaces”."""
-        if value is None:
-            return DEFAULT_HEALTH_HOST
-        text = str(value).strip()
-        return text or DEFAULT_HEALTH_HOST
+        return normalise_health_host(value)
 
     @field_validator("health_port", mode="before")
     @classmethod
     def _disable_health_port(cls, value: Any) -> Any:
-        """Treat any numeric zero and an empty value as “no health endpoint”."""
-        if value is None:
-            return None
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            try:
-                value = int(text)
-            except ValueError:
-                return value
-        return None if value == 0 else value
+        return disable_health_port(value)
 
     def horizon_for(self, incident_name: str) -> float:
         """Return the effective horizon in seconds for one incident type."""
@@ -392,8 +331,7 @@ class Settings(BaseSettings):
                 **horizon_overrides,
                 **dict(explicit.get("incident_horizons") or {}),
             }
-        merged = {**mapped, **explicit}
-        return cls(_env_file=None, **merged)
+        return cls(_env_file=None, **{**mapped, **explicit})
 
 
 __all__ = [

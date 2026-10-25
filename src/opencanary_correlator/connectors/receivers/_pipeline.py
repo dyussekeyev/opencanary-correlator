@@ -21,6 +21,8 @@ import contextlib
 import zlib
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import EventSink, RateLimiter
@@ -28,6 +30,16 @@ from opencanary_correlator.schemas import CanaryEvent
 
 DEFAULT_DRAIN_TIMEOUT: float = 5.0
 DEFAULT_CONCURRENCY: int = 8
+
+
+def schema_error_details(exc: ValidationError) -> dict[str, object]:
+    """Describe the first schema error for a `schema_validation` audit record."""
+    first = exc.errors()[0]
+    return {
+        "error_count": exc.error_count(),
+        "first_error": ".".join(str(part) for part in first["loc"]) or "payload",
+        "error_type": str(first["type"]),
+    }
 
 
 @dataclass(slots=True)
@@ -169,4 +181,10 @@ class EventPipeline:
                 metrics.EVENT_QUEUE_DEPTH.set(self.pending)
 
 
-__all__ = ["DEFAULT_CONCURRENCY", "DEFAULT_DRAIN_TIMEOUT", "EventPipeline", "ReceiverStats"]
+__all__ = [
+    "DEFAULT_CONCURRENCY",
+    "DEFAULT_DRAIN_TIMEOUT",
+    "EventPipeline",
+    "ReceiverStats",
+    "schema_error_details",
+]

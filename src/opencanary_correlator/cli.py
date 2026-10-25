@@ -12,7 +12,7 @@ import json
 import logging
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -166,21 +166,19 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
     def breaker(channel: str, endpoint: str) -> CircuitBreaker:
         return CircuitBreaker(store, breaker_name(channel, endpoint))
 
-    for url in settings.webhook_urls:
-        dispatchers.append(
-            WebhookDispatcher(url=url, timeout=timeout, breaker=breaker("webhook", url))
-        )
+    def add_endpoints(
+        channel: str,
+        urls: Sequence[str],
+        factory: Callable[..., BaseDispatcher],
+    ) -> None:
+        # One dispatcher per URL, each guarded by its own circuit breaker.
+        for url in urls:
+            dispatchers.append(factory(url=url, timeout=timeout, breaker=breaker(channel, url)))
+
+    add_endpoints("webhook", settings.webhook_urls, WebhookDispatcher)
     if settings.slack_enabled:
-        for slack_url in settings.slack_webhooks:
-            dispatchers.append(
-                SlackDispatcher(url=slack_url, timeout=timeout, breaker=breaker("slack", slack_url))
-            )
-    for discord_url in settings.discord_webhooks:
-        dispatchers.append(
-            DiscordDispatcher(
-                url=discord_url, timeout=timeout, breaker=breaker("discord", discord_url)
-            )
-        )
+        add_endpoints("slack", settings.slack_webhooks, SlackDispatcher)
+    add_endpoints("discord", settings.discord_webhooks, DiscordDispatcher)
     if settings.telegram_token is not None:
         for chat_id in settings.telegram_chat_ids:
             dispatchers.append(
@@ -217,53 +215,55 @@ def build_receivers(
     """Instantiate every receiver enabled by the configuration."""
     receivers: list[BaseReceiver] = []
     allowed_networks = parse_allowed_networks(settings.receiver_allowed_ips)
+    # Arguments shared by every listener; each receiver adds its own host/port.
+    common: dict[str, Any] = {
+        "sink": engine,
+        "audit": audit,
+        "max_line_bytes": settings.max_line_bytes,
+        "queue_size": settings.event_queue_size,
+        "rate_limiter": rate_limiter,
+        "concurrency": settings.event_concurrency,
+        "allowed_networks": allowed_networks,
+    }
+    # Stream receivers additionally take the connection-level limits.
+    stream: dict[str, Any] = {
+        **common,
+        "partial_line_timeout": settings.partial_line_timeout,
+        "max_connections": settings.max_connections,
+    }
     if settings.tcp_enabled:
-        receivers.append(
-            TCPJSONReceiver(
-                sink=engine,
-                audit=audit,
-                host=settings.tcp_host,
-                port=settings.tcp_port,
-                max_line_bytes=settings.max_line_bytes,
-                partial_line_timeout=settings.partial_line_timeout,
-                max_connections=settings.max_connections,
-                queue_size=settings.event_queue_size,
-                rate_limiter=rate_limiter,
-                concurrency=settings.event_concurrency,
-                allowed_networks=allowed_networks,
-            )
-        )
+        receivers.append(TCPJSONReceiver(host=settings.tcp_host, port=settings.tcp_port, **stream))
     if settings.syslog_enabled:
         receivers.append(
-            SyslogTCPReceiver(
-                sink=engine,
-                audit=audit,
-                host=settings.syslog_host,
-                port=settings.syslog_port,
-                max_line_bytes=settings.max_line_bytes,
-                partial_line_timeout=settings.partial_line_timeout,
-                max_connections=settings.max_connections,
-                queue_size=settings.event_queue_size,
-                rate_limiter=rate_limiter,
-                concurrency=settings.event_concurrency,
-                allowed_networks=allowed_networks,
-            )
+            SyslogTCPReceiver(host=settings.syslog_host, port=settings.syslog_port, **stream)
         )
         if settings.syslog_udp_enabled:
             receivers.append(
-                SyslogUDPReceiver(
-                    sink=engine,
-                    audit=audit,
-                    host=settings.syslog_host,
-                    port=settings.syslog_port,
-                    max_line_bytes=settings.max_line_bytes,
-                    queue_size=settings.event_queue_size,
-                    rate_limiter=rate_limiter,
-                    concurrency=settings.event_concurrency,
-                    allowed_networks=allowed_networks,
-                )
+                SyslogUDPReceiver(host=settings.syslog_host, port=settings.syslog_port, **common)
             )
     return receivers
+
+
+def build_rate_limiter(settings: Settings, store: RedisStore) -> RedisRateLimiter | None:
+    """Return the shared event rate limiter, or None when it is disabled."""
+    if settings.rate_limit_events_per_minute <= 0:
+        return None
+    return RedisRateLimiter(store, events_per_minute=settings.rate_limit_events_per_minute)
+
+
+def build_health_server(
+    settings: Settings, store: RedisStore, audit: AuditLogger
+) -> HealthServer | None:
+    """Return the health endpoint server, or None when no port is configured."""
+    if settings.health_port is None:
+        return None
+    return HealthServer(
+        store,
+        host=settings.health_host,
+        port=settings.health_port,
+        audit=audit,
+        allowed_networks=parse_allowed_networks(settings.health_allowed_ips),
+    )
 
 
 def install_signal_handlers(stop_event: asyncio.Event) -> None:
@@ -313,23 +313,9 @@ async def run_correlator(
         settings=settings,
         audit=audit,
     )
-    rate_limiter = (
-        RedisRateLimiter(store, events_per_minute=settings.rate_limit_events_per_minute)
-        if settings.rate_limit_events_per_minute > 0
-        else None
-    )
+    rate_limiter = build_rate_limiter(settings, store)
     receivers = build_receivers(settings, engine, audit, rate_limiter)
-    health = health or (
-        HealthServer(
-            store,
-            host=settings.health_host,
-            port=settings.health_port,
-            audit=audit,
-            allowed_networks=parse_allowed_networks(settings.health_allowed_ips),
-        )
-        if settings.health_port is not None
-        else None
-    )
+    health = health or build_health_server(settings, store, audit)
     stop = stop_event or asyncio.Event()
     install_signal_handlers(stop)
     log_handler = RedisLogHandler(store)

@@ -13,12 +13,11 @@ from collections.abc import Callable
 from typing import Any
 
 from opencanary_correlator.constants import (
-    KEY_CONSOLE_SETTING_PREFIX,
     KEY_INCIDENTS,
     KEY_LOGS,
     MAX_EVENT_COUNT,
 )
-from opencanary_correlator.storage.keys import device_key
+from opencanary_correlator.storage.keys import console_setting_key, device_key
 from opencanary_correlator.storage.redis_store import RedisStore
 from opencanary_correlator.utils.time import (
     current_time_offset,
@@ -197,13 +196,13 @@ async def get_console_setting(
     store: RedisStore, setting: str, default: str | None = None
 ) -> str | None:
     """Read a console setting."""
-    value = await store.get_value(f"{KEY_CONSOLE_SETTING_PREFIX}{setting}")
+    value = await store.get_value(console_setting_key(setting))
     return default if value is None else value
 
 
 async def set_console_setting(store: RedisStore, setting: str, value: str) -> None:
     """Write a console setting."""
-    await store.set_value(f"{KEY_CONSOLE_SETTING_PREFIX}{setting}", value)
+    await store.set_value(console_setting_key(setting), value)
 
 
 async def should_notify(store: RedisStore, node_id: str) -> bool:

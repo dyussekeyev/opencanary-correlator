@@ -17,22 +17,23 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
 
 from opencanary_correlator.audit import AuditLogger
-from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
+from opencanary_correlator.connectors.base import EventSink, RateLimiter
 from opencanary_correlator.connectors.receivers._allowlist import (
     PEER_NOT_ALLOWED,
     AllowedNetworks,
     is_peer_allowed,
 )
+from opencanary_correlator.connectors.receivers._base import NetworkReceiver
 from opencanary_correlator.connectors.receivers._pipeline import (
     DEFAULT_CONCURRENCY,
-    EventPipeline,
-    ReceiverStats,
+    schema_error_details,
 )
 from opencanary_correlator.connectors.receivers._tcp import StreamProtocol, TCPStreamReceiver
 from opencanary_correlator.constants import LogType
@@ -261,6 +262,30 @@ class SyslogTCPProtocol(StreamProtocol):
             del self._buffer[: start + length]
 
 
+def parse_syslog_frame(
+    payload: bytes,
+    peer_ip: str,
+    audit_rejection: Callable[..., None],
+) -> CanaryEvent | None:
+    """Parse one syslog frame into an event, auditing and skipping any rejection.
+
+    Shared by the TCP and UDP receivers so both reject the same inputs the same way.
+    """
+    try:
+        message = parse_syslog(payload)
+    except ValueError as exc:
+        audit_rejection("malformed_syslog", peer_ip, error=str(exc))
+        return None
+    try:
+        return build_event(message, peer_ip)
+    except json.JSONDecodeError:
+        audit_rejection("malformed_json", peer_ip)
+        return None
+    except ValidationError as exc:
+        audit_rejection("schema_validation", peer_ip, **schema_error_details(exc))
+        return None
+
+
 class SyslogTCPReceiver(TCPStreamReceiver):
     """Receive syslog over TCP (octet-counting or newline framing)."""
 
@@ -271,26 +296,7 @@ class SyslogTCPReceiver(TCPStreamReceiver):
 
     def parse_payload(self, payload: bytes, peer_ip: str) -> CanaryEvent | None:
         """Parse a syslog frame and validate any embedded canary JSON."""
-        try:
-            message = parse_syslog(payload)
-        except ValueError as exc:
-            self.audit_rejection("malformed_syslog", peer_ip, error=str(exc))
-            return None
-        try:
-            return build_event(message, peer_ip)
-        except json.JSONDecodeError:
-            self.audit_rejection("malformed_json", peer_ip)
-            return None
-        except ValidationError as exc:
-            first = exc.errors()[0]
-            self.audit_rejection(
-                "schema_validation",
-                peer_ip,
-                error_count=exc.error_count(),
-                first_error=".".join(str(part) for part in first["loc"]) or "payload",
-                error_type=str(first["type"]),
-            )
-            return None
+        return parse_syslog_frame(payload, peer_ip, self.audit_rejection)
 
 
 class SyslogDatagramProtocol(asyncio.DatagramProtocol):
@@ -309,7 +315,7 @@ class SyslogDatagramProtocol(asyncio.DatagramProtocol):
         self._receiver.audit_error(exc)
 
 
-class SyslogUDPReceiver(BaseReceiver):
+class SyslogUDPReceiver(NetworkReceiver):
     """Receive syslog over UDP, one message per datagram."""
 
     name = "syslog_udp"
@@ -327,37 +333,23 @@ class SyslogUDPReceiver(BaseReceiver):
         concurrency: int = DEFAULT_CONCURRENCY,
         allowed_networks: AllowedNetworks = (),
     ) -> None:
-        self.host = host
-        self.port = port
-        self.max_line_bytes = max_line_bytes
-        self._audit = audit
-        self._allowed_networks = allowed_networks
-        self._pipeline = EventPipeline(
+        super().__init__(
             sink=sink,
             audit=audit,
+            host=host,
+            port=port,
+            max_line_bytes=max_line_bytes,
             queue_size=queue_size,
             rate_limiter=rate_limiter,
             concurrency=concurrency,
+            allowed_networks=allowed_networks,
         )
         self._transport: asyncio.DatagramTransport | None = None
-        self._bound_port: int | None = None
 
     @property
     def is_running(self) -> bool:
         """True while the datagram endpoint is open."""
         return self._transport is not None
-
-    @property
-    def bound_port(self) -> int:
-        """Actual listening port."""
-        if self._bound_port is None:
-            raise RuntimeError("receiver is not started")
-        return self._bound_port
-
-    @property
-    def stats(self) -> ReceiverStats:
-        """Counters for health reporting and tests."""
-        return self._pipeline.stats
 
     async def start(self) -> None:
         """Bind the UDP socket and start the event consumer."""
@@ -403,34 +395,15 @@ class SyslogUDPReceiver(BaseReceiver):
         for line in data.splitlines() or [data]:
             if not line.strip():
                 continue
-            event = self._parse_payload(line, peer_ip)
+            event = self.parse_payload(line, peer_ip)
             if event is None:
                 self._pipeline.record_rejection()
                 continue
             self._pipeline.submit(event)
 
-    def _parse_payload(self, payload: bytes, peer_ip: str) -> CanaryEvent | None:
-        try:
-            message = parse_syslog(payload)
-        except ValueError as exc:
-            self.audit_rejection("malformed_syslog", peer_ip, error=str(exc))
-            return None
-        try:
-            return build_event(message, peer_ip)
-        except json.JSONDecodeError:
-            self.audit_rejection("malformed_json", peer_ip)
-            return None
-        except ValidationError as exc:
-            self.audit_rejection("schema_validation", peer_ip, error_count=exc.error_count())
-            return None
-
-    def audit_rejection(self, reason: str, peer_ip: str, **details: object) -> None:
-        """Record why a payload was rejected."""
-        self._audit.emit(
-            "event_rejected",
-            "warning",
-            {"receiver": self.name, "reason": reason, "peer": peer_ip, **details},
-        )
+    def parse_payload(self, payload: bytes, peer_ip: str) -> CanaryEvent | None:
+        """Parse one syslog line from a datagram."""
+        return parse_syslog_frame(payload, peer_ip, self.audit_rejection)
 
     def audit_error(self, exc: Exception) -> None:
         """Record a datagram-level error."""
