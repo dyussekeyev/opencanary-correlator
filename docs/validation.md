@@ -277,7 +277,11 @@ comparability but is not a capacity number.
 
 All runs: 0 dropped, 0 rejected, 100 incidents. Medians of three warm runs;
 the first run after mounting the repository is discarded (page-cache fill).
-**The target "10,000 events < 10 s" is met on real Redis (2.6 s).**
+The "10,000 events < 10 s" target is **not** a pass criterion. A single 2.6 s run
+is not evidence of it: the same commit has since measured 5.1-12.5 s on the
+runner and 14.85 s with 100 sources, so the target is a recorded range (see
+`docs/internal/EXECPLAN-refactor.md` §5). The deviation from the < 10 s target is
+accepted explicitly by the project owner (2026-10-25).
 
 With a single lane the scripts are slightly *slower* than the previous code on a
 local server (3.3 s vs 3.0 s): `EVALSHA` costs ~28 µs of server CPU against
@@ -356,7 +360,7 @@ trip doubling alongside it, is CPU steal rather than code. The `benchmark` job
 therefore records numbers and never asserts one.
 
 The split is also the reason the single-script merge was **not** implemented
-(see [EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md)): on a
+(see `docs/internal/EXECPLAN-merge-consolidation.md`): on a
 native host six round trips are ~31-33 % of an event, so collapsing them has a
 ceiling of ~28 % of wall time, and at the time the rest was assumed to be
 application work. The profile below corrects that assumption: the remaining
@@ -430,9 +434,10 @@ Desktop's, so only the ratio is the result.
 `ZREVRANGEBYSCORE … LIMIT 0 <n>` (`OCC_INCIDENT_LOOKUP_SCAN_LIMIT`, default
 **100**, bounded 1..10000). Because the reply is ordered newest-first, a match
 inside the cap is still the newest incident for that prefix; a miss that the cap
-cut short comes back as `truncated` and is audited as
-`incident_lookup_truncated` instead of being silently trusted. A pointer hit is
-unchanged and scans nothing.
+cut short triggers one uncapped read of the horizon window before a new incident
+is created, so a live incident behind the cap is merged rather than duplicated.
+No audit action is emitted for the capped miss. A pointer hit is unchanged and
+scans nothing.
 
 The measurement is an A/B on one build: same `redis:7-alpine` container on
 Docker Desktop, database flushed between runs, only the knob differs, 1 000
@@ -542,13 +547,11 @@ them to hold everything else constant: **12.090 / 12.162 / 12.194 s** before and
 accounts for the win without a call to optimism about the rest.
 
 **Trade-off, stated plainly.** The cap is only consulted when the pointer is
-missing or stale. If a live incident for that host exists but sits behind more
-than `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` newer incidents - possible with state
-written by a build that predates the pointer, or pointers deleted by an operator
-- a second incident is created where an uncapped scan would have merged. The
-alternative, walking the index until the match appears, is the O(index) cost this
-section measures. The truncation is always audited, and raising the knob trades
-that risk back against cost.
+missing or stale. If the capped scan misses, the whole horizon window is read
+once, uncapped, before a new incident is created, so a live incident behind the
+cap is still merged. That re-read is the O(index) cost this section measures, and
+it runs only for a host with no pointer and no match. The knob therefore bounds
+the common case (a match inside the cap), not correctness.
 
 Reproduce with:
 
@@ -596,16 +599,12 @@ fakeredis is CPU-bound in one process.
   console shows the first 100 timestamps and reports the rest through
   `events_skipped`. Raise it only when incidents are read directly from Redis,
   because the console renders 100 and nothing more.
-- `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` bounds the fallback lookup, not the fast path.
-  A merge is only missed when the host pointer is absent *and* its incident sits
-  behind the newest N members of the index; the miss is audited as
-  `incident_lookup_truncated` and creates a second incident. In a deployment
-  where every replica writes pointers this cannot happen, because the pointer is
-  written atomically with the incident.
-- The warning is emitted per event, so a deployment that keeps more live
-  incidents in the window than the knob allows sees one line per first-seen
-  host. That is the intended signal that the cap is binding: raise the knob if
-  the index is that large, or accept the bounded scan.
+- `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` bounds the first pass of the fallback lookup,
+  not the fast path. A miss in that first pass triggers an uncapped re-read of the
+  horizon window, so a merge is not lost. The cost of that re-read is O(index)
+  and is paid only by a first-seen host with no pointer and no match on the
+  first pass; in a deployment where every replica writes pointers, that is a
+  new host rather than a merge.
 - A frozen merge no longer decodes its stored `logdata` (44-46 µs of a ~53 µs
   merge, measured above), so what is left of it is `from_fields` at 4.1 µs. The
   trade is that `events_truncated` is now authoritative for "history is frozen":
@@ -730,7 +729,7 @@ can tell them apart from work nobody got to:
    0.34-0.83 ms outside them, so the wire is no longer the dominant term. Every
    candidate for lowering it was costed rather than dismissed: collapsing the six
    commands into one Lua script was investigated and rejected on measurement
-   ([EXECPLAN-merge-consolidation.md](EXECPLAN-merge-consolidation.md)), `hiredis`
+   (`docs/internal/EXECPLAN-merge-consolidation.md`), `hiredis`
    was refuted at +0.4 µs on a full `HGETALL`, and orjson/Pydantic tuning cannot
    pay for itself when the pure-Python share is ~24 µs of a ~280 µs event. The
    discarded `logdata` decode on a frozen incident — the largest single item — is
@@ -757,7 +756,7 @@ Closed since the previous revision:
   the ingestion load, previously claimed with nothing behind it, is now produced
   by `tools/latency_probe.py` in every benchmark run (−28 µs against idle on the
   runner, against a 2 ms budget). The throughput criterion is no longer a
-  threshold either — see `docs/EXECPLAN-refactor.md` §5.
+  threshold either — see `docs/internal/EXECPLAN-refactor.md` §5.
 - The benchmark job reports what its tools measure: RSS per workload, the merge
   breakdown per stage, and the interleaved command deltas. `commands` had never
   run in CI, and could not have: it exited on an interpreter without `hiredis`,

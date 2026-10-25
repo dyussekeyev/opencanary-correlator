@@ -31,7 +31,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `shutdown` | `info` | graceful stop finished | `receivers` |
 | `receiver_started` | `info` | a receiver is listening | `receiver`, `host`, `port` |
 | `receiver_stopped` | `info` | a receiver closed | `receiver`, `accepted` |
-| `connection_rejected` | `warning` | connection cap or per-IP budget exceeded | `reason: connection_limit` / `connection_rate_limited`, `peer` |
+| `connection_rejected` | `warning` | connection cap, per-IP budget or source allowlist refused the peer | `reason: connection_limit` / `connection_rate_limited` / `peer_not_allowed`, `peer` |
 | `connection_closed` | `warning` | a connection was closed for a policy reason | `reason`: `line_too_large`, `partial_line_timeout`, `connection_limit`, `connection_rate_limited` |
 | `connection_limiter_error` | `error` | the Redis limiter failed while accepting | `error_type` |
 | `event_rejected` | `warning` | one line/datagram failed parsing or validation | `reason`, `peer`, plus reason-specific fields |

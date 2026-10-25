@@ -260,6 +260,11 @@ health and metrics, and `OCC_HEALTH_HOST` chooses the interface they listen on
   addresses and payload contents are never exported.
 - The container runs as an unprivileged user with no build toolchain, on
   digest-pinned base images, installing the hash-locked dependency graph.
+- **Accepted limitation: intake traffic is not encrypted.** The stock OpenCanary
+  `SocketHandler`/`SyslogHandler` has no TLS, so the receivers accept plaintext
+  JSON by design. Operators who need confidentiality or integrity on that path
+  wrap it in an SSH forward, WireGuard or IPsec tunnel they run themselves. See
+  the README's *Transport limitation* section for the configurations.
 
 ## Extending
 
