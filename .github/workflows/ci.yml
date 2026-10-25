@@ -140,6 +140,10 @@ jobs:
           kill -TERM "$probe"
           wait "$probe" || true
           trap - EXIT
+          # Also in the log, not only in the step summary, so the figure can be
+          # read without the web UI.
+          echo "--- latency, under load:"
+          cat /tmp/latency-load.json
       # Attribute the in-process cost: parsing, validation and fingerprinting
       # have no I/O, so this number is comparable across machines.
       - name: Profile the pure-Python path
