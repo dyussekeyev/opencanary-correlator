@@ -84,8 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_settings(args: argparse.Namespace) -> Settings:
-    """Build settings from the legacy file, the environment and CLI overrides."""
-    settings = Settings.from_legacy_json(args.config) if args.config else Settings()
+    """Build settings from the legacy file, the environment and CLI overrides.
+
+    The overrides are handed to the constructor instead of being merged into an
+    already-built settings object: `redis_url` has no default, so a flag that is
+    meant to supply it has to be visible to validation. Merging afterwards made
+    `opencanary-correlator --redis-url redis://host:6379/0` exit 2 with
+    "redis_url: Field required" unless the variable was also exported.
+    """
     overrides: dict[str, Any] = {}
     if args.redis_url:
         overrides["redis_url"] = args.redis_url
@@ -93,9 +99,9 @@ def load_settings(args: argparse.Namespace) -> Settings:
         overrides["log_level"] = args.log_level.upper()
     if args.health_port is not None:
         overrides["health_port"] = args.health_port if args.health_port > 0 else None
-    if overrides:
-        settings = Settings(_env_file=None, **{**settings.model_dump(), **overrides})
-    return settings
+    if args.config:
+        return Settings.from_legacy_json(args.config, overrides=overrides)
+    return Settings(**overrides)
 
 
 def safe_redis_url(url: str) -> str:
