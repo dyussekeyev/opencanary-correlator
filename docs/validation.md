@@ -507,6 +507,8 @@ uv run python tools/profile_hot_path.py cpu --iterations 20000
 uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000
 uv run python tools/profile_hot_path.py pipeline --redis-url redis://localhost:6379/15 --events 2000 --hosts 1
 uv run python tools/profile_hot_path.py commands --redis-url redis://localhost:6379/15 --iterations 2000
+# Server latency: idle, then bracketing a workload (SIGTERM ends it early)
+uv run python tools/latency_probe.py --redis-url redis://localhost:6379/15 --duration 5
 ```
 
 The `commands` mode compares the pure-Python parser with `hiredis` when it is
@@ -594,6 +596,52 @@ incident, which serialises every event by design. The 100-host row is the shape
 the throughput criterion refers to (11.1 s here, against 5.1-12.0 s for the same
 commit on the native CI runner).
 
+### Throughput, recorded rather than gated
+
+Two invocations of one commit measured 5.145 s and 12.040 s for the same
+workload on the same runner, so wall-clock elapsed is reported and compared
+between builds instead of being asserted. Everything below is 10 000 events
+through the real TCP receiver:
+
+| Environment | Workload | Elapsed |
+|---|---|---|
+| Native runner, 2026-10-25 | 1 host, 1 lane | 12.539 s (798 events/s, peak RSS 69.4 MiB) |
+| Native runner, 2026-10-25 | 100 hosts, 8 lanes | 11.369 s (880 events/s, peak RSS 69.3 MiB) |
+| Native runner, 2026-10-24 | 100 hosts, 8 lanes | 5.145 s and 12.040 s, same commit |
+| Docker Desktop on Windows | 100 hosts, 8 lanes | 11.1 s |
+| Docker Desktop on Windows | 1 host, 1 lane | 18.3 s |
+
+The spread comes from CPU steal on a shared runner and from eight lanes
+competing inside one event loop; the code is the same. What the tool does assert
+- `accepted + dropped == events`, `rejected == 0`, the whole payload arriving
+over a single connection - is checked on every run, and an unbounded queue shows
+up there as `dropped` before it shows up as an elapsed time.
+
+### Server latency while ingesting
+
+`redis-cli --latency` reports min/max/avg and no percentile, and `redis-benchmark`
+measures a closed loop's throughput, so neither answers "how does the server
+behave for a second client while the correlator loads it". `tools/
+latency_probe.py` does: it pings Redis every 5 ms from its own process and reports
+nearest-rank percentiles. CI starts it before both 10 000-event runs and stops it
+with `SIGTERM` afterwards, and prints idle first for the same client, server and
+interval.
+
+| Phase | samples | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| Idle (native runner) | 995 | 214.2 µs | 262.7 µs | **305.4 µs** | 1 882.9 µs |
+| While ingesting (native runner) | 5 244 | 193.2 µs | 249.5 µs | **277.4 µs** | 2 008.6 µs |
+| Idle (Docker Desktop) | 995 | 342.1 µs | 507.8 µs | **696.9 µs** | 8 533.8 µs |
+| While ingesting (Docker Desktop) | 2 761 | 269.1 µs | 401.0 µs | **506.1 µs** | 1 022.9 µs |
+
+The p99 change is **−28 µs** on the runner and **−191 µs** through the proxy: both
+negative, so the honest reading is that the difference sits below the resolution
+of the measurement rather than that load makes Redis faster. The idle p50 is
+higher than the loaded one because a 5 ms pacing loop wakes from sleep with
+nothing else to schedule, while under load it wakes into a busy loop. What the
+criterion asks - no p99 increase above 2 ms - is met with two orders of magnitude
+to spare, and the figure is in the benchmark job summary on every run.
+
 ## Opt-in real-infrastructure checks
 
 `tests/integration/test_real_redis.py` is skipped unless a disposable database
@@ -631,6 +679,16 @@ close.
 
 Closed since the previous revision:
 
+- The last unmeasured acceptance criterion is measured: server p99 latency under
+  the ingestion load, previously claimed with nothing behind it, is now produced
+  by `tools/latency_probe.py` in every benchmark run (−28 µs against idle on the
+  runner, against a 2 ms budget). The throughput criterion is no longer a
+  threshold either — see `docs/EXECPLAN-refactor.md` §5.
+- The benchmark job reports what its tools measure: RSS per workload, the merge
+  breakdown per stage, and the interleaved command deltas. `commands` had never
+  run in CI, and could not have: it exited on an interpreter without `hiredis`,
+  because the parser class exists even when the C library does not and raises in
+  its constructor, which the tool read as "Redis unreachable".
 - The quadratic single-host merge is gone: stored history is capped at
   `OCC_MAX_STORED_EVENTS` and a full incident is updated with counters only
   (77.2 s → 17.7 s, hash flat at 4 329 bytes).
