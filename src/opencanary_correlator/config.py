@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     scan_network_threshold: int = Field(default=2, ge=1)
     scan_network_horizon: float = Field(default=3600.0, gt=0.0)
     dedup_ttl: float = Field(default=60.0, ge=0.0)
+    incident_lookup_scan_limit: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Newest incidents inspected when a host has no incident-latest pointer. "
+            "The fallback lookup is capped, so ingestion cost does not grow with the "
+            "size of the incidents index."
+        ),
+    )
     max_stored_events: int = Field(
         default=MAX_EVENT_COUNT,
         ge=1,

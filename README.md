@@ -193,7 +193,10 @@ Two settings carry the throughput:
 - Incident lookup is O(1): `incident-latest:<incident>:<src_host>` points at the
   newest incident for that host, instead of scanning every incident inside the
   horizon. The pointer falls back to the index when it is missing or stale, so
-  an upgrade or a deleted incident stays correct.
+  an upgrade or a deleted incident stays correct, and that fallback inspects at
+  most `OCC_INCIDENT_LOOKUP_SCAN_LIMIT` (default `100`) newest index members, so
+  per-event cost stays flat as the index grows. A fallback cut short by the cap
+  is audited as `incident_lookup_truncated` rather than assumed empty.
 
 Per-event cost no longer depends on how large an incident already is: a single
 host flooding 10,000 events into one incident took 77.2 s before stored history

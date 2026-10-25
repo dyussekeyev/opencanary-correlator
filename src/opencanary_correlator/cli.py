@@ -128,6 +128,7 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "incident_horizon": settings.incident_horizon,
         "incident_horizons": settings.incident_horizons,
         "max_stored_events": settings.max_stored_events,
+        "incident_lookup_scan_limit": settings.incident_lookup_scan_limit,
         "dispatch_timeout": settings.dispatch_timeout,
         "channels": channel_names(settings),
         "log_level": settings.log_level,

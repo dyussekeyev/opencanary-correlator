@@ -434,9 +434,30 @@ class IncidentRepository:
                 )
                 return None
 
-            existing_key = await self._store.find_recent_incident(
-                prefix, min_score=now - horizon, pointer_key=pointer_key
+            scan_limit = self._settings.incident_lookup_scan_limit
+            lookup = await self._store.find_recent_incident(
+                prefix,
+                min_score=now - horizon,
+                pointer_key=pointer_key,
+                scan_limit=scan_limit,
             )
+            existing_key = lookup.key
+            if existing_key is None and lookup.truncated:
+                # The index was not read to the end, so a live incident for this
+                # host may sit behind the cap. Creating a new one is the same
+                # answer an uncapped miss gives, and it is audited rather than
+                # silently assumed - see docs/validation.md for why the scan is
+                # bounded at all.
+                self._audit.emit(
+                    "incident_lookup_truncated",
+                    "warning",
+                    {
+                        "incident": incident_name,
+                        "src_host": event.src_host,
+                        "scanned": lookup.scanned,
+                        "scan_limit": scan_limit,
+                    },
+                )
             if existing_key is not None:
                 fields = await self._store.hgetall(existing_key)
                 if fields:
