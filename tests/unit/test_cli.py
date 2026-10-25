@@ -91,6 +91,53 @@ def test_check_config_cli_health_port_zero_overrides_the_env(monkeypatch, capsys
     assert json.loads(captured.out)["health_port"] is None
 
 
+def test_check_config_reports_the_configured_health_host(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_HEALTH_HOST", "127.0.0.1")
+
+    code = main(["--check-config"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert json.loads(captured.out)["health_host"] == "127.0.0.1"
+
+
+async def test_run_correlator_binds_health_to_the_configured_host(
+    fake_redis, settings_factory, free_tcp_port, monkeypatch, audit
+) -> None:
+    captured: dict[str, object] = {}
+
+    class RecordingHealth:
+        def __init__(self, store, *, host, port, audit=None) -> None:
+            captured.update(host=host, port=port)
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr("opencanary_correlator.cli.HealthServer", RecordingHealth)
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_correlator(
+        settings_factory(
+            tcp_port=free_tcp_port,
+            syslog_enabled=False,
+            health_host="127.0.0.1",
+            health_port=8080,
+            rate_limit_events_per_minute=0,
+        ),
+        store=RedisStore(fake_redis),
+        dispatchers=[],
+        audit=audit,
+        stop_event=stop_event,
+    )
+
+    assert captured == {"host": "127.0.0.1", "port": 8080}
+
+
 def test_check_config_rejects_invalid_override(monkeypatch, capsys) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
 

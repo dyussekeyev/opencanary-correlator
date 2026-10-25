@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from opencanary_correlator.config import Settings
+from opencanary_correlator.config import DEFAULT_HEALTH_HOST, Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_REDIS_URL = "redis://localhost:6379/0"
@@ -148,6 +148,26 @@ def test_health_port_disabled_from_the_environment(monkeypatch, value: str) -> N
     monkeypatch.setenv("OCC_HEALTH_PORT", value)
 
     assert Settings(_env_file=None).health_port is None
+
+
+def test_health_host_defaults_to_all_interfaces(settings_factory) -> None:
+    assert settings_factory().health_host == DEFAULT_HEALTH_HOST
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_health_host_reads_a_custom_value_from_the_environment(monkeypatch, host: str) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_HOST", f"  {host}  ")
+
+    assert Settings(_env_file=None).health_host == host
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_health_host_binds_every_interface(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_HOST", value)
+
+    assert Settings(_env_file=None).health_host == DEFAULT_HEALTH_HOST
 
 
 def test_empty_incident_horizons_are_allowed(settings_factory) -> None:

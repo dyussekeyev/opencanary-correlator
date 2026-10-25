@@ -25,6 +25,11 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
 
+#: Interface the probe listener binds to when nothing is configured. The wildcard
+#: is deliberate: Kubernetes probes and the Docker bridge arrive from another
+#: address, so a loopback default would silently break them.
+DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
+
 #: Legacy `.conf` key -> :class:`Settings` field.
 LEGACY_KEY_MAP: Final[dict[str, str]] = {
     "console.incident_horizon": "incident_horizon",
@@ -172,6 +177,10 @@ class Settings(BaseSettings):
     # 0 is a valid input and means "disabled"; the before-validator maps it to
     # None, so the 1..65535 bound only applies to enabled ports.
     health_port: int | None = Field(default=8080, ge=0, le=65535)
+    # Every interface by default, because probes often arrive from a different
+    # pod or the Docker bridge. Set 127.0.0.1 (or ::1) to keep the unauthenticated
+    # listener on loopback and reach it through a sidecar or `docker exec`.
+    health_host: str = Field(default=DEFAULT_HEALTH_HOST, max_length=253)
 
     @field_validator(
         "webhook_urls",
@@ -260,6 +269,15 @@ class Settings(BaseSettings):
         if self.smtp_use_tls and self.smtp_starttls:
             raise ValueError("smtp_use_tls and smtp_starttls are mutually exclusive")
         return self
+
+    @field_validator("health_host", mode="before")
+    @classmethod
+    def _normalise_health_host(cls, value: Any) -> Any:
+        """Trim the configured bind address; an empty value means “all interfaces”."""
+        if value is None:
+            return DEFAULT_HEALTH_HOST
+        text = str(value).strip()
+        return text or DEFAULT_HEALTH_HOST
 
     @field_validator("health_port", mode="before")
     @classmethod

@@ -182,6 +182,19 @@ Redis and return 503 when it is down, while `/healthzfoo`, `/readyzbar` and
 `/healthz/` return 404. A malformed absolute-form target is also a 404 rather
 than a listener exception.
 
+The listener binds every interface by default and follows `OCC_HEALTH_HOST`
+otherwise, so the unauthenticated endpoint can be kept on loopback:
+`HealthServer` receives the configured address and passes it to
+`asyncio.start_server` (`test_health_server_defaults_to_all_interfaces`,
+`test_health_server_binds_the_configured_host`), `run_correlator` wires
+`Settings.health_host` into the listener
+(`test_run_correlator_binds_health_to_the_configured_host`), and
+`--check-config` reports it next to the port
+(`test_check_config_reports_the_configured_health_host`). Blank values fall back
+to `0.0.0.0`, and `127.0.0.1`, `::1` and hostnames are accepted
+(`test_health_host_reads_a_custom_value_from_the_environment`,
+`test_blank_health_host_binds_every_interface`).
+
 `GET /metrics` returns `200` with the Prometheus text content type and remains
 scrapeable while Redis is down (it does not call `ping`). Verified over a real
 socket: a live counter appears in the output, `/metrics?format=prometheus` is
@@ -211,6 +224,8 @@ incident key, source address or payload is exported.
 | CLI flags stand alone | `--redis-url` satisfies the required setting by itself (`test_redis_url_flag_alone_satisfies_the_required_setting`); it could not before, because overrides were merged into an already-validated `Settings` |
 | `docker compose config` | valid; Redis URL forced to `redis://redis:6379/0`; `1514/tcp` and `5514/tcp` + `5514/udp` published for external canaries; no health port published; read-only root with `/tmp` tmpfs, `cap_drop: ALL` |
 | `HEALTHCHECK` port resolution | unit-verified: unset → 8080, `OCC_HEALTH_PORT=9090` → 9090, any numeric zero (`0`, `00`, whitespace-padded) or empty → exit 0 without a request, invalid/out-of-range → exit 1, and a real loopback `/healthz` on a non-default port → exit 0; `opencanary-correlator --check-config` with `OCC_HEALTH_PORT=0` exits **0** and prints `health_port: null`; the listener reads the same environment variable through `Settings` |
+| `HEALTHCHECK` host resolution | unit-verified: `OCC_HEALTH_HOST` unset or a wildcard (`0.0.0.0`, `::`, `[::]`) → probe `127.0.0.1`, `::1` → probe `::1`, an explicit address or hostname → probe it, and the failure message names the address that was dialled; a loopback-only listener on a non-default port still exits 0 |
+| Health listener binding | `OCC_HEALTH_HOST` selects the interface (`0.0.0.0` by default); `127.0.0.1`, `::1` and hostnames pass through, blank falls back to `0.0.0.0`; `--check-config` prints `health_host`; `run_correlator` hands the setting to `HealthServer` |
 | Container `HEALTHCHECK` | the exact `CMD` extracted from the Dockerfile returns **0** against a healthy `/healthz` and **1** once the listener is stopped, verified from a separate process |
 | `docker build` / `docker compose up` | **passed** — image built from the pinned digests, both services reached `healthy`, and the full container smoke test below passed |
 

@@ -130,6 +130,7 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "port": settings.syslog_port,
             "udp": settings.syslog_udp_enabled,
         },
+        "health_host": settings.health_host,
         "health_port": settings.health_port,
         "incident_horizon": settings.incident_horizon,
         "incident_horizons": settings.incident_horizons,
@@ -313,7 +314,7 @@ async def run_correlator(
     )
     receivers = build_receivers(settings, engine, audit, rate_limiter)
     health = health or (
-        HealthServer(store, port=settings.health_port, audit=audit)
+        HealthServer(store, host=settings.health_host, port=settings.health_port, audit=audit)
         if settings.health_port is not None
         else None
     )
