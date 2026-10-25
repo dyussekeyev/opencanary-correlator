@@ -9,6 +9,7 @@ import pytest
 
 from opencanary_correlator import metrics
 from opencanary_correlator.config import DEFAULT_HEALTH_HOST
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -200,3 +201,34 @@ async def test_stop_is_idempotent(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     await server.stop()
     await server.stop()
+
+
+@pytest.mark.parametrize(
+    ("networks", "expected"),
+    [
+        (("127.0.0.1/32",), b"HTTP/1.1 200 OK"),
+        (("::1/128",), b"HTTP/1.1 403 Forbidden"),
+        (("10.0.0.0/8",), b"HTTP/1.1 403 Forbidden"),
+    ],
+)
+async def test_health_allowlist_gates_metrics_and_probes(
+    networks: tuple[str, ...], expected: bytes, fake_redis: Any
+) -> None:
+    server = HealthServer(
+        RedisStore(fake_redis),
+        host="127.0.0.1",
+        port=0,
+        allowed_networks=parse_allowed_networks(networks),
+    )
+    await server.start()
+    try:
+        metrics_response = await http_get(server.bound_port, "/metrics")
+        probe_response = await http_get(server.bound_port, "/healthz")
+    finally:
+        await server.stop()
+
+    assert metrics_response.startswith(expected)
+    assert probe_response.startswith(expected)
+    if expected.endswith(b"Forbidden"):
+        for response in (metrics_response, probe_response):
+            assert response.endswith(b'{"error": "forbidden"}')

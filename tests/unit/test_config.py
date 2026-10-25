@@ -57,6 +57,11 @@ def test_empty_comma_separated_values_become_empty_lists(settings_factory: Any) 
         pytest.param({"tcp_port": 0}, id="port-zero"),
         pytest.param({"tcp_port": 70000}, id="port-too-large"),
         pytest.param({"webhook_urls": ["ftp://siem.example"]}, id="webhook-not-http"),
+        pytest.param({"webhook_urls": ["http://siem.example/hook"]}, id="webhook-plain-http"),
+        pytest.param({"slack_webhooks": ["http://hooks.example/x"]}, id="slack-plain-http"),
+        pytest.param({"discord_webhooks": ["http://discord.example/x"]}, id="discord-plain-http"),
+        pytest.param({"telegram_token": "no-colon-token"}, id="telegram-bad-token"),
+        pytest.param({"telegram_token": "abc:secret"}, id="telegram-non-numeric-bot-id"),
         pytest.param({"smtp_from": "not-an-address"}, id="bad-sender"),
         pytest.param({"max_line_bytes": 10}, id="line-limit-too-small"),
         pytest.param({"event_concurrency": 0}, id="no-consumer-lanes"),
@@ -66,6 +71,19 @@ def test_empty_comma_separated_values_become_empty_lists(settings_factory: Any) 
 def test_invalid_settings_are_rejected(settings_factory: Any, overrides: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         settings_factory(**overrides)
+
+
+def test_loopback_webhooks_may_use_plain_http(settings_factory: Any) -> None:
+    settings = settings_factory(webhook_urls=["http://127.0.0.1:9000/hook"])
+
+    assert settings.webhook_urls == ["http://127.0.0.1:9000/hook"]
+
+
+def test_valid_telegram_token_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(telegram_token="123456:AA-bb_cc")
+
+    assert settings.telegram_token is not None
+    assert settings.telegram_token.get_secret_value() == "123456:AA-bb_cc"
 
 
 def test_event_concurrency_defaults_to_eight_lanes(settings_factory: Any) -> None:
@@ -149,6 +167,31 @@ def test_health_port_disabled_from_the_environment(monkeypatch: Any, value: str)
     monkeypatch.setenv("OCC_HEALTH_PORT", value)
 
     assert Settings(_env_file=None).health_port is None
+
+
+def test_health_allowed_ips_default_to_loopback(settings_factory: Any) -> None:
+    assert settings_factory().health_allowed_ips == ["127.0.0.1/32", "::1/128"]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_health_allowed_ips_fall_back_to_loopback(settings_factory: Any, value: str) -> None:
+    assert settings_factory(health_allowed_ips=value).health_allowed_ips == [
+        "127.0.0.1/32",
+        "::1/128",
+    ]
+
+
+def test_health_allowed_ips_reads_from_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_HEALTH_ALLOWED_IPS", "10.0.0.0/8, 192.0.2.7")
+
+    assert Settings(_env_file=None).health_allowed_ips == ["10.0.0.0/8", "192.0.2.7"]
+
+
+@pytest.mark.parametrize("value", ["10.0.0.0/33", "not-an-address"])
+def test_invalid_health_allowed_ips_are_rejected(settings_factory: Any, value: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(health_allowed_ips=value)
 
 
 def test_health_host_defaults_to_all_interfaces(settings_factory: Any) -> None:

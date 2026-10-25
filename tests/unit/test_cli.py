@@ -110,8 +110,16 @@ async def test_run_correlator_binds_health_to_the_configured_host(
     captured: dict[str, object] = {}
 
     class RecordingHealth:
-        def __init__(self, store: Any, *, host: Any, port: Any, audit: Any = None) -> None:
-            captured.update(host=host, port=port)
+        def __init__(
+            self,
+            store: Any,
+            *,
+            host: Any,
+            port: Any,
+            audit: Any = None,
+            allowed_networks: Any = (),
+        ) -> None:
+            captured.update(host=host, port=port, allowed_networks=allowed_networks)
 
         async def start(self) -> None:
             return None
@@ -137,7 +145,11 @@ async def test_run_correlator_binds_health_to_the_configured_host(
         stop_event=stop_event,
     )
 
-    assert captured == {"host": "127.0.0.1", "port": 8080}
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8080
+    networks = captured["allowed_networks"]
+    assert isinstance(networks, tuple)
+    assert [str(net) for net in networks] == ["127.0.0.1/32", "::1/128"]
 
 
 def test_check_config_rejects_invalid_override(monkeypatch: Any, capsys: Any) -> None:

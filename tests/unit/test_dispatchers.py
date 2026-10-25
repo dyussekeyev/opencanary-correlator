@@ -216,6 +216,22 @@ async def test_telegram_posts_chat_and_truncated_text(incident_factory: Any) -> 
     assert len(payload["text"]) == 4096
 
 
+async def test_telegram_token_never_appears_in_the_dispatch_result(incident_factory: Any) -> None:
+    token = "123456:very-secret-token"
+
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"cannot reach {request.url}")
+
+    client = make_client(failing_handler)
+    dispatcher = TelegramDispatcher(token=token, chat_id="-100500", client=client)
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "error"
+    assert token not in repr(result)
+    assert "very-secret-token" not in repr(result)
+
+
 @pytest.mark.parametrize("status", [200, 204])
 async def test_discord_accepts_both_success_statuses(incident_factory: Any, status: int) -> None:
     calls: list[httpx.Request] = []

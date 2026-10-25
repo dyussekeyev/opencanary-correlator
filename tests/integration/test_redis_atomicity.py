@@ -91,3 +91,29 @@ async def test_concurrent_distinct_events_merge_into_one_incident(
     assert len(fields["events_list"].split(",")) == 20
     deliveries = [len(dispatcher.incidents) for dispatcher in dispatchers]
     assert sum(deliveries) == 1
+
+
+async def test_200_concurrent_events_on_one_host_merge_atomically(
+    fake_redis: Any, settings_factory: Any, event_factory: Any
+) -> None:
+    """Past the cap, concurrent merges still produce one incident and one alert."""
+    store = RedisStore(fake_redis)
+    settings = settings_factory()
+    audit = AuditLogger("replica", stream=io.StringIO())
+    dispatchers = [CountingDispatcher() for _ in range(2)]
+    engines = [build_engine(store, settings, audit, dispatcher) for dispatcher in dispatchers]
+    events = [
+        CanaryEvent.model_validate(event_factory(src_port=40000 + offset)) for offset in range(200)
+    ]
+
+    await asyncio.gather(
+        *(engines[index % 2].handle_event(event) for index, event in enumerate(events))
+    )
+
+    keys = await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf")
+    assert len(keys) == 1
+    fields = await store.hgetall(keys[0])
+    assert fields["events_count"] == "200"
+    assert fields["events_truncated"] == "True"
+    assert len(fields["events_list"].split(",")) == settings.max_stored_events
+    assert sum(len(dispatcher.incidents) for dispatcher in dispatchers) == 1

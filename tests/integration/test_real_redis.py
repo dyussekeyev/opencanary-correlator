@@ -167,6 +167,38 @@ async def test_distinct_events_merge_into_one_incident(
         await cleanup_host(replica_stores[0], src_host)
 
 
+async def test_1000_events_keep_the_incident_hash_small(
+    replica_stores: Any, real_settings: Any, event_factory: Any
+) -> None:
+    """Opt-in: a capped incident's real memory footprint stays flat as events grow."""
+    store = replica_stores[0]
+    src_host = f"192.0.2.{uuid.uuid4().int % 250 + 1}"
+    repository = IncidentRepository(store, real_settings, AuditLogger("test", stream=io.StringIO()))
+    try:
+        created: Incident | None = None
+        footprint_at_cap = 0
+        for port in range(1000):
+            event = CanaryEvent.model_validate(event_factory(src_host=src_host, src_port=port + 1))
+            result = await repository.record("ftp.login_attempt", event)
+            if result is not None:
+                created = result
+            if port + 1 == real_settings.max_stored_events:
+                assert created is not None
+                footprint_at_cap = await store.client.memory_usage(created.key)
+        assert created is not None
+
+        fields = await store.hgetall(created.key)
+        assert fields["events_count"] == "1000"
+        assert fields["events_truncated"] == "True"
+        assert len(fields["events_list"].split(",")) == real_settings.max_stored_events
+        # Once the cap is reached the hash must stop growing: 900 more events
+        # may only add the counter's digits, not another copy of the event list.
+        footprint_final = await store.client.memory_usage(created.key)
+        assert footprint_final <= footprint_at_cap * 1.1, (footprint_at_cap, footprint_final)
+    finally:
+        await cleanup_host(store, src_host)
+
+
 @pytest.mark.linux
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics required")
 async def test_sigterm_stops_the_cli_cleanly(
