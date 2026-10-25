@@ -290,15 +290,17 @@ python tools/bench_ingest.py --redis-url redis://localhost:6379/15 --events 1000
 ### Linux parity check
 
 A green suite on Windows does not prove Linux behaviour: the POSIX selector
-transport, signal delivery and socket semantics differ, and CI is the only
-automatic guard. `tools/linux_check.sh` runs the suite on Python 3.11 in a
-container built from the locked dependencies, with a disposable `redis:7-alpine`
-for the opt-in real-server tests, so the whole CI test job is reproducible
-locally:
+transport, signal delivery and socket semantics differ, and type checking does
+too - mypy narrows `sys.platform` to the platform doing the checking, so a
+Windows-run guard can be unreachable under Linux and vice versa. CI is the only
+automatic guard. `tools/linux_check.sh` runs `ruff check`, `ruff format --check`,
+`mypy src tools` and the suite on Python 3.11 in a container built from the
+locked dependencies, with a disposable `redis:7-alpine` for the opt-in
+real-server tests, so the CI lint and test jobs are reproducible locally:
 
 ```bash
-tools/linux_check.sh                      # whole suite, Redis included
-tools/linux_check.sh tests/integration    # subset; extra arguments go to pytest
+tools/linux_check.sh                      # ruff, mypy, whole suite, Redis included
+tools/linux_check.sh tests/integration    # subset; extra arguments go to pytest (static gates skipped)
 tools/linux_check.sh --no-redis           # skip the real-Redis tests
 tools/linux_check.sh --rebuild            # rebuild the test image
 ```

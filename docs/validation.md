@@ -44,7 +44,11 @@ The workflow has executed on GitHub (run [40114309203](https://github.com/dyusse
 The CI test job can be reproduced locally with `tools/linux_check.sh`, which
 mounts the tree into a cached `python:3.11-slim` image built from `uv.lock` and
 runs pytest against a disposable `redis:7-alpine`: `294 passed`, coverage
-91.33 %, 18 s. POSIX-only tests carry `@pytest.mark.linux`, and
+91.33 %, 18 s. The same container now runs `ruff check`, `ruff format --check`
+and `mypy src tools` first, because mypy answers per platform: PR #7 was green
+locally and red in CI on `warn_unreachable` for a `sys.platform != "win32"`
+guard, and then on a `ctypes.WinDLL` that the POSIX stub does not declare - both
+invisible to a Windows-side `mypy`. POSIX-only tests carry `@pytest.mark.linux`, and
 `.githooks/pre-push` (installed by `tools/install_hooks.sh`) runs the same check
 before a push that touches Python, tests or dependencies.
 

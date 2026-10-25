@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 _PROC_STATUS = Path("/proc/self/status")
 
@@ -36,7 +37,10 @@ def _proc_status(field: str) -> int | None:
 
 def _windows_counters() -> tuple[int | None, int | None] | None:  # pragma: no cover - Windows only
     """Return ``(working_set, peak_working_set)`` from ``psapi``, in bytes."""
-    if sys.platform != "win32":
+    # Read through ``str()`` so the comparison is not narrowed to the platform
+    # doing the type checking: mypy reports the rest of the function as
+    # unreachable under Linux, while the guard is still needed at run time.
+    if str(sys.platform) != "win32":
         return None
     import ctypes
     from ctypes import wintypes
@@ -57,8 +61,14 @@ def _windows_counters() -> tuple[int | None, int | None] | None:  # pragma: no c
 
     counters = ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(ProcessMemoryCounters)
-    psapi = ctypes.WinDLL("psapi")
-    kernel32 = ctypes.WinDLL("kernel32")
+    # `ctypes.WinDLL` is absent from the POSIX typeshed stub, so the module is
+    # reached through an ``Any`` alias: the platform guard above already made
+    # this branch Windows-only at run time, while reading the attribute directly
+    # fails type checking under Linux and a `type: ignore` would be unused - and
+    # therefore an error - on Windows.
+    ctypes_any: Any = ctypes
+    psapi = ctypes_any.WinDLL("psapi")
+    kernel32 = ctypes_any.WinDLL("kernel32")
     psapi.GetProcessMemoryInfo.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ProcessMemoryCounters),
