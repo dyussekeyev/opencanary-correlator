@@ -38,6 +38,12 @@ services:
       OCC_TCP_PORT: "1514"
       OCC_SYSLOG_HOST: 0.0.0.0
       OCC_SYSLOG_PORT: "5514"
+      # Interface the probe listener binds to. The wildcard default lets an
+      # external scraper reach /metrics through a published port; export
+      # OCC_HEALTH_HOST=127.0.0.1 (or set it in `.env`) to keep the listener, and
+      # everything it exposes, inside the container. The image HEALTHCHECK dials
+      # 127.0.0.1 for a wildcard binding, so either value stays healthy.
+      OCC_HEALTH_HOST: "${OCC_HEALTH_HOST:-0.0.0.0}"
     # OCC_HEALTH_PORT is inherited from `.env`, so the listener and the image
     # HEALTHCHECK always agree; it stays container-internal because the probe
     # runs inside the container.
