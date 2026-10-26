@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-10-26
+
+Internal refactor. Behaviour, public interfaces, Redis key layout and audit
+records are unchanged.
+
+### Changed
+
+- `incident.py` is split into `incident_model.py` (incident types) and
+  `incident_report.py` (report building). Lua scripts moved to `storage/scripts.py`.
+- Configuration validators moved from `config.py` into `config_validation.py`;
+  `config.py` re-exports them, so existing imports keep working.
+- TCP and syslog receivers share a base in `connectors/receivers/_base.py`.
+- CLI dispatcher wiring uses one helper (`add_endpoints`); receiver arguments are shared.
+- `docs/architecture.md` describes the new modules.
+
 ## [0.3.0] - 2026-10-25
 
 Beta release. Production-readiness work: the public interfaces stay compatible
