@@ -13,6 +13,7 @@ from typing import NoReturn
 
 from pydantic import ValidationError
 
+from opencanary_correlator.connectors.receivers._pipeline import schema_error_details
 from opencanary_correlator.connectors.receivers._tcp import StreamProtocol, TCPStreamReceiver
 from opencanary_correlator.schemas import CanaryEvent
 
@@ -72,14 +73,7 @@ class TCPJSONReceiver(TCPStreamReceiver):
         try:
             return CanaryEvent.model_validate(raw)
         except ValidationError as exc:
-            first = exc.errors()[0]
-            self.audit_rejection(
-                "schema_validation",
-                peer_ip,
-                error_count=exc.error_count(),
-                first_error=".".join(str(part) for part in first["loc"]) or "payload",
-                error_type=str(first["type"]),
-            )
+            self.audit_rejection("schema_validation", peer_ip, **schema_error_details(exc))
             return None
 
 

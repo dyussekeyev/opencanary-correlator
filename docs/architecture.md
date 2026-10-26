@@ -40,12 +40,14 @@ from the environment or `.env`.
 
 | Path | Responsibility |
 |---|---|
-| `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer, URL/port validation |
+| `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer; wires field validators |
+| `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
 | `constants.py` | `LogType` registry, incident key prefixes, legacy Redis key names, defaults |
 | `redaction.py` | secret masking and control-character stripping for audit output |
 | `audit.py` | `AuditEvent`/`AuditLogger` JSON lines, `RedisLogHandler` for the bounded console log |
 | `connectors/base.py` | `EventSink`, `RateLimiter`, `BaseReceiver`, `BaseDispatcher`, `DispatchResult` — the only types `core` may import |
+| `connectors/receivers/_base.py` | `NetworkReceiver`: shared scaffolding for TCP and UDP receivers (pipeline, counters, bound port, audit) |
 | `connectors/receivers/_tcp.py` | asyncio stream lifecycle: framing, 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
 | `connectors/receivers/_pipeline.py` | bounded queue, per-host consumer lanes, rate limiting, audit, counters |
 | `connectors/receivers/tcp_json.py` | `SocketJSONHandler` compatibility: newline-delimited JSON, `[ERR]` tolerance |
@@ -54,10 +56,13 @@ from the environment or `.env`.
 | `connectors/dispatchers/*.py` | webhook, Slack, Telegram, Discord, SMTP channels |
 | `core/windows.py` | sliding window (ZSET), fixed-TTL distinct-set window (port scans), dedup cache, event fingerprint |
 | `core/rules/` | `LoginRule` (14 log types), `SmbFileOpenRule`, host/network port-scan rules |
-| `core/incident.py` | 16 incident types, legacy report formatting, merge rules, atomic create-or-merge |
+| `core/incident_model.py` | `Incident` base and one subclass per incident type (16 types), each with its own merge rules and Redis hash fields |
+| `core/incident_report.py` | legacy plain-text alert templates (title, full, short and scan reports), pure functions |
+| `core/incident.py` | `IncidentRepository`: atomic create-or-merge in Redis; re-exports the model names |
 | `core/engine.py` | dedup → rule routing → dispatcher fan-out with per-channel timeout |
 | `storage/keys.py` | byte-compatible legacy Redis key builders |
-| `storage/redis_store.py` | typed `redis.asyncio` wrapper, transactional pipelines, Lua incident write and lock release, per-host incident pointer |
+| `storage/scripts.py` | Lua bodies for the incident write and lock release, each run as one atomic round trip |
+| `storage/redis_store.py` | typed `redis.asyncio` wrapper, transactional pipelines, registers the Lua scripts, per-host incident pointer |
 | `storage/queries.py` | async read side with the console JSON shape (`created_printable`, `events_list`, …) |
 | `storage/rate_limit.py` | per-IP connection and per-node event budgets |
 | `metrics.py` | Prometheus counters/gauges and text exposition |

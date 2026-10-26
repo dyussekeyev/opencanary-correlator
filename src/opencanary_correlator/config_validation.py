@@ -1,0 +1,170 @@
+"""Pure validation rules for :class:`opencanary_correlator.config.Settings`.
+
+These functions hold no state and read no environment. ``Settings`` wires them
+into pydantic field validators, so the rules can be reviewed and tested apart
+from environment loading.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Final
+from urllib.parse import urlparse
+
+from pydantic import SecretStr
+
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
+from opencanary_correlator.constants import INCIDENT_KEY_PREFIX
+
+#: Interface the probe listener binds to when nothing is configured. The wildcard
+#: is deliberate: Kubernetes probes and the Docker bridge arrive from another
+#: address, so a loopback default would silently break them.
+LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "127.0.0.1", "::1"})
+TELEGRAM_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
+DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
+
+#: Peers allowed to read the health and metrics endpoints when nothing is configured.
+DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
+
+#: Upper bound for a per-incident horizon, in seconds (one week).
+MAX_INCIDENT_HORIZON_SECONDS: Final[float] = 7 * 24 * 3600.0
+
+
+def split_comma_separated(value: Any) -> Any:
+    """Split a comma-separated string, or decode a JSON array, into a list."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def require_http_urls(value: list[str]) -> list[str]:
+    """Accept http(s) URLs only, and plain http only for loopback targets."""
+    for url in value:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"webhook URL must be http(s): {url!r}")
+        # Plain http leaves the payload (incident data, sometimes tokens in
+        # the URL path) readable on the wire; only loopback may use it.
+        if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+            raise ValueError(f"webhook URL must use https unless it is loopback: {url!r}")
+    return value
+
+
+def validate_telegram_token(value: SecretStr | None) -> SecretStr | None:
+    """Telegram tokens are ``<bot id>:<secret>``; reject anything else up front.
+
+    The token is embedded in the request URL, so a malformed value must never
+    reach the dispatcher.
+    """
+    if value is not None and not TELEGRAM_TOKEN_RE.fullmatch(value.get_secret_value()):
+        raise ValueError("telegram_token must look like '<digits>:<secret>'")
+    return value
+
+
+def validate_allowed_ips(value: list[str]) -> list[str]:
+    """Fail at startup on a bad entry instead of silently widening the allowlist."""
+    parse_allowed_networks(value)
+    return value
+
+
+def health_allowlist_or_loopback(value: list[str]) -> list[str]:
+    """The health endpoint must never be open by accident: empty means loopback."""
+    return value or list(DEFAULT_HEALTH_ALLOWED_IPS)
+
+
+def decode_incident_horizons(value: Any) -> Any:
+    """Decode the per-incident horizon map from a JSON string or an empty value."""
+    if value is None or value == "":
+        return {}
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("incident_horizons must be a JSON object") from exc
+    return value
+
+
+def validate_incident_horizons(value: dict[str, float]) -> dict[str, float]:
+    """Only known incident names, each with a horizon within the allowed range."""
+    unknown = sorted(set(value) - set(INCIDENT_KEY_PREFIX))
+    if unknown:
+        raise ValueError("unknown incident names in incident_horizons: " + ", ".join(unknown))
+    for incident_name, seconds in value.items():
+        if not 0 <= seconds <= MAX_INCIDENT_HORIZON_SECONDS:
+            raise ValueError(
+                f"{incident_name} horizon must be between 0 and "
+                f"{MAX_INCIDENT_HORIZON_SECONDS:.0f} seconds"
+            )
+    return value
+
+
+def require_redis_scheme(value: str) -> str:
+    """Only the three supported Redis URL schemes are accepted."""
+    if not value.startswith(("redis://", "rediss://", "unix://")):
+        raise ValueError("redis_url must start with redis://, rediss:// or unix://")
+    return value
+
+
+def normalise_log_level(value: Any) -> Any:
+    """Log levels are case-insensitive; store them upper-cased."""
+    return value.upper() if isinstance(value, str) else value
+
+
+def require_email_address(value: str) -> str:
+    """Minimal structural check: an address with a local part and a domain."""
+    if "@" not in value or value.startswith("@") or value.endswith("@"):
+        raise ValueError("smtp_from must be an email address")
+    return value
+
+
+def normalise_health_host(value: Any) -> Any:
+    """Trim the configured bind address; an empty value means "all interfaces"."""
+    if value is None:
+        return DEFAULT_HEALTH_HOST
+    text = str(value).strip()
+    return text or DEFAULT_HEALTH_HOST
+
+
+def disable_health_port(value: Any) -> Any:
+    """Treat any numeric zero and an empty value as "no health endpoint"."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = int(text)
+        except ValueError:
+            return value
+    return None if value == 0 else value
+
+
+__all__ = [
+    "DEFAULT_HEALTH_ALLOWED_IPS",
+    "DEFAULT_HEALTH_HOST",
+    "LOOPBACK_HOSTS",
+    "MAX_INCIDENT_HORIZON_SECONDS",
+    "TELEGRAM_TOKEN_RE",
+    "decode_incident_horizons",
+    "disable_health_port",
+    "health_allowlist_or_loopback",
+    "normalise_health_host",
+    "normalise_log_level",
+    "require_email_address",
+    "require_http_urls",
+    "require_redis_scheme",
+    "split_comma_separated",
+    "validate_allowed_ips",
+    "validate_incident_horizons",
+    "validate_telegram_token",
+]

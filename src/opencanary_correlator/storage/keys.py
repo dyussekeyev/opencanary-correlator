@@ -10,6 +10,7 @@ import hashlib
 
 from opencanary_correlator.constants import (
     INCIDENT_KEY_PREFIX,
+    KEY_CONSOLE_SETTING_PREFIX,
     KEY_DEVICE,
     KEY_TRACK_HOST_PORT_SCAN,
     KEY_TRACK_NETWORK_PORT_SCAN,
@@ -73,10 +74,16 @@ def dedup_key(fingerprint: str) -> str:
     return f"{DEDUP_KEY_PREFIX}{fingerprint}"
 
 
+def console_setting_key(setting: str) -> str:
+    """Key of one console setting, as the legacy console reads it."""
+    return f"{KEY_CONSOLE_SETTING_PREFIX}{setting}"
+
+
 __all__ = [
     "DEDUP_KEY_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
+    "console_setting_key",
     "dedup_key",
     "device_hash",
     "device_key",

@@ -124,4 +124,4 @@ def test_module_entry_point_runs_from_the_repository_root() -> None:
     )
 
     assert result.returncode == 0
-    assert "opencanary-correlator 0.3.0" in result.stdout
+    assert "opencanary-correlator 0.3.1" in result.stdout

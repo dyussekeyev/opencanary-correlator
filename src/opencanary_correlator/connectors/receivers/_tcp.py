@@ -19,17 +19,14 @@ from typing import Final
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
-from opencanary_correlator.connectors.base import BaseReceiver, EventSink, RateLimiter
+from opencanary_correlator.connectors.base import EventSink, RateLimiter
 from opencanary_correlator.connectors.receivers._allowlist import (
     PEER_NOT_ALLOWED,
     AllowedNetworks,
     is_peer_allowed,
 )
-from opencanary_correlator.connectors.receivers._pipeline import (
-    DEFAULT_CONCURRENCY,
-    EventPipeline,
-    ReceiverStats,
-)
+from opencanary_correlator.connectors.receivers._base import NetworkReceiver
+from opencanary_correlator.connectors.receivers._pipeline import DEFAULT_CONCURRENCY
 from opencanary_correlator.schemas import CanaryEvent
 
 CLOSE_REASON_LINE_TOO_LARGE: Final[str] = "line_too_large"
@@ -151,7 +148,7 @@ class StreamProtocol(asyncio.Protocol):
         self.close(CLOSE_REASON_PARTIAL_LINE_TIMEOUT)
 
 
-class TCPStreamReceiver(BaseReceiver):
+class TCPStreamReceiver(NetworkReceiver):
     """Base class for line-oriented TCP receivers."""
 
     def __init__(
@@ -169,25 +166,22 @@ class TCPStreamReceiver(BaseReceiver):
         concurrency: int = DEFAULT_CONCURRENCY,
         allowed_networks: AllowedNetworks = (),
     ) -> None:
-        self.host = host
-        self.port = port
-        self.max_line_bytes = max_line_bytes
-        self.partial_line_timeout = partial_line_timeout
-        self.max_connections = max_connections
-        self._audit = audit
-        self._rate_limiter = rate_limiter
-        self._allowed_networks = allowed_networks
-        self._pipeline = EventPipeline(
+        super().__init__(
             sink=sink,
             audit=audit,
+            host=host,
+            port=port,
+            max_line_bytes=max_line_bytes,
             queue_size=queue_size,
             rate_limiter=rate_limiter,
             concurrency=concurrency,
+            allowed_networks=allowed_networks,
         )
+        self.partial_line_timeout = partial_line_timeout
+        self.max_connections = max_connections
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[StreamProtocol] = set()
         self._admission_tasks: set[asyncio.Task[None]] = set()
-        self._bound_port: int | None = None
 
     # --- BaseReceiver -------------------------------------------------------
 
@@ -195,18 +189,6 @@ class TCPStreamReceiver(BaseReceiver):
     def is_running(self) -> bool:
         """True while the server socket is bound."""
         return self._server is not None and self._server.is_serving()
-
-    @property
-    def bound_port(self) -> int:
-        """Actual listening port (useful when configured with ``port=0``)."""
-        if self._bound_port is None:
-            raise RuntimeError("receiver is not started")
-        return self._bound_port
-
-    @property
-    def stats(self) -> ReceiverStats:
-        """Counters for health reporting and tests."""
-        return self._pipeline.stats
 
     async def start(self) -> None:
         """Bind the listening socket and start the event consumer."""
@@ -339,14 +321,6 @@ class TCPStreamReceiver(BaseReceiver):
     @abstractmethod
     def _protocol_factory(self) -> StreamProtocol:
         """Build a protocol instance for a new connection."""
-
-    def audit_rejection(self, reason: str, peer_ip: str, **details: object) -> None:
-        """Record why a payload was rejected."""
-        self._audit.emit(
-            "event_rejected",
-            "warning",
-            {"receiver": self.name, "reason": reason, "peer": peer_ip, **details},
-        )
 
 
 __all__ = [
