@@ -33,7 +33,8 @@ from opencanary_correlator.config_validation import (
     validate_incident_horizons,
     validate_telegram_token,
 )
-from opencanary_correlator.constants import MAX_EVENT_COUNT
+from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
+from opencanary_correlator.constants import INCIDENT_KEY_PREFIX, MAX_EVENT_COUNT
 
 _logger = logging.getLogger(__name__)
 
@@ -335,10 +336,12 @@ class Settings(BaseSettings):
 
 
 __all__ = [
+    "INCIDENT_KEY_PREFIX",
     "LEGACY_DROPPED_PREFIXES",
     "LEGACY_INCIDENT_HORIZON_KEYS",
     "LEGACY_KEY_MAP",
     "MAX_INCIDENT_HORIZON_SECONDS",
     "LogLevel",
     "Settings",
+    "parse_allowed_networks",
 ]

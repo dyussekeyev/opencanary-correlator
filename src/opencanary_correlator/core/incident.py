@@ -18,6 +18,7 @@ from typing import Any, Final
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
+from opencanary_correlator.constants import DEFAULT_LOGTYPE
 from opencanary_correlator.core.incident_model import (
     INCIDENT_TYPES,
     Incident,
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 _UNSET: Final[object] = object()
 
 __all__ = [
+    "DEFAULT_LOGTYPE",
     "INCIDENT_TYPES",
     "Incident",
     "IncidentFTPLogin",
