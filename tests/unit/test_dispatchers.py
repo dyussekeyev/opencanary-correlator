@@ -553,3 +553,59 @@ async def test_expected_statuses_are_configurable(incident_factory: Any, status:
     result = await dispatcher.dispatch(incident_factory())
 
     assert result.status == "success"
+
+
+async def test_a_non_numeric_retry_after_falls_back_to_the_backoff(incident_factory: Any) -> None:
+    """`Retry-After: 120s` is not a number, and must not break the retry loop.
+
+    A proxy that writes a unit falls into the normal exponential backoff instead
+    of raising on the float conversion.
+    """
+    delays: list[float] = []
+
+    async def record(seconds: float) -> None:
+        delays.append(seconds)
+
+    calls: list[httpx.Request] = []
+    client = make_client(
+        scripted_handler(
+            [httpx.Response(429, headers={"Retry-After": "120s"}), httpx.Response(200)], calls
+        )
+    )
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        retry=fast_retry(base_delay=0.5, max_delay=0.5),
+        sleep=record,
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "success"
+    assert delays == [0.5]
+
+
+async def test_a_huge_retry_after_is_clamped(incident_factory: Any) -> None:
+    """A misconfigured proxy must not park the dispatcher for a day."""
+    delays: list[float] = []
+
+    async def record(seconds: float) -> None:
+        delays.append(seconds)
+
+    calls: list[httpx.Request] = []
+    client = make_client(
+        scripted_handler(
+            [httpx.Response(503, headers={"Retry-After": "86400"}), httpx.Response(200)], calls
+        )
+    )
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        retry=fast_retry(base_delay=0.5, max_delay=0.5),
+        sleep=record,
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "success"
+    assert delays == [60.0]
