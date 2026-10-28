@@ -1,0 +1,448 @@
+{
+  "alerts": {
+    "ftp_login/discord/detailed": "🛡 OpenCanary: **FTP Login Attempt**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:21\r\n\r\n🎯 **Attacker:** 10.0.0.5:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📊 **Events:** 1\r\n📝 **Log:** USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+    "ftp_login/discord/minimal": "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1 (10.0.0.2).",
+    "ftp_login/discord/standard": "🛡 OpenCanary: **FTP Login Attempt**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:21\r\n\r\n🎯 **Attacker:** 10.0.0.5:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n\r\n📝 **Log:** USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+    "ftp_login/slack/detailed": "🛡 OpenCanary: *FTP Login Attempt*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:21\r\n\r\n🎯 *Attacker:* 10.0.0.5:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+    "ftp_login/slack/minimal": "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1 (10.0.0.2).",
+    "ftp_login/slack/standard": "🛡 OpenCanary: *FTP Login Attempt*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:21\r\n\r\n🎯 *Attacker:* 10.0.0.5:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n\r\n📝 *Log:* USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+    "ftp_login/smtp/detailed": {
+      "body": "OpenCanary: FTP Login Attempt\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:21\n\n🎯 Attacker: 10.0.0.5:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n📊 Events: 1\n📝 Log: USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123\n",
+      "subject": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "ftp_login/smtp/minimal": {
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: FTP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.5\n  Target  : 10.0.0.2 (id canary-1)\n\n======================================================================\n",
+      "subject": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "ftp_login/smtp/standard": {
+      "body": "OpenCanary: FTP Login Attempt\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:21\n\n🎯 Attacker: 10.0.0.5:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n\n📝 Log: USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123\n",
+      "subject": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "ftp_login/telegram/detailed": "🛡 OpenCanary: *FTP Login Attempt*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:21\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.5:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME\\=admin, PASSWORD\\=\\*\\*\\*, CREDENTIAL\\=abc123",
+    "ftp_login/telegram/minimal": "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1 (10.0.0.2).",
+    "ftp_login/telegram/standard": "🛡 OpenCanary: *FTP Login Attempt*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:21\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.5:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n\r\n📝 *Log:* USERNAME\\=admin, PASSWORD\\=\\*\\*\\*, CREDENTIAL\\=abc123",
+    "ftp_login/webhook/detailed": {
+      "key": "incident:ftplogin:10.0.0.5:1793207641",
+      "text": "OpenCanary: FTP Login Attempt\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:21\r\n\r\n🎯 Attacker: 10.0.0.5:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📊 Events: 1\r\n📝 Log: USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+      "title": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "ftp_login/webhook/minimal": {
+      "key": "incident:ftplogin:10.0.0.5:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: FTP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.5\n  Target  : 10.0.0.2 (id canary-1)\n\n======================================================================\n",
+      "title": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "ftp_login/webhook/standard": {
+      "key": "incident:ftplogin:10.0.0.5:1793207641",
+      "text": "OpenCanary: FTP Login Attempt\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:21\r\n\r\n🎯 Attacker: 10.0.0.5:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n\r\n📝 Log: USERNAME=admin, PASSWORD=***, CREDENTIAL=abc123",
+      "title": "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/discord/detailed": "🛡 OpenCanary: **Host Port Scan**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2\r\n\r\n🎯 **Attacker:** 10.0.0.8:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📊 **Events:** 4\r\n📝 **Log:** 21, 22, 23, 3389",
+    "host_portscan/discord/minimal": "Canary Incident: Host Port Scan. Source 10.0.0.8. Target canary-1 (10.0.0.2).",
+    "host_portscan/discord/standard": "🛡 OpenCanary: **Host Port Scan**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2\r\n\r\n🎯 **Attacker:** 10.0.0.8:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n\r\n📝 **Log:** 21, 22, 23, 3389",
+    "host_portscan/slack/detailed": "🛡 OpenCanary: *Host Port Scan*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2\r\n\r\n🎯 *Attacker:* 10.0.0.8:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📊 *Events:* 4\r\n📝 *Log:* 21, 22, 23, 3389",
+    "host_portscan/slack/minimal": "Canary Incident: Host Port Scan. Source 10.0.0.8. Target canary-1 (10.0.0.2).",
+    "host_portscan/slack/standard": "🛡 OpenCanary: *Host Port Scan*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2\r\n\r\n🎯 *Attacker:* 10.0.0.8:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n\r\n📝 *Log:* 21, 22, 23, 3389",
+    "host_portscan/smtp/detailed": {
+      "body": "OpenCanary: Host Port Scan\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2\n\n🎯 Attacker: 10.0.0.8:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n📊 Events: 4\n📝 Log: 21, 22, 23, 3389\n",
+      "subject": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/smtp/minimal": {
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: Host Port Scan\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.8\n  Target  : 10.0.0.2 (id canary-1)\n\n======================================================================\n",
+      "subject": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/smtp/standard": {
+      "body": "OpenCanary: Host Port Scan\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2\n\n🎯 Attacker: 10.0.0.8:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n\n📝 Log: 21, 22, 23, 3389\n",
+      "subject": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/telegram/detailed": "🛡 OpenCanary: *Host Port Scan*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.8:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📊 *Events:* 4\r\n📝 *Log:* 21, 22, 23, 3389",
+    "host_portscan/telegram/minimal": "Canary Incident: Host Port Scan. Source 10.0.0.8. Target canary-1 (10.0.0.2).",
+    "host_portscan/telegram/standard": "🛡 OpenCanary: *Host Port Scan*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.8:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n\r\n📝 *Log:* 21, 22, 23, 3389",
+    "host_portscan/webhook/detailed": {
+      "key": "incident:hostportscan:10.0.0.8:1793207641",
+      "text": "OpenCanary: Host Port Scan\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2\r\n\r\n🎯 Attacker: 10.0.0.8:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📊 Events: 4\r\n📝 Log: 21, 22, 23, 3389",
+      "title": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/webhook/minimal": {
+      "key": "incident:hostportscan:10.0.0.8:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: Host Port Scan\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.8\n  Target  : 10.0.0.2 (id canary-1)\n\n======================================================================\n",
+      "title": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "host_portscan/webhook/standard": {
+      "key": "incident:hostportscan:10.0.0.8:1793207641",
+      "text": "OpenCanary: Host Port Scan\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2\r\n\r\n🎯 Attacker: 10.0.0.8:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n\r\n📝 Log: 21, 22, 23, 3389",
+      "title": "Host Port Scan by 10.0.0.8 on canary-1 (10.0.0.2)"
+    },
+    "http_request/discord/detailed": "🛡 OpenCanary: **HTTP Request**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:80\r\n\r\n🎯 **Attacker:** 10.0.0.9:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📊 **Events:** 1\r\n📝 **Log:** METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+    "http_request/discord/minimal": "Canary Incident: HTTP Request. Source 10.0.0.9. Target canary-1 (10.0.0.2). Request GET \"/admin\" on 10.0.0.2.",
+    "http_request/discord/standard": "🛡 OpenCanary: **HTTP Request**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:80\r\n\r\n🎯 **Attacker:** 10.0.0.9:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n\r\n📝 **Log:** METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+    "http_request/slack/detailed": "🛡 OpenCanary: *HTTP Request*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:80\r\n\r\n🎯 *Attacker:* 10.0.0.9:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+    "http_request/slack/minimal": "Canary Incident: HTTP Request. Source 10.0.0.9. Target canary-1 (10.0.0.2). Request GET \"/admin\" on 10.0.0.2.",
+    "http_request/slack/standard": "🛡 OpenCanary: *HTTP Request*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:80\r\n\r\n🎯 *Attacker:* 10.0.0.9:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n\r\n📝 *Log:* METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+    "http_request/smtp/detailed": {
+      "body": "OpenCanary: HTTP Request\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:80\n\n🎯 Attacker: 10.0.0.9:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n📊 Events: 1\n📝 Log: METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4\n",
+      "subject": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "http_request/smtp/minimal": {
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: HTTP Request\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.9\n  Target  : 10.0.0.2 (id canary-1)\n  Method  : GET\n  Path    : /admin\n  Host    : 10.0.0.2\n  Agent   : curl/8.4\n\n\n======================================================================\n",
+      "subject": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "http_request/smtp/standard": {
+      "body": "OpenCanary: HTTP Request\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:80\n\n🎯 Attacker: 10.0.0.9:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n\n📝 Log: METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4\n",
+      "subject": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "http_request/telegram/detailed": "🛡 OpenCanary: *HTTP Request*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:80\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.9:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* METHOD\\=GET, PATH\\=/admin, HOST\\=10\\.0\\.0\\.2, USERAGENT\\=curl/8\\.4",
+    "http_request/telegram/minimal": "Canary Incident: HTTP Request. Source 10.0.0.9. Target canary-1 (10.0.0.2). Request GET \"/admin\" on 10.0.0.2.",
+    "http_request/telegram/standard": "🛡 OpenCanary: *HTTP Request*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:80\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.9:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n\r\n📝 *Log:* METHOD\\=GET, PATH\\=/admin, HOST\\=10\\.0\\.0\\.2, USERAGENT\\=curl/8\\.4",
+    "http_request/webhook/detailed": {
+      "key": "incident:httprequest:10.0.0.9:1793207641",
+      "text": "OpenCanary: HTTP Request\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:80\r\n\r\n🎯 Attacker: 10.0.0.9:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📊 Events: 1\r\n📝 Log: METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+      "title": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "http_request/webhook/minimal": {
+      "key": "incident:httprequest:10.0.0.9:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: HTTP Request\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.9\n  Target  : 10.0.0.2 (id canary-1)\n  Method  : GET\n  Path    : /admin\n  Host    : 10.0.0.2\n  Agent   : curl/8.4\n\n\n======================================================================\n",
+      "title": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "http_request/webhook/standard": {
+      "key": "incident:httprequest:10.0.0.9:1793207641",
+      "text": "OpenCanary: HTTP Request\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:80\r\n\r\n🎯 Attacker: 10.0.0.9:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n\r\n📝 Log: METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
+      "title": "HTTP Request by 10.0.0.9 on canary-1 (10.0.0.2)"
+    },
+    "rdp_enriched/discord/detailed": "🛡 OpenCanary: **RDP Login Attempt**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 2.126.2.164:3389\r\n\r\n🎯 **Attacker:** 89.126.202.164:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** Kazakhstan, Almaty\r\n🏢 **ASN:** AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 **VT:** 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 **Events:** 1\r\n📝 **Log:** USERNAME=administrator",
+    "rdp_enriched/discord/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1 (2.126.2.164).",
+    "rdp_enriched/discord/standard": "🛡 OpenCanary: **RDP Login Attempt**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 2.126.2.164:3389\r\n\r\n🎯 **Attacker:** 89.126.202.164:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** Kazakhstan\r\n🦠 **VT:** 15/92 malicious (+3 suspicious)\r\n\r\n📝 **Log:** USERNAME=administrator",
+    "rdp_enriched/slack/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 2.126.2.164:3389\r\n\r\n🎯 *Attacker:* 89.126.202.164:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 *VT:* 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME=administrator",
+    "rdp_enriched/slack/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1 (2.126.2.164).",
+    "rdp_enriched/slack/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 2.126.2.164:3389\r\n\r\n🎯 *Attacker:* 89.126.202.164:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* Kazakhstan\r\n🦠 *VT:* 15/92 malicious (+3 suspicious)\r\n\r\n📝 *Log:* USERNAME=administrator",
+    "rdp_enriched/smtp/detailed": {
+      "body": "OpenCanary: RDP Login Attempt\n\n🖥 Instance: canary-1\n🌐 IP: 2.126.2.164:3389\n\n🎯 Attacker: 89.126.202.164:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: Kazakhstan, Almaty\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\n📊 Events: 1\n📝 Log: USERNAME=administrator\n",
+      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "rdp_enriched/smtp/minimal": {
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 89.126.202.164\n  Target  : 2.126.2.164 (id canary-1)\n\n======================================================================\n",
+      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "rdp_enriched/smtp/standard": {
+      "body": "OpenCanary: RDP Login Attempt\n\n🖥 Instance: canary-1\n🌐 IP: 2.126.2.164:3389\n\n🎯 Attacker: 89.126.202.164:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: Kazakhstan\n🦠 VT: 15/92 malicious (+3 suspicious)\n\n📝 Log: USERNAME=administrator\n",
+      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "rdp_enriched/telegram/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 2\\.126\\.2\\.164:3389\r\n\r\n🎯 *Attacker:* 89\\.126\\.202\\.164:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster\\.KZ\"\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\), reputation 3, 2026\\-10\\-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME\\=administrator",
+    "rdp_enriched/telegram/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1 (2.126.2.164).",
+    "rdp_enriched/telegram/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 2\\.126\\.2\\.164:3389\r\n\r\n🎯 *Attacker:* 89\\.126\\.202\\.164:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* Kazakhstan\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\)\r\n\r\n📝 *Log:* USERNAME\\=administrator",
+    "rdp_enriched/webhook/detailed": {
+      "enrichment": {
+        "geo": {
+          "as_org": "LLP \"Kompaniya Hoster.KZ\"",
+          "asn": 202958,
+          "city": "Almaty",
+          "country": "Kazakhstan",
+          "country_code": "KZ"
+        },
+        "virustotal": {
+          "checked": "2026-10-28",
+          "detections": 18,
+          "malicious": 15,
+          "reputation": 3,
+          "suspicious": 3,
+          "total": 92
+        }
+      },
+      "key": "incident:rdplogin:89.126.202.164:1793207641",
+      "text": "OpenCanary: RDP Login Attempt\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 2.126.2.164:3389\r\n\r\n🎯 Attacker: 89.126.202.164:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: Kazakhstan, Almaty\r\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 Events: 1\r\n📝 Log: USERNAME=administrator",
+      "title": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "rdp_enriched/webhook/minimal": {
+      "enrichment": {
+        "geo": {
+          "as_org": "LLP \"Kompaniya Hoster.KZ\"",
+          "asn": 202958,
+          "city": "Almaty",
+          "country": "Kazakhstan",
+          "country_code": "KZ"
+        },
+        "virustotal": {
+          "checked": "2026-10-28",
+          "detections": 18,
+          "malicious": 15,
+          "reputation": 3,
+          "suspicious": 3,
+          "total": 92
+        }
+      },
+      "key": "incident:rdplogin:89.126.202.164:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 89.126.202.164\n  Target  : 2.126.2.164 (id canary-1)\n\n======================================================================\n",
+      "title": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "rdp_enriched/webhook/standard": {
+      "enrichment": {
+        "geo": {
+          "as_org": "LLP \"Kompaniya Hoster.KZ\"",
+          "asn": 202958,
+          "city": "Almaty",
+          "country": "Kazakhstan",
+          "country_code": "KZ"
+        },
+        "virustotal": {
+          "checked": "2026-10-28",
+          "detections": 18,
+          "malicious": 15,
+          "reputation": 3,
+          "suspicious": 3,
+          "total": 92
+        }
+      },
+      "key": "incident:rdplogin:89.126.202.164:1793207641",
+      "text": "OpenCanary: RDP Login Attempt\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 2.126.2.164:3389\r\n\r\n🎯 Attacker: 89.126.202.164:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: Kazakhstan\r\n🦠 VT: 15/92 malicious (+3 suspicious)\r\n\r\n📝 Log: USERNAME=administrator",
+      "title": "RDP Login Attempt by 89.126.202.164 on canary-1 (2.126.2.164)"
+    },
+    "smb_file_open/discord/detailed": "🛡 OpenCanary: **Shared File Opened**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:445\r\n\r\n🎯 **Attacker:** 10.0.0.7:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📊 **Events:** 1\r\n📝 **Log:** FILENAME=payroll.xlsx, USER=CORP\\alice",
+    "smb_file_open/discord/minimal": "Canary Incident: Shared File Opened. Source 10.0.0.7. Target canary-1 (10.0.0.2). File \"payroll.xlsx\", user \"CORP\\alice\".",
+    "smb_file_open/discord/standard": "🛡 OpenCanary: **Shared File Opened**\r\n\r\n🖥 **Instance:** canary-1\r\n🌐 **IP:** 10.0.0.2:445\r\n\r\n🎯 **Attacker:** 10.0.0.7:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n\r\n📝 **Log:** FILENAME=payroll.xlsx, USER=CORP\\alice",
+    "smb_file_open/slack/detailed": "🛡 OpenCanary: *Shared File Opened*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:445\r\n\r\n🎯 *Attacker:* 10.0.0.7:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* FILENAME=payroll.xlsx, USER=CORP\\alice",
+    "smb_file_open/slack/minimal": "Canary Incident: Shared File Opened. Source 10.0.0.7. Target canary-1 (10.0.0.2). File \"payroll.xlsx\", user \"CORP\\alice\".",
+    "smb_file_open/slack/standard": "🛡 OpenCanary: *Shared File Opened*\r\n\r\n🖥 *Instance:* canary-1\r\n🌐 *IP:* 10.0.0.2:445\r\n\r\n🎯 *Attacker:* 10.0.0.7:40000\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n\r\n📝 *Log:* FILENAME=payroll.xlsx, USER=CORP\\alice",
+    "smb_file_open/smtp/detailed": {
+      "body": "OpenCanary: Shared File Opened\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:445\n\n🎯 Attacker: 10.0.0.7:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n📊 Events: 1\n📝 Log: FILENAME=payroll.xlsx, USER=CORP\\alice\n",
+      "subject": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    },
+    "smb_file_open/smtp/minimal": {
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: Shared File Opened\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.7\n  Target  : 10.0.0.2 (id canary-1)\n  File    : payroll.xlsx\n  User    : CORP\\alice\n\n======================================================================\n",
+      "subject": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    },
+    "smb_file_open/smtp/standard": {
+      "body": "OpenCanary: Shared File Opened\n\n🖥 Instance: canary-1\n🌐 IP: 10.0.0.2:445\n\n🎯 Attacker: 10.0.0.7:40000\n🕒 Time: 2026-10-28 17:14:01 UTC\n\n📝 Log: FILENAME=payroll.xlsx, USER=CORP\\alice\n",
+      "subject": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    },
+    "smb_file_open/telegram/detailed": "🛡 OpenCanary: *Shared File Opened*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:445\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.7:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📊 *Events:* 1\r\n📝 *Log:* FILENAME\\=payroll\\.xlsx, USER\\=CORP\\\\alice",
+    "smb_file_open/telegram/minimal": "Canary Incident: Shared File Opened. Source 10.0.0.7. Target canary-1 (10.0.0.2). File \"payroll.xlsx\", user \"CORP\\alice\".",
+    "smb_file_open/telegram/standard": "🛡 OpenCanary: *Shared File Opened*\r\n\r\n🖥 *Instance:* canary\\-1\r\n🌐 *IP:* 10\\.0\\.0\\.2:445\r\n\r\n🎯 *Attacker:* 10\\.0\\.0\\.7:40000\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n\r\n📝 *Log:* FILENAME\\=payroll\\.xlsx, USER\\=CORP\\\\alice",
+    "smb_file_open/webhook/detailed": {
+      "key": "incident:smbfileopen:10.0.0.7:1793207641",
+      "text": "OpenCanary: Shared File Opened\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:445\r\n\r\n🎯 Attacker: 10.0.0.7:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📊 Events: 1\r\n📝 Log: FILENAME=payroll.xlsx, USER=CORP\\alice",
+      "title": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    },
+    "smb_file_open/webhook/minimal": {
+      "key": "incident:smbfileopen:10.0.0.7:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: Shared File Opened\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 10.0.0.7\n  Target  : 10.0.0.2 (id canary-1)\n  File    : payroll.xlsx\n  User    : CORP\\alice\n\n======================================================================\n",
+      "title": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    },
+    "smb_file_open/webhook/standard": {
+      "key": "incident:smbfileopen:10.0.0.7:1793207641",
+      "text": "OpenCanary: Shared File Opened\r\n\r\n🖥 Instance: canary-1\r\n🌐 IP: 10.0.0.2:445\r\n\r\n🎯 Attacker: 10.0.0.7:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n\r\n📝 Log: FILENAME=payroll.xlsx, USER=CORP\\alice",
+      "title": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
+    }
+  },
+  "cli_help": "usage: opencanary-correlator [-h] [--version] [--config PATH]\n                             [--redis-url REDIS_URL]\n                             [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]\n                             [--log-file PATH] [--health-port HEALTH_PORT]\n                             [--check-config]\n\nStateless OpenCanary event correlator\n\noptions:\n  -h, --help            show this help message and exit\n  --version             show program's version number and exit\n  --config PATH         legacy JSON configuration file (migrated on startup)\n  --redis-url REDIS_URL\n                        override OCC_REDIS_URL\n  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}\n                        override OCC_LOG_LEVEL\n  --log-file PATH       override OCC_LOG_FILE (adds a rotated log file next to\n                        stderr)\n  --health-port HEALTH_PORT\n                        override OCC_HEALTH_PORT (0 disables the endpoint)\n  --check-config        validate configuration and exit\n",
+  "describe_settings": {
+    "alert_detail": {
+      "discord": "standard",
+      "slack": "standard",
+      "smtp": "standard",
+      "telegram": "standard",
+      "webhook": "minimal"
+    },
+    "channels": [
+      "webhook",
+      "slack",
+      "discord",
+      "telegram",
+      "smtp"
+    ],
+    "dispatch_timeout": 10.0,
+    "enrichment": {
+      "geoip": true,
+      "virustotal": true
+    },
+    "health_allowed_ips": [
+      "127.0.0.1/32",
+      "::1/128"
+    ],
+    "health_host": "0.0.0.0",
+    "health_port": 15142,
+    "incident_horizon": 60.0,
+    "incident_horizons": {},
+    "incident_lookup_scan_limit": 100,
+    "log_file": null,
+    "log_level": "INFO",
+    "max_stored_events": 100,
+    "redis_url": "redis://:***@redis.example.test:6379/3",
+    "syslog": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 15141,
+      "udp": false
+    },
+    "tcp": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 15140
+    }
+  },
+  "engine": {
+    "audit": [
+      [
+        "incident_created",
+        "info",
+        {
+          "incident": "ftp.login_attempt",
+          "key": "incident:ftplogin:10.0.0.5:1793207641",
+          "node_id": "canary-1",
+          "src_host": "10.0.0.5"
+        }
+      ],
+      [
+        "alert_dispatch",
+        "success",
+        {
+          "dispatcher": "recording",
+          "incident": "incident:ftplogin:10.0.0.5:1793207641",
+          "status": "success"
+        }
+      ],
+      [
+        "event_deduplicated",
+        "info",
+        {
+          "logtype": 2000,
+          "node_id": "canary-1"
+        }
+      ],
+      [
+        "incident_created",
+        "info",
+        {
+          "incident": "ssh.login_attempt",
+          "key": "incident:sshlogin:10.0.0.5:1793207641",
+          "node_id": "canary-1",
+          "src_host": "10.0.0.5"
+        }
+      ],
+      [
+        "alert_dispatch",
+        "success",
+        {
+          "dispatcher": "recording",
+          "incident": "incident:sshlogin:10.0.0.5:1793207641",
+          "status": "success"
+        }
+      ],
+      [
+        "event_ignored",
+        "info",
+        {
+          "logtype": 1001,
+          "node_id": "canary-1"
+        }
+      ],
+      [
+        "event_unrouted",
+        "warning",
+        {
+          "logtype": 9999,
+          "node_id": "canary-1"
+        }
+      ]
+    ],
+    "delivered": [
+      "incident:ftplogin:10.0.0.5:1793207641",
+      "incident:sshlogin:10.0.0.5:1793207641"
+    ],
+    "incidents": [
+      "incident:ftplogin:10.0.0.5:1793207641",
+      "incident:sshlogin:10.0.0.5:1793207641"
+    ],
+    "redis_keys": [
+      "dedup:0820a71bacf9e843e548c55fa1197466f199d983b05f51c1c29038ecffc3ed77",
+      "dedup:cc645b692dfc9c9bb8ce4536f950029aa9b264f4684cdbafa78b79f152954586",
+      "dedup:d599ef8edb8d2808dcafae0b8d7df55bdef0614bf50451e05a3bcf011d318472",
+      "dedup:dad3b28bcca6effb416c2393d4a40bbb6f1a24a5ac1a1abb906d2474bbb1fb9a",
+      "incident-latest:ftp.login_attempt:10.0.0.5",
+      "incident-latest:ssh.login_attempt:10.0.0.5",
+      "incident:ftplogin:10.0.0.5:1793207641",
+      "incident:sshlogin:10.0.0.5:1793207641",
+      "incidents"
+    ]
+  },
+  "incident_fields": {
+    "ftp_login": {
+      "acknowledged": "False",
+      "created": "1793207641",
+      "description": "FTP Login Attempt",
+      "dst_host": "10.0.0.2",
+      "dst_port": "21",
+      "events_count": "1",
+      "events_list": "1793207641",
+      "logdata": "[{\"USERNAME\": \"admin\", \"PASSWORD\": \"hunter2\", \"CREDENTIAL\": \"abc123\"}]",
+      "logtype": "2000",
+      "node_id": "canary-1",
+      "notified": "False",
+      "src_host": "10.0.0.5",
+      "src_port": "40000",
+      "updated": "True"
+    },
+    "host_portscan": {
+      "acknowledged": "False",
+      "created": "1793207641",
+      "description": "Host Port Scan",
+      "dst_host": "10.0.0.2",
+      "dst_port": "-1",
+      "events_count": "4",
+      "events_list": "1793207641",
+      "logdata": "[21, 22, 23, 3389]",
+      "logtype": "5003",
+      "node_id": "canary-1",
+      "notified": "False",
+      "src_host": "10.0.0.8",
+      "src_port": "40000",
+      "updated": "True"
+    },
+    "http_request": {
+      "acknowledged": "False",
+      "created": "1793207641",
+      "description": "HTTP Request",
+      "dst_host": "10.0.0.2",
+      "dst_port": "80",
+      "events_count": "1",
+      "events_list": "1793207641",
+      "logdata": "[{\"METHOD\": \"GET\", \"PATH\": \"/admin\", \"HOST\": \"10.0.0.2\", \"USERAGENT\": \"curl/8.4\"}]",
+      "logtype": "3000",
+      "node_id": "canary-1",
+      "notified": "False",
+      "src_host": "10.0.0.9",
+      "src_port": "40000",
+      "updated": "True"
+    },
+    "rdp_enriched": {
+      "acknowledged": "False",
+      "created": "1793207641",
+      "description": "RDP Login Attempt",
+      "dst_host": "2.126.2.164",
+      "dst_port": "3389",
+      "events_count": "1",
+      "events_list": "1793207641",
+      "logdata": "[{\"USERNAME\": \"administrator\"}]",
+      "logtype": "14001",
+      "node_id": "canary-1",
+      "notified": "False",
+      "src_host": "89.126.202.164",
+      "src_port": "52344",
+      "updated": "True"
+    },
+    "smb_file_open": {
+      "acknowledged": "False",
+      "created": "1793207641",
+      "description": "Shared File Opened",
+      "dst_host": "10.0.0.2",
+      "dst_port": "445",
+      "events_count": "1",
+      "events_list": "1793207641",
+      "logdata": "[{\"FILENAME\": \"payroll.xlsx\", \"USER\": \"CORP\\\\alice\"}]",
+      "logtype": "5000",
+      "node_id": "canary-1",
+      "notified": "False",
+      "src_host": "10.0.0.7",
+      "src_port": "40000",
+      "updated": "True"
+    }
+  }
+}
