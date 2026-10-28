@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed — docs
+
+- `docs/validation.md` is refreshed against the 0.4.0 release run (`e7337fd`,
+  run 40769958410): 780 tests at 96.65 % coverage, the CI jobs actually in use
+  — Windows and the native benchmark included — the 90 % floor on
+  `core`/`storage`/`connectors/receivers`, and `pip-audit` in the lint gate.
+  The 2026-10-24 snapshot stays as dated history instead of being deleted.
+- The `[0.4.0]` heading is dated by the release's UTC publish time
+  (`2026-10-28`), so it matches the GitHub release page and `[0.3.2]`.
+
 ## [0.4.0] - 2026-10-28
 
 This release changes defaults: the intake listens on loopback and the default
