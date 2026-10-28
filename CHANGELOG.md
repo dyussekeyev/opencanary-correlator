@@ -73,6 +73,14 @@ set the old values explicitly to keep the previous layout.
   A plain-text syslog body becomes `1001`, so ordinary `opencanaryd` output no
   longer fills the warning stream; a genuinely unrouted type still does.
 
+### Fixed — internal
+
+- `RedisStore` now normalises every reply, so a client built with
+  `decode_responses=False` reads the same values as the production client.
+  Before, `get_value` answered `None` for such a client (the enrichment cache
+  silently never hit) and `hgetall`/`smembers`/`lrange` answered `"b'...'"`.
+  `RedisStore.from_url` already decoded, so a deployment is unaffected.
+
 ### Changed
 
 - `OCC_SMTP_DETAIL` defaults to `standard`, like the chat channels: a person
@@ -114,6 +122,34 @@ set the old values explicitly to keep the previous layout.
   layout, set `OCC_TCP_PORT=1514`, `OCC_SYSLOG_PORT=5514` and
   `OCC_HEALTH_PORT=8080` in `.env`; the canary's `SocketJSONHandler` port must
   match whichever value is configured.
+
+### Changed — internal
+
+No output changes: the same alerts, audit records, Redis keys and
+`--check-config` document. The internal structure was reorganised so a change
+touches one module instead of several:
+
+- One credential list, one text sanitiser and one `logdata` decoder serve both
+the audit trail and every alert channel (`redaction.py`, `core/logdata.py`).
+- The incident registry is one declarative table (`incident_specs.py`); adding a
+  type no longer means editing a class, a registry tuple and a key-prefix map.
+  A forgotten prefix used to fail at runtime with `KeyError`.
+- `cli.py` became the `app` package (`parser`, `channels`, `wiring`, `describe`,
+  `runner`) with `cli.py` kept as a façade. `--check-config` and startup now read
+  one `CHANNEL_SPECS` table, so a summary cannot advertise a channel that is
+  never built.
+- `RedisStore` is assembled from one mixin per concern (`storage/_*.py`) instead
+  of one 400-line module.
+- The syslog codec (`receivers/_syslog_codec.py`) and RFC 6587 framing
+  (`receivers/_framing.py`) left the transports, so partial-frame and
+  octet-counting behaviour is unit-tested without a socket.
+- The 713-line `test_cli.py` and 685-line `test_incident.py` split along the
+  same seams.
+
+A golden snapshot (`tests/characterization/`) renders 75 alerts, the
+`--check-config` document, the CLI help, stored incident fields and the audit and
+Redis outcome of one fixed event stream, and fails on any byte that moves; it is
+what backs the "no output changes" claim.
 
 ## [0.3.2] - 2026-10-28
 

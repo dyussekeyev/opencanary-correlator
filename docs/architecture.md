@@ -57,26 +57,43 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `log_setup.py` | root logger level, stderr handler and the optional size-rotated `OCC_LOG_FILE` handler; raises `LogSetupError` when the file cannot be opened |
 | `connectors/base.py` | `EventSink`, `RateLimiter`, `BaseReceiver`, `BaseDispatcher`, `DispatchResult` — the only types `core` may import |
 | `connectors/receivers/_base.py` | `NetworkReceiver`: shared scaffolding for TCP and UDP receivers (pipeline, counters, bound port, audit) |
-| `connectors/receivers/_tcp.py` | asyncio stream lifecycle: framing, 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
+| `connectors/receivers/_tcp.py` | asyncio stream lifecycle: 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
+| `connectors/receivers/_framing.py` | RFC 6587 framing as pure functions: newline/NUL split, octet counting, overflow |
 | `connectors/receivers/_pipeline.py` | bounded queue, per-host consumer lanes, rate limiting, audit, counters |
 | `connectors/receivers/tcp_json.py` | `SocketJSONHandler` compatibility: newline-delimited JSON, `[ERR]` tolerance |
-| `connectors/receivers/syslog.py` | RFC 3164/5424 envelope parser, RFC 6587 TCP framing, UDP receiver |
+| `connectors/receivers/_syslog_codec.py` | RFC 3164/5424 envelope parser and event construction, no transport |
+| `connectors/receivers/syslog.py` | the syslog TCP and UDP transports; framing modes and the newline fallback |
 | `connectors/dispatchers/base.py` | HTTP client ownership, retry policy, `Retry-After`, per-endpoint Redis circuit breaker |
 | `connectors/dispatchers/*.py` | webhook, Slack, Telegram, Discord, SMTP channels |
 | `core/windows.py` | sliding window (ZSET), fixed-TTL distinct-set window (port scans), dedup cache, event fingerprint |
 | `core/rules/` | `LoginRule` (14 log types), `SmbFileOpenRule`, host/network port-scan rules |
-| `core/incident_model.py` | `Incident` base and one subclass per incident type (16 types), each with its own merge rules and Redis hash fields |
+| `incident_specs.py` | one declarative row per incident type (name, class name, key prefix, description); `INCIDENT_TYPES` and `constants.INCIDENT_KEY_PREFIX` are derived from it |
+| `core/incident_model.py` | `Incident` base, the four types with custom logic, and the generated subclasses; each carries its own merge rules and Redis hash fields |
+| `core/logdata.py` | the single `logdata` decoder shared by the alert renderer and the incident model |
 | `core/incident_report.py` | legacy plain-text alert templates (title, full, short and scan reports), pure functions |
 | `core/incident.py` | `IncidentRepository`: atomic create-or-merge in Redis; re-exports the model names |
 | `core/engine.py` | dedup → rule routing → dispatcher fan-out with per-channel timeout |
 | `storage/keys.py` | byte-compatible legacy Redis key builders |
 | `storage/scripts.py` | Lua bodies for the incident write and lock release, each run as one atomic round trip |
-| `storage/redis_store.py` | typed `redis.asyncio` wrapper, transactional pipelines, registers the Lua scripts, per-host incident pointer |
+| `storage/_base.py` | client ownership, script registration, reply normalisation (bytes or text clients), plain key and hash/set/ZSET reads |
+| `storage/_dedup.py` | first-writer-wins event fingerprints |
+| `storage/_windows.py` | set, ZSET and counter windows whose expiry is written once |
+| `storage/_quota.py` | atomic multi-window reservations for a rate-limited provider |
+| `storage/_cache.py` | string values, used by the enrichment cache |
+| `storage/_console.py` | the bounded legacy console journal |
+| `storage/_incidents.py` | incident hash, index pointer and the capped lookup scan |
+| `storage/_locks.py` | the distributed lock and its defaults |
+| `storage/redis_store.py` | `RedisStore`, a composition of the mixins above; no method bodies of its own |
 | `storage/queries.py` | async read side with the console JSON shape (`created_printable`, `events_list`, …) |
 | `storage/rate_limit.py` | per-IP connection and per-node event budgets |
 | `metrics.py` | Prometheus counters/gauges and text exposition |
 | `health.py` | `/healthz` and `/readyz` with a Redis ping; `/metrics` without one |
-| `cli.py` | argument parsing, wiring, supervision, signal handling, audit records |
+| `app/parser.py` | flags, `load_settings`, `CorrelatorStartupError` |
+| `app/channels.py` | `CHANNEL_SPECS`, the one table `--check-config` and startup both read; `build_dispatchers` |
+| `app/wiring.py` | enricher, receivers, rate limiter, health server |
+| `app/describe.py` | the secret-free `--check-config` document and the values `log_secrets` masks |
+| `app/runner.py` | supervision, signal handling, `main` and the exit codes |
+| `cli.py` | a 39-line façade re-exporting the `app` package, the documented import path |
 
 Dependency direction is enforced by convention: `core` imports only
 `connectors/base.py`, never a concrete receiver or dispatcher. Adding a channel
