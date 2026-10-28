@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import io
 import json
+import sys
 from pathlib import Path
 from typing import Any, Final
 
@@ -319,6 +320,10 @@ def differences(expected: Any, actual: Any, path: str = "") -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Write or compare the golden snapshot."""
+    # A Windows console cannot encode the emoji in a rendered alert; a diff must
+    # still print rather than crash on it.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(prog="characterize", description=__doc__.splitlines()[0])
     parser.add_argument("--write", action="store_true", help="regenerate the golden file")
     parser.add_argument(

@@ -56,6 +56,11 @@ set the old values explicitly to keep the previous layout.
 
 ### Fixed
 
+- A log field whose key names a credential is now masked in alerts by the same
+  rule the audit trail uses. The renderer kept its own list, which lacked
+  `credential`, so `CREDENTIAL=...` appeared in every chat channel, the e-mail
+  body and the webhook while the audit record for the same event hid it. One
+  list, one sanitiser and one `logdata` decoder now serve both paths.
 - `OCC_LOG_LEVEL=DEBUG` no longer opens `httpx`, `httpcore`, `h11` and `hpack`.
   `httpx` logs every request URL at INFO — the Telegram Bot API keeps its token
   in the URL path — and the other three log connection and frame details at

@@ -58,9 +58,27 @@ def is_sensitive_key(key: str) -> bool:
     return SENSITIVE_KEY_PATTERN.search(key) is not None
 
 
-def sanitize_text(value: str) -> str:
-    """Strip characters that could break the JSON-per-line audit stream."""
-    return _CONTROL_CHARS.sub(" ", value.replace("\r", " ").replace("\n", " "))
+def sanitize_text(
+    value: object,
+    *,
+    limit: int | None = None,
+    collapse: bool = False,
+) -> str:
+    """Turn a value into one printable line, optionally flattened and clipped.
+
+    Two callers need different things from the same character set: the audit
+    stream must keep a value intact apart from the line breaks that would split a
+    record (``limit=None``, ``collapse=False``), while an alert row is flattened
+    and clipped to fit a chat message. Keeping one implementation stops the two
+    from drifting, which is how `CREDENTIAL` stayed visible in chat and hidden in
+    the audit trail when each side owned its own list and its own stripper.
+    """
+    text = _CONTROL_CHARS.sub(" ", str(value).replace("\r", " ").replace("\n", " "))
+    if collapse:
+        text = " ".join(text.split())
+    if limit is not None and len(text) > limit:
+        text = text[: max(0, limit - 1)] + "…"
+    return text
 
 
 def redact_url_secrets(text: str) -> str:
