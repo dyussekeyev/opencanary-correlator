@@ -16,9 +16,11 @@ from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
+from opencanary_correlator.constants import IGNORED_LOGTYPES
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.rules import Rule
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
+from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -34,6 +36,7 @@ class CorrelationEngine:
         settings: Settings,
         audit: AuditLogger,
         clock: Callable[[], float] = time.time,
+        enricher: IncidentEnricher | None = None,
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -41,6 +44,7 @@ class CorrelationEngine:
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        self._enricher = enricher
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -50,7 +54,8 @@ class CorrelationEngine:
     async def handle_event(self, event: CanaryEvent) -> None:
         """Correlate one validated event."""
         now = float(self._clock())
-        if not await self._dedup.first_seen(event_fingerprint(event)):
+        fingerprint = event_fingerprint(event)
+        if not await self._dedup.first_seen(fingerprint):
             metrics.EVENTS_TOTAL.labels(result="deduplicated").inc()
             self._audit.emit(
                 "event_deduplicated",
@@ -61,6 +66,7 @@ class CorrelationEngine:
 
         incidents: list[Incident] = []
         matched = False
+        failed = False
         for rule in self._rules:
             if not rule.matches(event):
                 continue
@@ -68,6 +74,7 @@ class CorrelationEngine:
             try:
                 incidents.extend(await rule.apply(event, now=now))
             except Exception as exc:
+                failed = True
                 metrics.RULE_FAILURES.labels(rule=rule.name).inc()
                 self._audit.emit(
                     "rule_failed",
@@ -79,17 +86,56 @@ class CorrelationEngine:
                     },
                 )
 
+        if failed:
+            # The claim was taken before the rules ran, so keeping it after a
+            # failure would discard a redelivery of an event that never reached
+            # the store: a second syslog relay, or a canary that reconnects.
+            await self._dedup.release(fingerprint)
+
         if not matched:
+            logtype = int(event.logtype)
+            if logtype in IGNORED_LOGTYPES:
+                # Node lifecycle records: expected, and nothing to correlate. An
+                # INFO record keeps them traceable without filling the warning
+                # stream an operator scans for real routing gaps.
+                metrics.EVENTS_TOTAL.labels(result="ignored").inc()
+                self._audit.emit(
+                    "event_ignored",
+                    "info",
+                    {"node_id": event.node_id, "logtype": logtype},
+                )
+                return
             metrics.EVENTS_TOTAL.labels(result="unrouted").inc()
             self._audit.emit(
                 "event_unrouted",
                 "warning",
-                {"node_id": event.node_id, "logtype": int(event.logtype)},
+                {"node_id": event.node_id, "logtype": logtype},
             )
             return
 
         if incidents:
+            await self._enrich(incidents)
             await self._dispatch(incidents)
+
+    async def _enrich(self, incidents: Sequence[Incident]) -> None:
+        """Attach attacker context to the incidents that are about to be sent.
+
+        Only newly created incidents reach this point (a merge inside the horizon
+        does not notify), so the cost stays at one lookup per alert. `enrich`
+        never waits longer than its own budget, and a failure here only means the
+        alert goes out without context.
+        """
+        if self._enricher is None:
+            return
+        for incident in incidents:
+            try:
+                incident.enrichment = await self._enricher.enrich(incident.src_host)
+            except Exception as exc:  # a broken enrichment must not lose the alert
+                self._audit.emit(
+                    "enrichment_failed",
+                    "error",
+                    {"incident": incident.key, "error_type": type(exc).__name__},
+                )
 
     async def _dispatch(self, incidents: Sequence[Incident]) -> None:
         tasks = [

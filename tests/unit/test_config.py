@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from opencanary_correlator.config import DEFAULT_HEALTH_HOST, Settings
+from opencanary_correlator.config import DEFAULT_HEALTH_HOST, DEFAULT_HEALTH_PORT, Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_REDIS_URL = "redis://localhost:6379/0"
@@ -29,9 +29,11 @@ def test_alert_detail_defaults_favour_readable_chat_messages(settings_factory: A
     assert settings.telegram_detail == "standard"
     assert settings.slack_detail == "standard"
     assert settings.discord_detail == "standard"
-    # Legacy text stays the default where a parser or mail filter may depend on it.
+    # A human reads the mail, so it gets the same readable layout as chat. The
+    # webhook keeps the legacy `text` because a parser may depend on it; its
+    # payload carries the attacker context as structured JSON at every level.
     assert settings.webhook_detail == "minimal"
-    assert settings.smtp_detail == "minimal"
+    assert settings.smtp_detail == "standard"
 
 
 @pytest.mark.parametrize(
@@ -232,8 +234,57 @@ def test_health_port_zero_or_empty_disables_the_endpoint(settings_factory: Any, 
     assert settings.health_port is None
 
 
-def test_health_port_defaults_to_8080(settings_factory: Any) -> None:
-    assert settings_factory().health_port == 8080
+def test_health_port_default_avoids_the_emulated_http_port(settings_factory: Any) -> None:
+    assert settings_factory().health_port == DEFAULT_HEALTH_PORT
+    assert DEFAULT_HEALTH_PORT != 8080
+
+
+def test_enrichment_is_off_until_it_is_configured(settings_factory: Any) -> None:
+    settings = settings_factory()
+
+    assert settings.geoip_city_db is None
+    assert settings.geoip_asn_db is None
+    assert settings.virustotal_api_key is None
+    # The published free-tier ceilings are the defaults.
+    assert (settings.virustotal_per_minute, settings.virustotal_per_day) == (4, 500)
+    assert settings.virustotal_per_month == 15_500
+
+
+def test_the_virustotal_key_stays_out_of_repr(settings_factory: Any) -> None:
+    settings = settings_factory(virustotal_api_key="vt-secret-value")
+
+    assert "vt-secret-value" not in repr(settings)
+    assert settings.virustotal_api_key is not None
+
+
+def test_slack_is_disabled_until_it_has_a_webhook(settings_factory: Any) -> None:
+    """`enabled` with no endpoint is a dead switch, not a working channel."""
+    assert settings_factory().slack_enabled is False
+    only_webhook = settings_factory(slack_webhooks="https://hooks.slack.com/services/a")
+    assert only_webhook.slack_enabled is False
+
+
+def test_enabling_slack_without_a_webhook_fails_at_startup(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError, match="slack_webhooks"):
+        settings_factory(slack_enabled=True)
+
+
+def test_enabling_slack_with_a_webhook_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(
+        slack_enabled=True, slack_webhooks="https://hooks.slack.com/services/a"
+    )
+
+    assert settings.slack_enabled is True
+
+
+def test_intake_defaults_to_loopback_and_uncommon_ports(settings_factory: Any) -> None:
+    """The common deployment is one host, and honeypot traps own the common ports."""
+    settings = settings_factory()
+
+    assert settings.tcp_host == "127.0.0.1"
+    assert settings.syslog_host == "127.0.0.1"
+    assert (settings.tcp_port, settings.syslog_port) == (15140, 15141)
+    assert settings.tcp_port not in {21, 22, 23, 25, 80, 443, 8080, 8443}
 
 
 def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch: Any) -> None:
@@ -385,6 +436,35 @@ def test_legacy_json_is_imported(tmp_path: Path) -> None:
     assert settings.slack_enabled is False
     assert not hasattr(settings, "mandrill_key")
     assert not hasattr(settings, "twilio_sid")
+
+
+def test_legacy_import_keeps_plain_smtp_on_port_25(tmp_path: Path, settings_factory: Any) -> None:
+    """The old notifier used `smtplib.SMTP(server, 25)`, with no STARTTLS.
+
+    A migrated file that names only `console.email_host` has to reach the same
+    relay; the modern 587 + STARTTLS default would make that relay answer with an
+    error and the alert would be lost.
+    """
+    path = tmp_path / "legacy.conf"
+    path.write_text(
+        json.dumps(
+            {
+                "console.email_notification_enable": True,
+                "console.email_notification_address": ["soc@example.com"],
+                "console.email_host": "smtp.example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_legacy_json(path, overrides={"redis_url": TEST_REDIS_URL})
+
+    assert settings.smtp_enabled is True
+    assert (settings.smtp_host, settings.smtp_port) == ("smtp.example.com", 25)
+    assert settings.smtp_starttls is False
+    # The modern defaults are unchanged for the env/CLI surface.
+    modern = settings_factory()
+    assert (modern.smtp_port, modern.smtp_starttls) == (587, True)
 
 
 def test_legacy_importer_logs_dropped_keys(tmp_path: Path, caplog: Any) -> None:

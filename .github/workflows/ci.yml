@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # `release/**` is included so a direct push to a release branch is checked
+    # too, not only the pull request into it.
+    branches: [master, "release/**"]
   pull_request:
   workflow_dispatch:
 
@@ -55,6 +57,12 @@ jobs:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The coverage comment needs to write to the pull request; everything else
+    # in this job stays read-only. Pull requests from forks get a read-only
+    # token regardless, so that step is skipped for them (see `if:` below).
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +96,108 @@ jobs:
       # so they get their own floor. Reads the .coverage data written by the run above.
       - name: Critical-module coverage floor (core, storage, receivers)
         run: uv run coverage report --include="*/core/*,*/storage/*,*/connectors/receivers/*" --fail-under=90
+      # One matrix entry publishes the report: four identical XML files would
+      # only clutter the artifacts and race on the same pull-request comment.
+      - name: Write the coverage report
+        if: matrix.python-version == '3.13'
+        run: uv run coverage xml -o coverage.xml
+      - name: Keep the coverage report
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 30
+      - name: Summarise coverage in the pull request
+        # Fork pull requests run with a read-only token, so a comment would fail
+        # there; the artifact above is still uploaded.
+        if: matrix.python-version == '3.13' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- opencanary-coverage -->';
+            const xml = fs.readFileSync('coverage.xml', 'utf8');
+            // The first `>` closes the `<?xml ...?>` declaration, so the root
+            // element has to be located explicitly.
+            const start = xml.indexOf('<coverage');
+            const root = xml.slice(start, xml.indexOf('>', start));
+            const attr = (name) => Number(root.match(new RegExp(name + '="([0-9.]+)"'))[1]);
+            const percent = (covered, total) => (total ? (covered / total) * 100 : 0).toFixed(2);
+
+            const linesCovered = attr('lines-covered');
+            const linesValid = attr('lines-valid');
+            const branchesCovered = attr('branches-covered');
+            const branchesValid = attr('branches-valid');
+            const combined = percent(
+              linesCovered + branchesCovered,
+              linesValid + branchesValid,
+            );
+
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              '### Coverage',
+              '',
+              '| Metric | Covered | Total | % |',
+              '|---|---|---|---|',
+              `| Lines | ${linesCovered} | ${linesValid} | ${percent(linesCovered, linesValid)} |`,
+              `| Branches | ${branchesCovered} | ${branchesValid} | ${percent(branchesCovered, branchesValid)} |`,
+              `| **Combined** | | | **${combined}** |`,
+              '',
+              'Gates in this run: 85 % overall, 90 % for `core`, `storage` and `connectors/receivers`.',
+              `[Download the XML report](${runUrl}) — the artifact is kept for 30 days.`,
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # The Linux matrix cannot exercise the Windows code paths the package ships:
+  # CRLF in alerts and logs, the pidfile handling, and the Windows datagram
+  # transport. Service containers are not available on Windows runners, so the
+  # opt-in real-Redis tests skip here and stay covered by the Ubuntu matrix.
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install the locked environment
+        shell: bash
+        # `sys.executable` rather than `command -v python`: in Git Bash the
+        # latter resolves to a path without the `.exe` suffix, which uv then
+        # reports as "No interpreter found at path".
+        run: uv sync --extra dev --python "$(python -c 'import sys; print(sys.executable)')"
+      - name: Pytest
+        shell: bash
+        run: uv run pytest
 
   # Records numbers, never gates on them: two invocations of one commit
   # measured 5.145 s and 12.040 s for the same workload, because a shared
@@ -371,14 +481,14 @@ jobs:
               "local_time": "2026-10-24 10:00:00.000000",
               "logdata": {"USERNAME": "admin", "PASSWORD": "ci"},
           }
-          with socket.create_connection(("127.0.0.1", 1514), timeout=10) as connection:
+          with socket.create_connection(("127.0.0.1", 15140), timeout=10) as connection:
               connection.sendall((json.dumps(event) + "\n").encode("utf-8"))
           PY
       - name: Verify the Prometheus endpoint
         run: |
           metrics=""
           for _ in $(seq 1 15); do
-            metrics=$(docker compose exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/metrics', timeout=5).read().decode())")
+            metrics=$(docker compose exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:15142/metrics', timeout=5).read().decode())")
             if printf '%s\n' "$metrics" | grep -q '^opencanary_events_total'; then
               break
             fi
@@ -403,6 +513,29 @@ jobs:
           docker compose logs correlator | grep -q '"action":"startup"'
           docker compose exec -T correlator python -c 'import os; raise SystemExit(0 if os.getuid() == 10001 else 1)'
           test "$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q correlator)")" = "healthy"
+      - name: Publish the intake on loopback only
+        run: |
+          # The default must keep the canary on this host safe: the published port
+          # is bound to 127.0.0.1, not to every interface. Print what compose
+          # actually bound instead of trusting the file.
+          for mapping in 15140 15141; do
+            bound=$(docker compose port correlator "$mapping" | head -n 1 | tr -d '\r')
+            echo "$mapping -> $bound"
+            test "$bound" = "127.0.0.1:$mapping"
+          done
+          # Widening stays one variable away. `docker compose port` reports the
+          # mapping of the container that is already running, so it cannot show
+          # what a changed variable would produce; the rendered configuration
+          # can, and that is what the next `up` would create.
+          default_ips=$(docker compose config | grep -c 'host_ip: 127.0.0.1')
+          # One variable per protocol family: the syslog mapping has its own.
+          widened_ips=$(
+            OCC_TCP_PUBLISH_HOST=0.0.0.0 OCC_SYSLOG_PUBLISH_HOST=0.0.0.0 \
+              docker compose config | grep -c 'host_ip: 0.0.0.0'
+          )
+          echo "loopback bindings: $default_ips, widened bindings: $widened_ips"
+          test "$default_ips" = "3"
+          test "$widened_ips" = "3"
       - name: Keep the container healthy with a loopback-only listener
         env:
           OCC_HEALTH_HOST: 127.0.0.1
@@ -414,7 +547,7 @@ jobs:
           services:
             correlator:
               ports:
-                - "127.0.0.1:18080:8080"
+                - "127.0.0.1:18080:15142"
           YAML
           compose=(docker compose -f docker-compose.yml -f /tmp/health-loopback.yml)
           "${compose[@]}" up -d --no-deps --force-recreate correlator
@@ -429,7 +562,7 @@ jobs:
           echo "health with OCC_HEALTH_HOST=${OCC_HEALTH_HOST}: $status"
           test "$status" = "healthy"
           # The listener answers on loopback inside the container ...
-          "${compose[@]}" exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status)"
+          "${compose[@]}" exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:15142/healthz', timeout=5).status)"
           # ... and is not bound to the container interface, so the published port
           # cannot reach it. This is what a wildcard binding would have allowed.
           if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/healthz', timeout=5)" 2>/dev/null; then

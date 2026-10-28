@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
+from opencanary_correlator.config_validation import DEFAULT_HEALTH_HOST, DEFAULT_HEALTH_PORT
 from opencanary_correlator.connectors.receivers._allowlist import (
     AllowedNetworks,
     is_peer_allowed,
@@ -17,6 +18,24 @@ from opencanary_correlator.storage.redis_store import RedisStore
 
 _REQUEST_TIMEOUT: Final[float] = 5.0
 _MAX_REQUEST_BYTES: Final[int] = 8192
+
+#: Concurrent connections the probe listener serves.
+#:
+#: The listener binds every interface by default and is unauthenticated, and
+#: every accepted socket costs a task until its request completes. Without a
+#: cap a single peer opening sockets it never finishes exhausts file descriptors
+#: and stalls `/healthz` for the orchestrator as well — the probe that is
+#: supposed to report an unhealthy process would hang instead. A real probe uses
+#: one connection at a time, so the cap is far above any honest traffic.
+_MAX_CONCURRENT_REQUESTS: Final[int] = 128
+
+#: Time a refused-but-over-cap connection gets to deliver its request headers.
+#:
+#: Closing a socket that still holds unread bytes makes the kernel reset the
+#: connection, so the client would see a broken pipe instead of the 503. The
+#: read is bounded in time because the peer being refused is usually one that
+#: never finishes its request.
+_OVERLOAD_DRAIN_TIMEOUT: Final[float] = 0.5
 
 _OK_PATHS = frozenset({"/healthz", "/readyz", "/health"})
 _METRICS_PATH: Final[str] = "/metrics"
@@ -29,10 +48,11 @@ class HealthServer:
         self,
         store: RedisStore,
         *,
-        host: str = "0.0.0.0",  # noqa: S104 - probes are served on every interface by default
-        port: int = 8080,
+        host: str = DEFAULT_HEALTH_HOST,
+        port: int = DEFAULT_HEALTH_PORT,
         audit: AuditLogger | None = None,
         allowed_networks: AllowedNetworks = (),
+        max_concurrent_requests: int = _MAX_CONCURRENT_REQUESTS,
     ) -> None:
         self._store = store
         self._host = host
@@ -40,6 +60,8 @@ class HealthServer:
         self._audit = audit
         # Peers outside these networks get a 403 before any state is read.
         self._allowed_networks = allowed_networks
+        self._max_concurrent_requests = max(1, max_concurrent_requests)
+        self._active_requests = 0
         self._server: asyncio.AbstractServer | None = None
         self._bound_port: int | None = None
 
@@ -69,6 +91,10 @@ class HealthServer:
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if self._active_requests >= self._max_concurrent_requests:
+            await self._refuse_overloaded(reader, writer)
+            return
+        self._active_requests += 1
         try:
             request_line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
             if not request_line:
@@ -119,11 +145,55 @@ class HealthServer:
             if self._audit is not None:
                 self._audit.emit("health_request_failed", "warning", {"reason": "timeout"})
         finally:
+            self._active_requests -= 1
             writer.close()
             try:
                 await writer.wait_closed()
             except ConnectionError:  # pragma: no cover - peer already gone
                 pass
+
+    def _reject_overloaded(self, writer: asyncio.StreamWriter) -> None:
+        """Answer a connection over the cap with a 503 and audit the refusal."""
+        self._write(writer, 503, json.dumps({"error": "busy"}))
+        if self._audit is not None:
+            self._audit.emit(
+                "health_request_rejected",
+                "warning",
+                {"reason": "too_many_requests", "active": self._active_requests},
+            )
+
+    async def _refuse_overloaded(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Refuse a connection over the cap, after letting it finish its headers.
+
+        The refusal never waits longer than `_OVERLOAD_DRAIN_TIMEOUT`, so a peer
+        that trickles its request holds nothing for long, but a well-formed probe
+        still receives the 503 instead of a connection reset.
+        """
+        try:
+            await self._discard_request(reader)
+            self._reject_overloaded(writer)
+            await writer.drain()
+        except (TimeoutError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    @staticmethod
+    async def _discard_request(reader: asyncio.StreamReader) -> None:
+        """Read and drop the headers of a connection that is being refused."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _OVERLOAD_DRAIN_TIMEOUT
+        consumed = 0
+        while consumed < _MAX_REQUEST_BYTES:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            line = await asyncio.wait_for(reader.readline(), timeout=remaining)
+            consumed += len(line)
+            if line in (b"\r\n", b"\n", b""):
+                return
 
     def _peer_allowed(self, writer: asyncio.StreamWriter) -> bool:
         if not self._allowed_networks:

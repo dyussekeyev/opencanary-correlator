@@ -31,6 +31,18 @@ LOG_DATE_FORMAT: Final[str] = "%Y-%m-%dT%H:%M:%S%z"
 DEFAULT_MAX_BYTES: Final[int] = 10 * 1024 * 1024
 DEFAULT_BACKUPS: Final[int] = 5
 
+#: Third-party loggers capped at WARNING, whatever ``OCC_LOG_LEVEL`` says.
+#:
+#: ``httpx`` logs every request line (``HTTP Request: POST <url>``) at INFO and
+#: ``httpcore``/``h11``/``hpack`` log connection and frame details at DEBUG. The
+#: Telegram Bot API only accepts its token in the URL path and Slack/Discord
+#: keep the secret in the webhook path, so the redaction filters have to reconstruct
+#: those URLs from arbitrary text — the reliable answer is not to emit them at all.
+#: A genuine failure from these libraries is still logged: it arrives at WARNING
+#: or above, which is the level the correlator's own `alert_dispatch` record
+#: also reports.
+NOISY_LOGGERS: Final[tuple[str, ...]] = ("httpx", "httpcore", "h11", "hpack")
+
 _MANAGED: Final[str] = "occ_managed"
 #: Invalid Unicode must never turn a log call into a logging error.
 _FILE_ERRORS: Final[str] = "backslashreplace"
@@ -217,6 +229,11 @@ def configure_logging(
     for handler in handlers:
         root.addHandler(handler)
     root.setLevel(level)
+    # DEBUG is for the correlator's own decisions. Library chatter carries request
+    # URLs and response fragments — the exact places a bot token lives — so those
+    # loggers are capped here rather than relying on pattern redaction alone.
+    for name in NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     return handlers
 
 
@@ -225,6 +242,7 @@ __all__ = [
     "DEFAULT_MAX_BYTES",
     "LOG_DATE_FORMAT",
     "LOG_FORMAT",
+    "NOISY_LOGGERS",
     "LogSetupError",
     "RedactingFormatter",
     "SecretRedactionFilter",

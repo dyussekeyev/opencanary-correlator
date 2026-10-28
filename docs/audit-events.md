@@ -33,12 +33,14 @@ a compatibility risk, because consumers only rely on these five keys.
 | `receiver_stopped` | `info` | a receiver closed | `receiver`, `accepted` |
 | `connection_rejected` | `warning` | connection cap, per-IP budget or source allowlist refused the peer | `reason: connection_limit` / `connection_rate_limited` / `peer_not_allowed`, `peer` |
 | `connection_closed` | `warning` | a connection was closed for a policy reason | `reason`: `line_too_large`, `partial_line_timeout`, `connection_limit`, `connection_rate_limited` |
+| `connection_closed` | `info` | the **peer** closed the connection (a canary went silent) | `reason: peer_closed`, `receiver`, `peer` |
 | `connection_limiter_error` | `error` | the Redis limiter failed while accepting | `error_type` |
 | `event_rejected` | `warning` | one line/datagram failed parsing or validation | `reason`, `peer`, plus reason-specific fields |
 | `event_dropped` | `error` | the bounded event queue was full | `reason: queue_full`, `node_id`, `logtype` |
 | `event_rate_limited` | `warning` | the node exceeded its event budget | `node_id`, `logtype` |
 | `event_deduplicated` | `info` | an identical event was seen inside the dedup TTL | `node_id`, `logtype` |
-| `event_unrouted` | `warning` | no rule handles this `logtype` | `node_id`, `logtype` |
+| `event_ignored` | `info` | the `logtype` is node lifecycle (boot, base message, debug, ping, config save), which nothing correlates | `node_id`, `logtype` |
+| `event_unrouted` | `warning` | no rule handles this `logtype`, and it is not a known lifecycle type | `node_id`, `logtype` |
 | `event_dispatch_failed` | `error` | the sink raised while handling one event | `node_id`, `error_type` |
 | `datagram_error` | `error` | UDP syslog processing raised | `receiver`, `error_type` |
 | `rule_failed` | `error` | a correlation rule raised | `rule`, `node_id`, `error_type` |
@@ -46,6 +48,8 @@ a compatibility risk, because consumers only rely on these five keys.
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
+| `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
+| `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 
 Rejection reasons: `invalid_utf8`, `line_too_large`, `canary_error_line` (an

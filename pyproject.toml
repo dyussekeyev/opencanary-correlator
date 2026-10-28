@@ -35,11 +35,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Attacker-IP enrichment reads DB-IP Lite (or GeoLite2) MMDB files locally, so the
+# reader is an extra: a deployment without `OCC_GEOIP_CITY_DB` does not install it.
+geo = [
+    "maxminddb>=2.6,<3",
+]
 dev = [
     "fakeredis>=2.26",
     # fakeredis needs a Lua runtime to execute the atomic incident/lock
     # scripts, exactly as a real Redis server does in production.
     "lupa>=2.5",
+    # The geo extra is only needed in production, but mypy checks that import and
+    # the Docker-free test path needs the same dependency resolution.
+    "maxminddb>=2.6,<3",
     "mypy>=1.11",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

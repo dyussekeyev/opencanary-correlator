@@ -30,7 +30,9 @@ class SmtpDispatcher(BaseDispatcher):
 
     ``detail`` selects the body layout: ``minimal`` keeps the legacy plain-text
     report, ``standard`` and ``detailed`` send the multiline layout without
-    markup (mail clients do not render chat markdown).
+    markup (mail clients do not render chat markdown). The default matches the
+    configuration default: a person reads the mail, so it gets the readable
+    layout with the attacker context.
     """
 
     name: ClassVar[str] = "smtp"
@@ -42,7 +44,7 @@ class SmtpDispatcher(BaseDispatcher):
         port: int,
         sender: str,
         recipients: Sequence[str],
-        detail: AlertDetail = "minimal",
+        detail: AlertDetail = "standard",
         username: str | None = None,
         password: SecretStr | None = None,
         start_tls: bool = True,

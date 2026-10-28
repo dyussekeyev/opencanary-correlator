@@ -1,21 +1,15 @@
-"""Shared asyncio TCP receiver plumbing.
+"""The listening side of a TCP receiver: sockets, connections and admission.
 
-Both the JSON receiver and the syslog TCP receiver use this module. It enforces
-the hardening rules from ``docs/internal/EXECPLAN-refactor.md``:
-
-* a hard per-line byte limit (default 64 KiB);
-* a timeout that only applies to a *stalled partial line*, so a silent
-  keep-alive connection from `SocketJSONHandler` is never reaped;
-* a connection cap and an optional distributed admission/rate limiter;
-* all payload handling through the bounded :class:`EventPipeline`.
+Both the JSON receiver and the syslog TCP receiver use this module. The
+per-connection protocol lives in :mod:`._stream`; this module owns the server
+socket, the connection cap, the optional distributed rate limiter and the
+payload-to-event step.
 """
 
 from __future__ import annotations
 
 import asyncio
-import socket
 from abc import abstractmethod
-from typing import Final
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
@@ -27,125 +21,15 @@ from opencanary_correlator.connectors.receivers._allowlist import (
 )
 from opencanary_correlator.connectors.receivers._base import NetworkReceiver
 from opencanary_correlator.connectors.receivers._pipeline import DEFAULT_CONCURRENCY
+from opencanary_correlator.connectors.receivers._stream import (
+    CLOSE_REASON_CONNECTION_LIMIT,
+    CLOSE_REASON_LINE_TOO_LARGE,
+    CLOSE_REASON_PARTIAL_LINE_TIMEOUT,
+    CLOSE_REASON_PEER_CLOSED,
+    CLOSE_REASON_RATE_LIMITED,
+    StreamProtocol,
+)
 from opencanary_correlator.schemas import CanaryEvent
-
-CLOSE_REASON_LINE_TOO_LARGE: Final[str] = "line_too_large"
-CLOSE_REASON_PARTIAL_LINE_TIMEOUT: Final[str] = "partial_line_timeout"
-CLOSE_REASON_CONNECTION_LIMIT: Final[str] = "connection_limit"
-CLOSE_REASON_RATE_LIMITED: Final[str] = "connection_rate_limited"
-
-
-class StreamProtocol(asyncio.Protocol):
-    """Newline-delimited TCP protocol with partial-line timeout and size limits."""
-
-    def __init__(self, receiver: TCPStreamReceiver) -> None:
-        self._receiver = receiver
-        self._buffer = bytearray()
-        self._transport: asyncio.BaseTransport | None = None
-        self._timeout_handle: asyncio.TimerHandle | None = None
-        self._closed = False
-        self.peer_ip: str = ""
-
-    # --- asyncio.Protocol ---------------------------------------------------
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        """Record the transport, tune the socket and register the connection."""
-        self._transport = transport
-        extra_socket = transport.get_extra_info("socket")
-        if isinstance(extra_socket, socket.socket):
-            extra_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            extra_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        peername = transport.get_extra_info("peername")
-        if isinstance(peername, tuple) and peername:
-            self.peer_ip = str(peername[0])
-        self._receiver.connection_made(self)
-
-    def data_received(self, data: bytes) -> None:
-        """Buffer incoming bytes, extract complete frames and dispatch them."""
-        if self._closed:
-            return
-        self._buffer.extend(data)
-        payloads, overflow = self.extract_payloads()
-        for payload in payloads:
-            self._receiver.payload_received(self, payload)
-        if overflow:
-            self.close(CLOSE_REASON_LINE_TOO_LARGE)
-            return
-        self._arm_timeout()
-
-    def connection_lost(self, exc: Exception | None) -> None:
-        """Release the timer and deregister the connection."""
-        self._cancel_timeout()
-        self._closed = True
-        self._receiver.connection_lost(self)
-
-    # --- Framing ------------------------------------------------------------
-
-    def extract_payloads(self) -> tuple[list[bytes], bool]:
-        """Split the buffer into complete payloads.
-
-        Returns the payloads plus an ``overflow`` flag that tells the caller the
-        peer exceeded the configured line limit.
-        """
-        max_bytes = self._receiver.max_line_bytes
-        payloads: list[bytes] = []
-        while True:
-            index = self._next_delimiter()
-            if index < 0:
-                break
-            line = bytes(self._buffer[:index]).rstrip(b"\r")
-            del self._buffer[: index + 1]
-            if len(line) > max_bytes:
-                return [], True
-            payloads.append(line)
-        if len(self._buffer) > max_bytes:
-            return [], True
-        return payloads, False
-
-    def _next_delimiter(self) -> int:
-        """Return the offset of the first frame delimiter, or -1.
-
-        Newline-separated frames are the OpenCanary ``SocketJSONHandler``
-        format. NUL is also accepted because Python's ``SysLogHandler``
-        terminates TCP messages with ``\\x00`` instead of a newline.
-        """
-        newline = self._buffer.find(b"\n")
-        nul = self._buffer.find(b"\x00")
-        if newline < 0:
-            return nul
-        if nul < 0:
-            return newline
-        return min(newline, nul)
-
-    # --- Lifecycle ----------------------------------------------------------
-
-    def close(self, reason: str) -> None:
-        """Close the connection and audit why."""
-        if self._closed:
-            return
-        self._closed = True
-        self._cancel_timeout()
-        self._receiver.connection_closed(self, reason)
-        if self._transport is not None:
-            self._transport.close()
-
-    def _arm_timeout(self) -> None:
-        self._cancel_timeout()
-        if not self._buffer or self._closed:
-            return
-        loop = asyncio.get_running_loop()
-        self._timeout_handle = loop.call_later(
-            self._receiver.partial_line_timeout, self._on_timeout
-        )
-
-    def _cancel_timeout(self) -> None:
-        if self._timeout_handle is not None:
-            self._timeout_handle.cancel()
-            self._timeout_handle = None
-
-    def _on_timeout(self) -> None:
-        self._timeout_handle = None
-        self.close(CLOSE_REASON_PARTIAL_LINE_TIMEOUT)
 
 
 class TCPStreamReceiver(NetworkReceiver):
@@ -156,7 +40,11 @@ class TCPStreamReceiver(NetworkReceiver):
         *,
         sink: EventSink,
         audit: AuditLogger,
-        host: str = "0.0.0.0",  # noqa: S104 - receiver listens on every interface by default
+        # Loopback, matching `DEFAULT_INTAKE_HOST`: the intake is unauthenticated,
+        # so binding every interface must be an explicit choice. `wiring` always
+        # passes the configured host; this default only stops a caller that
+        # forgets it from opening a write path into the incident store.
+        host: str = "127.0.0.1",
         port: int = 0,
         max_line_bytes: int = 65536,
         partial_line_timeout: float = 30.0,
@@ -289,10 +177,26 @@ class TCPStreamReceiver(NetworkReceiver):
             )
             protocol.close(CLOSE_REASON_RATE_LIMITED)
 
-    def connection_lost(self, protocol: StreamProtocol) -> None:
-        """Forget a closed connection."""
+    def connection_lost(self, protocol: StreamProtocol, *, peer_closed: bool = False) -> None:
+        """Forget a closed connection, and note who closed it.
+
+        A peer-initiated close is audited at INFO: it is the moment a canary
+        stopped delivering, and the correlator cannot ask it to reconnect. A
+        close the receiver performed is already audited at WARNING by
+        :meth:`connection_closed`.
+        """
         self._connections.discard(protocol)
         metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(len(self._connections))
+        if peer_closed:
+            self._audit.emit(
+                "connection_closed",
+                "info",
+                {
+                    "receiver": self.name,
+                    "reason": CLOSE_REASON_PEER_CLOSED,
+                    "peer": protocol.peer_ip,
+                },
+            )
 
     def connection_closed(self, protocol: StreamProtocol, reason: str) -> None:
         """Audit a connection that the receiver itself terminated."""
@@ -327,6 +231,7 @@ __all__ = [
     "CLOSE_REASON_CONNECTION_LIMIT",
     "CLOSE_REASON_LINE_TOO_LARGE",
     "CLOSE_REASON_PARTIAL_LINE_TIMEOUT",
+    "CLOSE_REASON_PEER_CLOSED",
     "CLOSE_REASON_RATE_LIMITED",
     "StreamProtocol",
     "TCPStreamReceiver",

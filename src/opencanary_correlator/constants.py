@@ -11,6 +11,10 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Any, Final
 
+from opencanary_correlator.incident_specs import (
+    INCIDENT_KEY_PREFIX as INCIDENT_KEY_PREFIX_TABLE,
+)
+
 
 class LogType(IntEnum):
     """Known OpenCanary log types.
@@ -98,6 +102,24 @@ INCIDENT_LOGTYPE_HOST_PORT_SCAN: Final[int] = 5003
 
 DEFAULT_LOGTYPE: Final[LogType] = LogType.LOG_BASE_MSG
 
+#: Log types that describe the canary node itself (boot, heartbeat, debug, a
+#: plain operational message) rather than an interaction with an attacker. They
+#: are expected, so the engine audits them at INFO as `event_ignored`; any other
+#: `logtype` that no rule handles is a routing gap and stays a WARNING.
+#: `plain text` syslog bodies become `LOG_BASE_MSG`, which is why this set also
+#: keeps `opencanaryd` startup output out of the warning stream.
+IGNORED_LOGTYPES: Final[frozenset[int]] = frozenset(
+    {
+        int(LogType.LOG_BASE_BOOT),
+        int(LogType.LOG_BASE_MSG),
+        int(LogType.LOG_BASE_DEBUG),
+        int(LogType.LOG_BASE_ERROR),
+        int(LogType.LOG_BASE_PING),
+        int(LogType.LOG_BASE_CONFIG_SAVE),
+        int(LogType.LOG_BASE_EXAMPLE),
+    }
+)
+
 #: Field defaults applied by `opencanary.logger.LoggerBase.sanitizeLog()`.
 DEFAULT_EVENT_FIELDS: Final[dict[str, Any]] = {
     "src_host": "",
@@ -108,25 +130,9 @@ DEFAULT_EVENT_FIELDS: Final[dict[str, Any]] = {
     "logdata": {},
 }
 
-#: Canonical incident name -> legacy Redis key prefix.
-INCIDENT_KEY_PREFIX: Final[dict[str, str]] = {
-    "ftp.login_attempt": "incident:ftplogin:",
-    "http.login_attempt": "incident:httplogin:",
-    "ssh.login_attempt": "incident:sshlogin:",
-    "telnet.login_attempt": "incident:telnetlogin:",
-    "httpproxy.login_attempt": "incident:httpproxylogin:",
-    "mysql.login_attempt": "incident:mysqllogin:",
-    "mssql.login_attempt": "incident:mssqllogin:",
-    "tftp.action": "incident:tftp:",
-    "ntp.monlist": "incident:ntpmonlist:",
-    "vnc.login_attempt": "incident:vnclogin:",
-    "snmp.cmd": "incident:snmplogin:",
-    "rdp.login_attempt": "incident:rdplogin:",
-    "sip.login_attempt": "incident:siplogin:",
-    "smb.file_open": "incident:smbfileopen:",
-    "scans.host_portscan": "incident:hostportscan:",
-    "scans.network_portscan": "incident:networkportscan:",
-}
+#: Canonical incident name -> legacy Redis key prefix, derived from the incident
+#: spec table so a type cannot be registered in one place and missing here.
+INCIDENT_KEY_PREFIX: Final[dict[str, str]] = INCIDENT_KEY_PREFIX_TABLE
 
 #: Redis keys shared with the legacy console.
 KEY_INCIDENTS: Final[str] = "incidents"
@@ -143,6 +149,7 @@ MAX_EVENT_COUNT: Final[int] = 100
 __all__ = [
     "DEFAULT_EVENT_FIELDS",
     "DEFAULT_LOGTYPE",
+    "IGNORED_LOGTYPES",
     "INCIDENT_KEY_PREFIX",
     "INCIDENT_LOGTYPE_HOST_PORT_SCAN",
     "INCIDENT_LOGTYPE_NETWORK_PORT_SCAN",

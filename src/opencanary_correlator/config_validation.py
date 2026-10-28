@@ -24,6 +24,16 @@ LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "127.0.0.1", "::
 TELEGRAM_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
 DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
 
+#: Port for the health and `/metrics` listener. 8080 is the classic HTTP-alt
+#: port and collides with the web services a honeypot imitates, so the default
+#: sits in the same uncommon block as the intake ports.
+DEFAULT_HEALTH_PORT: Final[int] = 15142
+
+#: Interface the event receivers bind to when nothing is configured. Loopback
+#: keeps the unauthenticated event intake off the network in the common
+#: single-host deployment; remote canaries set OCC_TCP_HOST/OCC_SYSLOG_HOST.
+DEFAULT_INTAKE_HOST: Final[str] = "127.0.0.1"
+
 #: Peers allowed to read the health and metrics endpoints when nothing is configured.
 DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 
@@ -164,6 +174,32 @@ def normalise_alert_detail(value: Any) -> Any:
     return aliases.get(text, text)
 
 
+def require_slack_endpoints(enabled: bool, webhooks: list[str]) -> None:
+    """Reject a Slack channel that is switched on but has nowhere to send.
+
+    ``OCC_SLACK_ENABLED=true`` with an empty ``OCC_SLACK_WEBHOOKS`` was a silent
+    no-op: the flag promised a channel that never existed, and nothing in the
+    logs said so. Failing at startup turns the contradiction into a message the
+    operator can act on. The flag defaults to false now, so simply configuring a
+    webhook is not enough on its own — see ``slack_configured_but_disabled``.
+    """
+    if enabled and not webhooks:
+        raise ValueError(
+            "slack_enabled requires at least one URL in slack_webhooks; "
+            "set OCC_SLACK_WEBHOOKS or unset OCC_SLACK_ENABLED"
+        )
+
+
+def slack_configured_but_disabled(enabled: bool, webhooks: list[str]) -> bool:
+    """True when webhooks exist but the kill switch is off.
+
+    The other half of the same mistake: a webhook pasted into ``.env`` next to a
+    forgotten ``OCC_SLACK_ENABLED=false``. Startup logs a warning for it instead
+    of failing, because disabling a channel on purpose is legitimate.
+    """
+    return bool(webhooks) and not enabled
+
+
 def require_email_address(value: str) -> str:
     """Minimal structural check: an address with a local part and a domain."""
     if "@" not in value or value.startswith("@") or value.endswith("@"):
@@ -197,6 +233,8 @@ def disable_health_port(value: Any) -> Any:
 __all__ = [
     "DEFAULT_HEALTH_ALLOWED_IPS",
     "DEFAULT_HEALTH_HOST",
+    "DEFAULT_HEALTH_PORT",
+    "DEFAULT_INTAKE_HOST",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
     "TELEGRAM_TOKEN_RE",
@@ -210,6 +248,8 @@ __all__ = [
     "require_email_address",
     "require_http_urls",
     "require_redis_scheme",
+    "require_slack_endpoints",
+    "slack_configured_but_disabled",
     "split_comma_separated",
     "validate_allowed_ips",
     "validate_incident_horizons",

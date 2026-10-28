@@ -37,7 +37,7 @@ deleted; a smoke test asserts they stay gone.
 | `quality` | `uv lock --check`, `uv sync --frozen --extra dev`, `uv pip check`, `ruff check`, `ruff format --check`, `mypy src tools` on Python 3.13 |
 | `test` | `uv sync --frozen --extra dev` and `pytest` on Python 3.11, 3.12, 3.13 and 3.14 with a digest-pinned `redis:7-alpine` service and `OCC_TEST_REDIS_URL=redis://localhost:6379/15`, so the two-replica and POSIX SIGTERM checks execute |
 | `package` | `python -m build`, `twine check`, wheel install, `--version` and parsed `--check-config` output |
-| `docker` | `docker compose up --build --wait`, a real `SocketJSONHandler` event over TCP 1514, then assertions on the incident key, `startup` audit line, uid 10001, container health and the `/metrics` exposition |
+| `docker` | `docker compose up --build --wait`, a real `SocketJSONHandler` event over TCP 15140, published-intake loopback assertions, then checks on the incident key, `startup` audit line, uid 10001, container health and the `/metrics` exposition |
 
 The workflow has executed on GitHub (run [40114309203](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40114309203), PR #1): all seven checks pass — `quality` 14 s, four `test` jobs 29–34 s with **294 passed and 0 skipped** (the real-Redis two-replica checks and the POSIX SIGTERM test actually execute there), `package` 19 s, `docker` 37 s with `incident count: 1`, the uid 10001 check and container health. The Docker job repeats the container smoke test below on a clean runner.
 
@@ -222,17 +222,19 @@ incident key, source address or payload is exported.
 | Startup failure | `OCC_REDIS_URL=redis://127.0.0.1:6390/0` → one `startup_failed / redis_unavailable` JSON line on stdout, `cannot start: Redis is not reachable` on stderr, exit 1. Now also pinned by `test_main_reports_an_unreachable_redis_and_exits_1` and `test_run_correlator_fails_fast_when_redis_is_down`, so the exit code and the audit line cannot drift unnoticed |
 | Configuration failure | a missing or malformed `--config` file → `cannot load configuration: …` on stderr and exit 2 (`test_main_reports_a_missing_legacy_config`, `test_main_reports_a_malformed_legacy_config`); an invalid override still exits 2 through the `ValidationError` branch |
 | CLI flags stand alone | `--redis-url` satisfies the required setting by itself (`test_redis_url_flag_alone_satisfies_the_required_setting`); it could not before, because overrides were merged into an already-validated `Settings` |
-| `docker compose config` | valid; Redis URL forced to `redis://redis:6379/0`; `1514/tcp` and `5514/tcp` + `5514/udp` published for external canaries; no health port published; read-only root with `/tmp` tmpfs, `cap_drop: ALL` |
-| `HEALTHCHECK` port resolution | unit-verified: unset → 8080, `OCC_HEALTH_PORT=9090` → 9090, any numeric zero (`0`, `00`, whitespace-padded) or empty → exit 0 without a request, invalid/out-of-range → exit 1, and a real loopback `/healthz` on a non-default port → exit 0; `opencanary-correlator --check-config` with `OCC_HEALTH_PORT=0` exits **0** and prints `health_port: null`; the listener reads the same environment variable through `Settings` |
+| `docker compose config` | valid; Redis URL forced to `redis://redis:6379/0`; `15140/tcp` and `15141/tcp` + `15141/udp` published **on `127.0.0.1`** (`OCC_TCP_PUBLISH_HOST` / `OCC_SYSLOG_PUBLISH_HOST`, overridable without editing the file); no health port published; read-only root with `/tmp` tmpfs, `cap_drop: ALL` |
+| `HEALTHCHECK` port resolution | unit-verified: unset → 15142, `OCC_HEALTH_PORT=9090` → 9090, any numeric zero (`0`, `00`, whitespace-padded) or empty → exit 0 without a request, invalid/out-of-range → exit 1, and a real loopback `/healthz` on a non-default port → exit 0; `opencanary-correlator --check-config` with `OCC_HEALTH_PORT=0` exits **0** and prints `health_port: null`; the listener reads the same environment variable through `Settings` |
 | `HEALTHCHECK` host resolution | unit-verified: `OCC_HEALTH_HOST` unset or a wildcard (`0.0.0.0`, `::`, `[::]`) → probe `127.0.0.1`, `::1` → probe `::1`, an explicit address or hostname → probe it, and the failure message names the address that was dialled; a loopback-only listener on a non-default port still exits 0 |
 | Health listener binding | `OCC_HEALTH_HOST` selects the interface (`0.0.0.0` by default); `127.0.0.1`, `::1` and hostnames pass through, blank falls back to `0.0.0.0`; `--check-config` prints `health_host`; `run_correlator` hands the setting to `HealthServer` |
-| Loopback health binding in the container | Executed locally and repeated by the CI `docker` job: compose interpolates `OCC_HEALTH_HOST` (default `0.0.0.0`), and with `OCC_HEALTH_HOST=127.0.0.1` the container stays `healthy`, `/healthz` answers `200` on loopback inside the container, and a published `127.0.0.1:18080:8080` mapping is **refused** from the host. The same mapping with the wildcard default answers `200`, so the check cannot pass vacuously |
+| Loopback health binding in the container | Executed locally and repeated by the CI `docker` job: compose interpolates `OCC_HEALTH_HOST` (default `0.0.0.0`), and with `OCC_HEALTH_HOST=127.0.0.1` the container stays `healthy`, `/healthz` answers `200` on loopback inside the container, and a published `127.0.0.1:18080:15142` mapping is **refused** from the host. The same mapping with the wildcard default answers `200`, so the check cannot pass vacuously |
 | Container `HEALTHCHECK` | the exact `CMD` extracted from the Dockerfile returns **0** against a healthy `/healthz` and **1** once the listener is stopped, verified from a separate process |
 | `docker build` / `docker compose up` | **passed** — image built from the pinned digests, both services reached `healthy`, and the full container smoke test below passed |
 
 ### Container smoke test (executed)
 
-`docker compose build` → `docker compose up -d --wait` on Docker Desktop 29.9.2:
+`docker compose build` → `docker compose up -d --wait` on Docker Desktop 29.9.2.
+The port numbers below are the ones in effect for that run; v0.4.0 moved intake to
+`15140`/`15141` and health to `15142`, so the same checks now use those values.
 
 | Check | Result |
 |---|---|
@@ -251,6 +253,19 @@ the image health probe, the graceful SIGTERM path and the full ingest path over
 the published port are verified in a real container, not only in unit tests. The
 stack was removed with `docker compose down -v` afterwards (containers, network
 and volume gone); the CI `docker` job repeats the same flow on GitHub.
+
+### v0.4.0 intake re-run (executed)
+
+Same Docker Desktop host, `docker compose up -d --build --wait`, with the new
+default ports and publish bindings:
+
+| Check | Result |
+|---|---|
+| Compose interpolation | `docker compose config` reports `host_ip: 127.0.0.1` for `15140/tcp`, `15141/tcp` and `15141/udp`; `OCC_TCP_HOST`/`OCC_SYSLOG_HOST` stay `0.0.0.0` inside the container, as the port forwarding requires. `OCC_TCP_PUBLISH_HOST=0.0.0.0` flips `host_ip` to `0.0.0.0` without touching the file |
+| Loopback reachability | on the running stack, `127.0.0.1:15140` accepts an event and `192.168.8.73:15140` (the host's LAN address) is refused with `ConnectionRefusedError`. Recreated with `OCC_TCP_PUBLISH_HOST=0.0.0.0`, the same LAN address connects, so the refusal is caused by the binding and not by a dead port |
+| HTTP incident | a `SocketJSONHandler`-shaped `logtype 3000` event with `{"HOST", "PATH", "USERAGENT"}` created `incident:httprequest:10.0.0.98:<ts>` (`logtype 3000`, `description "HTTP Request"`, one stored log entry) and produced **zero** `event_unrouted` audit records; the `logtype 2000` event in the same connection created `incident:ftplogin:` as before |
+| New health port | `/healthz` → `{"status": "ok", "redis": true}` and `/metrics` → `200` on `15142` inside the container; container health `healthy`, so the image `HEALTHCHECK` follows the new default |
+| Cleanup | `docker compose down -v` removed the containers, network and both volumes |
 
 ## Performance
 

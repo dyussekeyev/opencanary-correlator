@@ -18,12 +18,12 @@ Nothing has to change on the honeypot side.
 
 | Aspect | Behaviour |
 |---|---|
-| Transport | TCP, newline-delimited UTF-8 JSON, default port `1514` — exactly `opencanary.logger.SocketJSONHandler.makePickle()` (`record.getMessage() + "\n"`) |
+| Transport | TCP, newline-delimited UTF-8 JSON, default port `15140` — exactly `opencanary.logger.SocketJSONHandler.makePickle()` (`record.getMessage() + "\n"`) |
 | Syslog | RFC 6587 octet-counting or newline framing over TCP, one message per UDP datagram; JSON bodies become events, plain text becomes a synthetic `LOG_BASE_MSG` event |
 | Event fields | `src_host`, `src_port`, `dst_host`, `dst_port`, `logtype`, `node_id`, `local_time`, `utc_time`, `logdata` and any extra fields are preserved |
 | Lenient parsing | empty `src_host`, `-1` ports, hostnames, unknown `logtype` integers and unparsable timestamps are accepted, never rejected |
-| Lifecycle | `SocketJSONHandler` keeps sockets open indefinitely; an idle keep-alive connection is never closed, only a stalled partial line is |
-| Redis | legacy keys and incident hash fields are preserved (`incident:ftplogin:<src_host>:<ts>`, `incidents`, `device:<hash>`, …), so existing dashboards keep working |
+| Lifecycle | `SocketJSONHandler` keeps sockets open indefinitely; an idle keep-alive connection is never closed, an incomplete line is closed after `OCC_PARTIAL_LINE_TIMEOUT` |
+| Redis | legacy keys are preserved (`incident:ftplogin:<src_host>:<ts>`, `incidents`, `device:<hash>`, `scan:host:`, `scan:network:`, `logs`, `console-setting:`), with the hash fields the legacy queries read: `node_id`, `src_host`, `src_port`, `dst_host`, `dst_port`, `logtype`, `created`, `events_list`, `events_count`, `acknowledged`, `notified`, `updated`, `description`, `logdata`. The old code additionally copied the whole event into the hash, so `local_time`, `utc_time`, `local_time_adjusted` and `reported_dst_host` are **not** re-stored; no query in `common/queries.py` reads them |
 
 Malformed input is rejected per line with an audit record: oversized lines,
 invalid UTF-8, non-JSON, `[ERR] '…'` lines written by `PyLogger.error()`, NaN or
@@ -71,8 +71,9 @@ OCC_REDIS_URL=redis://localhost:6379/0
 OCC_SLACK_WEBHOOKS=https://hooks.slack.com/services/...
 ```
 
-CLI flags: `--config PATH` (import a legacy JSON `.conf`), `--redis-url URL`,
+CLI flags: `-c/--config PATH` (import a legacy JSON `.conf`), `--redis-url URL`,
 `--log-level LEVEL`, `--log-file PATH`, `--health-port PORT` (`0` disables),
+`-i/--ip ADDRESS` (the intake interface, as the Python 2 executable took it),
 `--check-config`, `--version`.
 
 While it runs, the service also appends its own log lines to the legacy `logs`
@@ -93,7 +94,7 @@ the correlator accepts it unmodified:
       "json-tcp": {
         "class": "opencanary.logger.SocketJSONHandler",
         "host": "correlator.example.internal",
-        "port": 1514
+        "port": 15140
       }
     }
   }
@@ -101,7 +102,19 @@ the correlator accepts it unmodified:
 ```
 
 For syslog, use `logging.handlers.SysLogHandler` pointing at `OCC_SYSLOG_HOST` /
-`OCC_SYSLOG_PORT` (UDP `5514` by default) and set `OCC_SYSLOG_ENABLED=true`.
+`OCC_SYSLOG_PORT` (UDP `15141` by default) and set `OCC_SYSLOG_ENABLED=true`.
+
+Both receivers bind to `127.0.0.1` by default: the usual deployment runs the
+canary and the correlator on one host, and an intake port open on every
+interface is an unauthenticated write path. A canary on another machine needs
+`OCC_TCP_HOST=0.0.0.0` (or its own address) — and the same for syslog — plus the
+firewall rule described in [Transport security](#transport-security).
+
+Two known `opencanaryd` problems — a `SocketJSONHandler` that does not reconnect
+after a correlator restart, and a `twistd.pid` that survives a container restart
+— are honeypot-side and cannot be fixed from here. [docs/opencanary-side.md](docs/opencanary-side.md)
+has the patch and the workarounds, plus what the correlator does to make a silent
+canary visible.
 
 ### Migrating from the Python 2 release
 
@@ -135,7 +148,7 @@ override re-enables it.
 | Channel | Settings |
 |---|---|
 | Generic webhook / SIEM | `OCC_WEBHOOK_URLS` — JSON `{"title", "text", "key"}`, one URL per delivery |
-| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, report in `text` |
+| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, report in `text`. Off by default: `OCC_SLACK_ENABLED=true` without a webhook is a startup error, and a webhook with the switch off logs a warning |
 | Telegram | `OCC_TELEGRAM_TOKEN`, `OCC_TELEGRAM_CHAT_IDS` — one message per chat, truncated to 4096 chars |
 | Discord | `OCC_DISCORD_WEBHOOKS` — `content` under 2000 chars, otherwise a single embed; both `200` and `204 No Content` count as success |
 | SMTP | `OCC_SMTP_ENABLED`, `OCC_SMTP_HOST`, `OCC_SMTP_PORT`, `OCC_SMTP_FROM`, `OCC_SMTP_TO`, optional `OCC_SMTP_USERNAME` / `OCC_SMTP_PASSWORD`, `OCC_SMTP_STARTTLS` (port 587), `OCC_SMTP_USE_TLS` (implicit TLS, usually port 465; mutually exclusive with STARTTLS) |
@@ -150,22 +163,26 @@ mean `detailed`):
 | Level | Message |
 |---|---|
 | `minimal` | The legacy alert, byte-identical for messages that fit the channel limit |
-| `standard` | Instance name and IP, then attacker IP and source port, the detection time and a one-entry log summary |
-| `detailed` | `standard` plus destination address, event count and up to three log entries |
+| `standard` | Instance name and address (`IP:port`), then attacker IP and source port, the detection time and a one-entry log summary |
+| `detailed` | `standard` plus the event count and up to three log entries |
 
-Lines are separated with CRLF, and chat channels use their native markup:
+The instance address carries its own port, so no second row repeats the same
+host. Lines are separated with CRLF, and chat channels use their native markup:
 MarkdownV2 for Telegram (with every field escaped, so no payload can break the
-message), mrkdwn for Slack and markdown for Discord. Chat channels default to
-`standard`; webhook and SMTP default to `minimal`, so existing SIEM parsers and
-mail filters keep receiving exactly the legacy text until you raise the level.
+message), mrkdwn for Slack and markdown for Discord. Every channel a person reads
+— Telegram, Slack, Discord and **SMTP** — defaults to `standard`, so the readable
+layout and the attacker context arrive without any configuration. The **webhook**
+stays on `minimal` because a SIEM parser may depend on its `text` field; it gets
+the attacker context as a separate `enrichment` object instead (see below).
 Log values whose key looks like a credential (`PASSWORD`, `SECRET`, `TOKEN`,
-`AUTH`, ...) are masked as `***` at every level that shows log data.
+`AUTH`, `CREDENTIAL`, ...) are masked as `***` at every level that shows log
+data, by the same rule that redacts the audit trail.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*
 
 🖥 *Instance:* opencanary-embassy
-🌐 *IP:* 89.126.202.164
+🌐 *IP:* 89.126.202.164:3389
 
 🎯 *Attacker:* 66.132.159.132:52344
 🕒 *Time:* 2026-10-26 07:01:15 UTC
@@ -179,6 +196,99 @@ endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
 not hammered by every replica while the other URLs of the same channel keep
 receiving alerts. `OCC_DISPATCH_TIMEOUT` bounds a single delivery. One failing
 endpoint never blocks the others and never blocks ingestion.
+
+## Attacker enrichment (optional)
+
+The attacker block can carry where the address comes from and how VirusTotal
+rates it. Both providers are off until configured; with neither, alerts are
+byte-identical to a build without the feature.
+
+```bash
+# Country/city/ASN from local files — nothing leaves the host
+OCC_GEOIP_CITY_DB=/data/geoip/dbip-city-lite.mmdb
+OCC_GEOIP_ASN_DB=/data/geoip/dbip-asn-lite.mmdb
+# VirusTotal reputation — setting the key is the consent to send IPs there
+OCC_VIRUSTOTAL_API_KEY=<key>
+```
+
+| Level | Rows added under the attacker block |
+|---|---|
+| `minimal` | none |
+| `standard` | `📍 Location: Kazakhstan`, `🦠 VT: 0/94 malicious` |
+| `detailed` | `📍 Location: Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+
+```
+🛡 OpenCanary: *RDP Login Attempt*
+
+🖥 *Instance:* opencanary-embassy
+🌐 *IP:* 2.126.2.164:3389
+
+🎯 *Attacker:* 89.126.202.164:52344
+🕒 *Time:* 2026-10-28 17:30:28 UTC
+📍 *Location:* Kazakhstan, Almaty
+🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
+🦠 *VT:* 0/94 malicious, reputation 0, 2026-10-26
+📊 *Events:* 1
+📝 *Log:* USERNAME=administrator
+```
+
+**Geo data is local.** The correlator reads MMDB files, so country, city and
+ASN work without a key, a quota or a network call, and an attacker address never
+leaves the host. The reader is an extra (`pip install
+"opencanary-correlator[geo]"`, already in the image); without it the correlator
+starts normally and only complains when `OCC_GEOIP_CITY_DB` is set. A configured
+path that cannot be opened is a startup error, not a silent gap. Private,
+loopback and invalid addresses are skipped — `10.0.0.5` gets no country.
+
+**VirusTotal is opt-in and quota-first.** The free public API allows 4 lookups
+per minute, 500 per day and 15.5K per month. Before every request the client
+reserves a slot in all three windows through one atomic Redis script
+(`OCC_VIRUSTOTAL_PER_MINUTE`, `OCC_VIRUSTOTAL_PER_DAY`,
+`OCC_VIRUSTOTAL_PER_MONTH`), so replicas cannot exceed the limits together, and a
+verdict is cached per address for `OCC_VIRUSTOTAL_CACHE_TTL` (7 days). An empty
+window renders `🦠 VT: quota exhausted`, a timeout or HTTP error renders
+`🦠 VT: unavailable` — the alert itself is always delivered, and enrichment can
+never delay it by more than `OCC_ENRICHMENT_TIMEOUT` (6 s). The key travels in
+the `x-apikey` header, so it cannot appear in a request-URL log line, and it is
+hidden from `repr()` and `--check-config`.
+
+**The JSON webhook carries it as fields, not as text.** A webhook consumer does
+not have to read a message: the document gains an `enrichment` object whenever
+context exists, at every detail level, while `text` stays exactly the legacy
+report at the default `minimal` level. An unconfigured deployment POSTs the same
+three keys as before.
+
+```json
+{
+  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy (2.126.2.164)",
+  "text": "... legacy report ...",
+  "key": "incident:rdplogin:89.126.202.164:1793207641",
+  "enrichment": {
+    "geo": {
+      "country_code": "KZ",
+      "country": "Kazakhstan",
+      "city": "Almaty",
+      "asn": 202958,
+      "as_org": "LLP \"Kompaniya Hoster.KZ\""
+    },
+    "virustotal": {
+      "malicious": 0,
+      "suspicious": 1,
+      "detections": 1,
+      "total": 94,
+      "reputation": 0,
+      "checked": "2026-10-26"
+    }
+  }
+}
+```
+
+A provider that was asked but produced no verdict says so instead of disappearing:
+`"virustotal_status": "quota"` or `"unavailable"`. `detections` and `total` are
+provided so a downstream rule does not have to recompute the ratio.
+
+**Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Correlation semantics
 
@@ -206,7 +316,11 @@ endpoint never blocks the others and never blocks ingestion.
   growing. The `events_truncated` field marks a partial history, and the console
   payload reports the difference as `events_skipped`. Port scans keep every
   distinct port or target — they store one entry per member, not per event.
-- Unknown `logtype` values are audited as `event_unrouted` and otherwise ignored.
+- Node lifecycle records (`1000` boot, `1001` base message — which is also what a
+  plain-text syslog body becomes — `1002` debug, `1003` error, `1004` ping,
+  `1005` config save, `1006` example) are audited as `event_ignored` at **INFO**.
+  Any other `logtype` that no rule handles is a routing gap and stays
+  `event_unrouted` at **WARNING**.
 
 ## Scaling
 
@@ -296,6 +410,13 @@ deployments both work:
 Use `DEBUG` when chasing a correlation or dispatch problem; `INFO` is enough to
 see every failed delivery, rejected event and start/stop reason.
 
+`DEBUG` applies to the correlator's own loggers only. `httpx`, `httpcore`, `h11`
+and `hpack` are pinned to `WARNING` at startup, whatever the root level says:
+`httpx` logs every request URL at INFO and the other three log connection and
+frame details at DEBUG, and a Telegram bot token or a Slack/Discord webhook
+secret lives in that URL path. Their real failures (`WARNING` and above) are
+still logged and still pass through the redaction filters.
+
 `OCC_LOG_FILE` adds a log file next to stderr without removing it, so
 `docker logs` keeps working. The file is UTF-8, rotates at 10 MiB and keeps 5
 backups (`correlator.log`, `correlator.log.1`, …); its directory is created if
@@ -338,19 +459,33 @@ The bundled Redis requires a password: `OCC_REDIS_PASSWORD` has no default, and
 compose refuses to start without it. Use letters, digits, `-` and `_` only, since
 the password is embedded in the correlator's `OCC_REDIS_URL` unescaped.
 
-The image runs as an unprivileged user, accepts canary JSON on `1514/tcp`, and
-includes the syslog receiver for `5514/tcp` + `5514/udp`. Base images (Python,
+The image runs as an unprivileged user, accepts canary JSON on `15140/tcp`, and
+includes the syslog receiver for `15141/tcp` + `15141/udp`. Base images (Python,
 the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
 build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
 that reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
 changing the port, narrowing the binding to loopback, or setting the port to `0`
 to disable the endpoint keeps the health status meaningful instead of probing a
-dead 8080 or the wrong address.
+dead `15142` or the wrong address.
 
-Compose publishes both intake ports, so external canaries can reach the handler
-without editing the file; set `OCC_SYSLOG_ENABLED=true` (and
+Compose publishes both intake ports **on `127.0.0.1` only**, because the canary
+normally shares the host with the correlator. The binding is a variable, so it
+survives `docker compose` updates instead of being re-widened by them:
+
+```bash
+# .env — canaries on other machines
+OCC_TCP_PUBLISH_HOST=0.0.0.0
+OCC_TCP_HOST=0.0.0.0          # inside the container
+OCC_SYSLOG_PUBLISH_HOST=0.0.0.0
+OCC_SYSLOG_HOST=0.0.0.0
+```
+
+`OCC_TCP_HOST`/`OCC_SYSLOG_HOST` stay `0.0.0.0` **inside** the container: Docker
+forwards the published port to the container's bridge address, so a loopback
+listener there would never be reached through the mapping. The loopback part of
+the default is the host-side publish address. Set `OCC_SYSLOG_ENABLED=true` (and
 `OCC_SYSLOG_UDP_ENABLED=true` for UDP) in `.env` to start the syslog listener.
-The health port stays container-internal. Inspect it with
+The health port (`15142`) stays container-internal. Inspect it with
 `docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
 yourself if an external probe needs it.
 
@@ -359,10 +494,10 @@ Compose passes `OCC_HEALTH_HOST` through from the shell or `.env`, defaulting to
 inside the container while the image `HEALTHCHECK` keeps reporting `healthy`.
 Set `OCC_HEALTH_HOST=0.0.0.0` only together with a published health port.
 
-The compose file starts Redis and the correlator on a private network. Restrict
-the published intake ports (`1514`, `5514`) to your canary network at the
-firewall or cloud security-group level; they accept untrusted traffic by
-design.
+The compose file starts Redis and the correlator on a private network. If you
+widen the published intake ports (`15140`, `15141`) to a network interface,
+restrict them to your canary subnet at the firewall or cloud security-group
+level; they accept untrusted traffic by design.
 
 ### Log files in Docker
 
@@ -423,9 +558,9 @@ private interface behind it; the tunnel is the only thing that reaches it.
 
 - **SSH local/remote forwarding.** On the honeypot, forward a local port to the
   correlator's intake port through a key-only SSH session, for example
-  `ssh -N -L 127.0.0.1:1514:127.0.0.1:1514 correlator-host` with the OpenCanary
-  `logger` pointed at `127.0.0.1:1514`. Restrict the key with
-  `permitopen="127.0.0.1:1514"` and `no-pty` in `authorized_keys`. Keep the
+  `ssh -N -L 127.0.0.1:15140:127.0.0.1:15140 correlator-host` with the OpenCanary
+  `logger` pointed at `127.0.0.1:15140`. Restrict the key with
+  `permitopen="127.0.0.1:15140"` and `no-pty` in `authorized_keys`. Keep the
   autossh or systemd unit that restarts it.
 - **WireGuard or IPsec site-to-site VPN.** Put the honeypots and the correlator
   on one tunnel subnet and point the intake to the tunnel address. Both are

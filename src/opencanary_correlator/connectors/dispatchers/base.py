@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import random
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -16,11 +17,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from redis.exceptions import RedisError
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.storage.redis_store import RedisStore
 
 _MAX_RETRY_AFTER_SECONDS = 60.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,9 +126,41 @@ class HTTPDispatcher(BaseDispatcher):
     def build_payload(self, incident: IncidentLike) -> dict[str, Any]:
         """Render the JSON body for one incident."""
 
+    async def _breaker_allows(self) -> bool:
+        """True unless the breaker says the endpoint is known to be down.
+
+        The breaker lives in Redis, so reading it can fail on its own. Breaker
+        state is an optimisation that protects a remote endpoint; it must never
+        decide whether an alert is delivered, and a Redis outage must not turn a
+        healthy channel into a skipped delivery.
+        """
+        if self._breaker is None:
+            return True
+        try:
+            return await self._breaker.allow()
+        except RedisError:
+            logger.warning("circuit breaker %s is unavailable; delivering anyway", self._breaker)
+            return True
+
+    async def _record_breaker(self, *, failed: bool) -> None:
+        """Update the breaker, ignoring a storage failure.
+
+        A failure to *count* an outcome must not change the reported outcome: a
+        delivered alert that cannot record its success has still been delivered.
+        """
+        if self._breaker is None:
+            return
+        try:
+            if failed:
+                await self._breaker.record_failure()
+            else:
+                await self._breaker.record_success()
+        except RedisError:
+            logger.warning("circuit breaker %s state could not be updated", self._breaker)
+
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """POST the payload with retries, never raising."""
-        if self._breaker is not None and not await self._breaker.allow():
+        if not await self._breaker_allows():
             return DispatchResult(dispatcher=self.name, status="skipped", detail="circuit_open")
 
         payload = self.build_payload(incident)
@@ -137,8 +173,7 @@ class HTTPDispatcher(BaseDispatcher):
                 detail = type(exc).__name__
             else:
                 if response.status_code in self._expected:
-                    if self._breaker is not None:
-                        await self._breaker.record_success()
+                    await self._record_breaker(failed=False)
                     return DispatchResult(dispatcher=self.name, status="success")
                 detail = f"http_{response.status_code}"
                 if response.status_code != 429 and not 500 <= response.status_code < 600:
@@ -148,8 +183,7 @@ class HTTPDispatcher(BaseDispatcher):
             if attempt < self._retry.attempts:
                 await self._sleep(self._delay(attempt, retry_after))
 
-        if self._breaker is not None:
-            await self._breaker.record_failure()
+        await self._record_breaker(failed=True)
         return DispatchResult(dispatcher=self.name, status="error", detail=detail)
 
     def _delay(self, attempt: int, retry_after: float | None) -> float:

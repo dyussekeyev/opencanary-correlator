@@ -17,7 +17,10 @@ class WebhookDispatcher(HTTPDispatcher):
 
     The default ``minimal`` level keeps the legacy ``text`` field byte-identical
     so SIEM parsers are unaffected; ``standard`` and ``detailed`` send the rich
-    plain-text layout instead.
+    plain-text layout instead. Attacker context is added as a separate
+    ``enrichment`` object rather than as message text, so a downstream pipeline
+    gets indexable fields at every detail level and an unconfigured deployment
+    still POSTs exactly the legacy document.
     """
 
     name: ClassVar[str] = "webhook"
@@ -33,11 +36,17 @@ class WebhookDispatcher(HTTPDispatcher):
             if self._detail == "minimal"
             else render_alert(incident, detail=self._detail, flavor="plain")
         )
-        return {
+        payload: dict[str, Any] = {
             "title": incident.format_title(),
             "text": text,
             "key": incident.key,
         }
+        enrichment = incident.enrichment
+        if enrichment is not None:
+            context = enrichment.to_payload()
+            if context:
+                payload["enrichment"] = context
+        return payload
 
 
 __all__ = ["WebhookDispatcher"]

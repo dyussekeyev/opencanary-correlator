@@ -9,14 +9,14 @@ balancer.
 
 ```
  canary nodes                    correlator replica                 external
-┌────────────┐   TCP 1514   ┌──────────────────────────┐          ┌──────────┐
+┌────────────┐  TCP 15140   ┌──────────────────────────┐          ┌──────────┐
 │opencanaryd │─────────────▶│ TCPJSONReceiver          │          │  Redis   │
 │ SocketJSON │              │  line framer → Pydantic  │─────────▶│ windows  │
 │  Handler   │              │  → per-host lanes        │          │ incidents│
 └────────────┘              │  → rate limiter          │          │ locks    │
                             │        │                 │          │ dedup    │
 ┌────────────┐  TCP/UDP     │        ▼                 │          │ breaker  │
-│ SysLog     │ 5514         │ CorrelationEngine        │          └──────────┘
+│ SysLog     │ 15141        │ CorrelationEngine        │          └──────────┘
 │ Handler    │─────────────▶│  dedup → rules → merge   │
 └────────────┘              │        │                 │
                             │        ▼                 │          ┌──────────┐
@@ -36,12 +36,20 @@ unauthenticated, so a wildcard binding should be firewalled or fronted by the
 network policy. Configuration is read once at startup; every credential comes
 from the environment or `.env`.
 
+The two event receivers are the opposite case: they bind `127.0.0.1` by default,
+because the correlator usually shares a host with its canary and every listener
+here accepts unauthenticated events. Remote canaries set `OCC_TCP_HOST` /
+`OCC_SYSLOG_HOST`. All three ports sit in an uncommon block (`15140` TCP JSON,
+`15141` syslog, `15142` health) so they cannot collide with the services a
+honeypot imitates — notably `8080`, the classic HTTP-alt port.
+
 ## Package map
 
 | Path | Responsibility |
 |---|---|
 | `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer; wires field validators |
 | `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
+| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `service.py` bounds the whole pass |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
 | `constants.py` | `LogType` registry, incident key prefixes, legacy Redis key names, defaults |
 | `redaction.py` | secret masking and control-character stripping for audit output |
@@ -49,26 +57,45 @@ from the environment or `.env`.
 | `log_setup.py` | root logger level, stderr handler and the optional size-rotated `OCC_LOG_FILE` handler; raises `LogSetupError` when the file cannot be opened |
 | `connectors/base.py` | `EventSink`, `RateLimiter`, `BaseReceiver`, `BaseDispatcher`, `DispatchResult` — the only types `core` may import |
 | `connectors/receivers/_base.py` | `NetworkReceiver`: shared scaffolding for TCP and UDP receivers (pipeline, counters, bound port, audit) |
-| `connectors/receivers/_tcp.py` | asyncio stream lifecycle: framing, 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
+| `connectors/receivers/_stream.py` | per-connection protocol: framing loop, 64 KiB cap, partial-line timeout, TCP keep-alive |
+| `connectors/receivers/_tcp.py` | listening side: server socket, connection cap, admission, payload dispatch to the pipeline |
+| `connectors/receivers/_framing.py` | RFC 6587 framing as pure functions: newline/NUL split, octet counting, overflow |
 | `connectors/receivers/_pipeline.py` | bounded queue, per-host consumer lanes, rate limiting, audit, counters |
 | `connectors/receivers/tcp_json.py` | `SocketJSONHandler` compatibility: newline-delimited JSON, `[ERR]` tolerance |
-| `connectors/receivers/syslog.py` | RFC 3164/5424 envelope parser, RFC 6587 TCP framing, UDP receiver |
+| `connectors/receivers/_syslog_codec.py` | RFC 3164/5424 envelope parser and event construction, no transport |
+| `connectors/receivers/syslog.py` | the syslog TCP and UDP transports; framing modes and the newline fallback |
 | `connectors/dispatchers/base.py` | HTTP client ownership, retry policy, `Retry-After`, per-endpoint Redis circuit breaker |
 | `connectors/dispatchers/*.py` | webhook, Slack, Telegram, Discord, SMTP channels |
 | `core/windows.py` | sliding window (ZSET), fixed-TTL distinct-set window (port scans), dedup cache, event fingerprint |
 | `core/rules/` | `LoginRule` (14 log types), `SmbFileOpenRule`, host/network port-scan rules |
-| `core/incident_model.py` | `Incident` base and one subclass per incident type (16 types), each with its own merge rules and Redis hash fields |
+| `incident_specs.py` | one declarative row per incident type (name, class name, key prefix, description); `INCIDENT_TYPES` and `constants.INCIDENT_KEY_PREFIX` are derived from it |
+| `core/incident_base.py` | `Incident` base: Redis hash fields, logdata merge and truncation rules, report defaults |
+| `core/incident_model.py` | the four types with custom logic, the generated subclasses and the type registry |
+| `core/logdata.py` | the single `logdata` decoder shared by the alert renderer and the incident model |
 | `core/incident_report.py` | legacy plain-text alert templates (title, full, short and scan reports), pure functions |
 | `core/incident.py` | `IncidentRepository`: atomic create-or-merge in Redis; re-exports the model names |
 | `core/engine.py` | dedup → rule routing → dispatcher fan-out with per-channel timeout |
 | `storage/keys.py` | byte-compatible legacy Redis key builders |
 | `storage/scripts.py` | Lua bodies for the incident write and lock release, each run as one atomic round trip |
-| `storage/redis_store.py` | typed `redis.asyncio` wrapper, transactional pipelines, registers the Lua scripts, per-host incident pointer |
+| `storage/_base.py` | client ownership, script registration, reply normalisation (bytes or text clients), plain key and hash/set/ZSET reads |
+| `storage/_dedup.py` | first-writer-wins event fingerprints |
+| `storage/_windows.py` | set, ZSET and counter windows whose expiry is written once |
+| `storage/_quota.py` | atomic multi-window reservations for a rate-limited provider |
+| `storage/_cache.py` | string values, used by the enrichment cache |
+| `storage/_console.py` | the bounded legacy console journal |
+| `storage/_incidents.py` | incident hash, index pointer and the capped lookup scan |
+| `storage/_locks.py` | the distributed lock and its defaults |
+| `storage/redis_store.py` | `RedisStore`, a composition of the mixins above; no method bodies of its own |
 | `storage/queries.py` | async read side with the console JSON shape (`created_printable`, `events_list`, …) |
 | `storage/rate_limit.py` | per-IP connection and per-node event budgets |
 | `metrics.py` | Prometheus counters/gauges and text exposition |
 | `health.py` | `/healthz` and `/readyz` with a Redis ping; `/metrics` without one |
-| `cli.py` | argument parsing, wiring, supervision, signal handling, audit records |
+| `app/parser.py` | flags, `load_settings`, `CorrelatorStartupError` |
+| `app/channels.py` | `CHANNEL_SPECS`, the one table `--check-config` and startup both read; `build_dispatchers` |
+| `app/wiring.py` | enricher, receivers, rate limiter, health server |
+| `app/describe.py` | the secret-free `--check-config` document and the values `log_secrets` masks |
+| `app/runner.py` | supervision, signal handling, `main` and the exit codes |
+| `cli.py` | a 39-line façade re-exporting the `app` package, the documented import path |
 
 Dependency direction is enforced by convention: `core` imports only
 `connectors/base.py`, never a concrete receiver or dispatcher. Adding a channel
@@ -106,8 +133,10 @@ therefore never touches correlation logic.
    audited as `event_deduplicated`.
 6. **Route** — every rule is asked `matches(event)`, then `apply(event, now)`.
    A rule raising is audited as `rule_failed` and does not stop the others. If
-   no rule matched, the event is audited as `event_unrouted` (this is how new
-   `logtype` values stay harmless).
+   no rule matched, a node-lifecycle `logtype` (boot, base message, ping, …) is
+   audited as `event_ignored` at INFO, and anything else as `event_unrouted` at
+   WARNING — the distinction keeps expected chatter out of the warning stream
+   while a genuinely new `logtype` still shows up there.
 7. **Create or merge** — `IncidentRepository.record()` takes
    `incident-lock:<incident>:<src_host>` (5 s TTL) and looks for a live incident
    with the same incident type and exact `src_host` segment (the lookup

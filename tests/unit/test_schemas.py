@@ -228,3 +228,46 @@ def test_incident_record_coerces_legacy_string_fields() -> None:
 def test_incident_record_requires_creation_timestamp() -> None:
     with pytest.raises(ValidationError):
         IncidentRecord.model_validate({"node_id": "canary-1"})
+
+
+def test_a_naive_datetime_is_read_as_utc() -> None:
+    """A canary that builds a datetime object sends it without a zone.
+
+    Treating it as local time would shift every incident by the host's offset.
+    """
+    event = CanaryEvent.model_validate({"node_id": "n1", "local_time": datetime(2026, 10, 24, 10)})
+
+    assert event.local_time == datetime(2026, 10, 24, 10, tzinfo=UTC)
+
+
+def test_a_single_digit_date_falls_back_to_the_explicit_formats() -> None:
+    """`fromisoformat` needs zero-padded fields; the OpenCanary app does not always pad."""
+    event = CanaryEvent.model_validate({"node_id": "n1", "local_time": "2026-1-4 10:00:00"})
+
+    assert event.local_time == datetime(2026, 1, 4, 10, 0, tzinfo=UTC)
+
+
+def test_a_non_text_non_numeric_timestamp_is_ignored() -> None:
+    """`local_time` can arrive as a list from a broken encoder; it must not raise."""
+    event = CanaryEvent.model_validate({"node_id": "n1", "local_time": [2026, 10, 24]})
+
+    assert event.local_time is None
+
+
+def test_an_explicit_none_reported_destination_is_accepted() -> None:
+    """The field is optional, and senders do write an explicit null."""
+    event = CanaryEvent.model_validate({"node_id": "n1", "reported_dst_host": None})
+
+    assert event.reported_dst_host is None
+
+
+def test_logdata_of_an_unsupported_type_is_rejected() -> None:
+    """Only an object, a scalar or a sequence is storable; anything else is a bug."""
+    with pytest.raises(ValidationError):
+        CanaryEvent.model_validate({"node_id": "n1", "logdata": datetime(2026, 10, 24)})
+
+
+def test_logdata_scalars_are_stringified_including_none_and_bools() -> None:
+    """Typed accessors expect strings; `None` and `True` must not leak as non-strings."""
+    assert SshLoginData.from_logdata({"USERNAME": None}).USERNAME == ""
+    assert SshLoginData.from_logdata({"USERNAME": True}).USERNAME == "True"

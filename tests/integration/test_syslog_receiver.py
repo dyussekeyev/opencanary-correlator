@@ -288,6 +288,26 @@ async def test_udp_oversized_datagram_is_rejected(sink: Any, audit: Any, audit_s
     assert ("event_rejected", "datagram_too_large") in audit_actions(audit_stream)
 
 
+async def test_udp_start_is_idempotent(sink: Any, audit: Any) -> None:
+    """A second start must not bind a second socket.
+
+    Starting twice happens when a supervisor restarts a receiver that is
+    already running; a duplicate bind would either fail or leave the first
+    socket unowned and unclosed.
+    """
+    receiver = await make_udp_receiver(sink, audit)
+    first_port = receiver.bound_port
+    await receiver.start()
+    try:
+        assert receiver.bound_port == first_port
+        await send_udp(receiver.bound_port, b"<134>canary-1 opencanary: " + json_body())
+        events = await sink.wait_for(1)
+    finally:
+        await receiver.stop()
+
+    assert events[0].src_port == 40000
+
+
 async def test_udp_stop_is_idempotent(sink: Any, audit: Any) -> None:
     receiver = await make_udp_receiver(sink, audit)
     await receiver.stop()

@@ -19,6 +19,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from opencanary_correlator.config_validation import (
     DEFAULT_HEALTH_ALLOWED_IPS,
     DEFAULT_HEALTH_HOST,
+    DEFAULT_HEALTH_PORT,
+    DEFAULT_INTAKE_HOST,
     MAX_INCIDENT_HORIZON_SECONDS,
     decode_incident_horizons,
     disable_health_port,
@@ -30,6 +32,7 @@ from opencanary_correlator.config_validation import (
     require_email_address,
     require_http_urls,
     require_redis_scheme,
+    require_slack_endpoints,
     split_comma_separated,
     validate_allowed_ips,
     validate_incident_horizons,
@@ -105,13 +108,20 @@ class Settings(BaseSettings):
     )
 
     # --- Event intake -------------------------------------------------------
+    # Loopback by default: the common deployment runs the canary and the
+    # correlator on the same host, and an intake port open on every interface is
+    # an unauthenticated write path into the incident store. A remote canary
+    # needs OCC_TCP_HOST=0.0.0.0 (or the address it should listen on).
     tcp_enabled: bool = True
-    tcp_host: str = "0.0.0.0"  # noqa: S104 - network service default, override with OCC_TCP_HOST
-    tcp_port: int = Field(default=1514, ge=1, le=65535)
+    tcp_host: str = Field(default=DEFAULT_INTAKE_HOST, max_length=253)
+    # Ports are deliberately outside the well-known and emulated-service ranges:
+    # a honeypot imitates 21, 80, 443, 8080 and friends, so binding a correlator
+    # listener next to them invites collisions with the traps themselves.
+    tcp_port: int = Field(default=15140, ge=1, le=65535)
 
     syslog_enabled: bool = False
-    syslog_host: str = "0.0.0.0"  # noqa: S104 - network service default, override with OCC_SYSLOG_HOST
-    syslog_port: int = Field(default=5514, ge=1, le=65535)
+    syslog_host: str = Field(default=DEFAULT_INTAKE_HOST, max_length=253)
+    syslog_port: int = Field(default=15141, ge=1, le=65535)
     syslog_udp_enabled: bool = False
 
     # --- Hardening ----------------------------------------------------------
@@ -181,7 +191,10 @@ class Settings(BaseSettings):
     # show up there, and a `repr()` in a traceback or debug print is exactly how
     # such a promise gets broken. `--check-config` never prints them either.
     webhook_urls: CommaSeparated = Field(default_factory=list, repr=False)
-    slack_enabled: bool = True
+    # A channel switch that starts off: `enabled` is a real decision, not a
+    # default that silently does nothing without a webhook (see
+    # `require_slack_endpoints`).
+    slack_enabled: bool = False
     slack_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
     discord_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
     telegram_token: SecretStr | None = None
@@ -201,14 +214,35 @@ class Settings(BaseSettings):
     # --- Alert detail per channel -------------------------------------------
     # `minimal` keeps the legacy message byte-for-byte; `standard` sends the
     # multiline instance/attacker layout; `detailed` adds destination, counters
-    # and a redacted log summary. Chat channels default to the readable layout,
-    # while webhook and SMTP stay on the legacy text so existing SIEM parsers and
-    # mail filters keep working until the level is raised explicitly.
+    # and a redacted log summary. Every channel a human reads defaults to the
+    # readable layout, e-mail included. The webhook stays on `minimal` because a
+    # parser may depend on its `text` field: it gets the attacker context as a
+    # separate `enrichment` object instead, at every detail level.
     telegram_detail: AlertDetail = "standard"
     slack_detail: AlertDetail = "standard"
     discord_detail: AlertDetail = "standard"
     webhook_detail: AlertDetail = "minimal"
-    smtp_detail: AlertDetail = "minimal"
+    smtp_detail: AlertDetail = "standard"
+
+    # --- Attacker enrichment ------------------------------------------------
+    # Off unless configured. The geo databases are local files (DB-IP Lite or
+    # GeoLite2, MMDB), so no attacker address leaves the host; VirusTotal is a
+    # remote service and needs an explicit key, which also documents that the
+    # addresses are disclosed to a third party.
+    geoip_city_db: str | None = Field(default=None, max_length=4096)
+    geoip_asn_db: str | None = Field(default=None, max_length=4096)
+    virustotal_api_key: SecretStr | None = Field(default=None, repr=False)
+    #: Free-tier ceilings. The client reserves a slot in all three windows before
+    #: it spends a request; a full window yields a `VT: quota exhausted` line.
+    virustotal_per_minute: int = Field(default=4, ge=0, le=1000)
+    virustotal_per_day: int = Field(default=500, ge=0, le=100_000)
+    virustotal_per_month: int = Field(default=15_500, ge=0, le=2_000_000)
+    #: How long a verdict is reused for the same address. Long by default: an
+    #: attacker that returns tomorrow should not cost another quota slot.
+    virustotal_cache_ttl: float = Field(default=7 * 24 * 3600.0, ge=0.0)
+    virustotal_timeout: float = Field(default=5.0, gt=0.0, le=60.0)
+    #: Budget for one enrichment pass, below `dispatch_timeout` on purpose.
+    enrichment_timeout: float = Field(default=6.0, gt=0.0, le=120.0)
 
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
@@ -217,8 +251,9 @@ class Settings(BaseSettings):
     # the JSON audit stream on stdout. See `log_setup.py`.
     log_file: str | None = Field(default=None, max_length=4096)
     # 0 is a valid input and means "disabled"; the before-validator maps it to
-    # None, so the 1..65535 bound only applies to enabled ports.
-    health_port: int | None = Field(default=8080, ge=0, le=65535)
+    # None, so the 1..65535 bound only applies to enabled ports. The default
+    # avoids 8080, which honeypot modules imitate as an alternative HTTP port.
+    health_port: int | None = Field(default=DEFAULT_HEALTH_PORT, ge=0, le=65535)
     # Every interface by default, because probes often arrive from a different
     # pod or the Docker bridge. Set 127.0.0.1 (or ::1) to keep the unauthenticated
     # listener on loopback and reach it through a sidecar or `docker exec`.
@@ -319,6 +354,12 @@ class Settings(BaseSettings):
             raise ValueError("smtp_use_tls and smtp_starttls are mutually exclusive")
         return self
 
+    @model_validator(mode="after")
+    def _validate_slack(self) -> Self:
+        """An enabled Slack channel must have somewhere to send."""
+        require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
+        return self
+
     @field_validator("health_host", mode="before")
     @classmethod
     def _normalise_health_host(cls, value: Any) -> Any:
@@ -349,7 +390,20 @@ class Settings(BaseSettings):
         # The Python 2 notifier treated a missing enable key as disabled, even
         # when addresses/webhooks were present. Preserve that default when the
         # legacy file is imported; explicit overrides still win below.
-        mapped: dict[str, Any] = {"smtp_enabled": False, "slack_enabled": False}
+        #
+        # The relay settings are the same kind of default: the old `emailer`
+        # opened `smtplib.SMTP(server, port)` with no STARTTLS and `port=25`.
+        # A migrated file must reach the same relay, so the legacy import starts
+        # from plain SMTP on 25 instead of the modern 587 + STARTTLS, which a
+        # plain relay answers with an error and the alert is lost. A file that
+        # names `console.email_port` still wins, and the env/CLI surface keeps
+        # the modern defaults.
+        mapped: dict[str, Any] = {
+            "smtp_enabled": False,
+            "slack_enabled": False,
+            "smtp_port": 25,
+            "smtp_starttls": False,
+        }
         dropped: list[str] = []
         horizon_overrides = {
             incident_name: raw[key]
@@ -379,6 +433,9 @@ class Settings(BaseSettings):
 
 
 __all__ = [
+    "DEFAULT_HEALTH_HOST",
+    "DEFAULT_HEALTH_PORT",
+    "DEFAULT_INTAKE_HOST",
     "INCIDENT_KEY_PREFIX",
     "LEGACY_DROPPED_PREFIXES",
     "LEGACY_INCIDENT_HORIZON_KEYS",

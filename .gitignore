@@ -7,6 +7,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Geo databases (DB-IP/GeoLite2) are user data, mounted by docker-compose
+geoip/
+
 # Distribution / packaging
 .Python
 env/

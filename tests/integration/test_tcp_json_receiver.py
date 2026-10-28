@@ -171,6 +171,25 @@ async def test_oversized_line_closes_connection(sink: Any, audit: Any, audit_str
     assert sink.events == []
 
 
+async def test_a_peer_hangup_is_audited_as_the_canary_going_silent(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
+    """A closed keep-alive socket is how a canary stops delivering."""
+    receiver = await make_receiver(sink, audit)
+    try:
+        _reader, writer = await open_connection(receiver)
+        writer.close()
+        await wait_for_eof(_reader)
+        for _ in range(50):
+            if ("connection_closed", "peer_closed") in audit_actions(audit_stream):
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await receiver.stop()
+
+    assert ("connection_closed", "peer_closed") in audit_actions(audit_stream)
+
+
 async def test_partial_line_timeout_closes_stalled_connection(
     sink: Any, audit: Any, audit_stream: Any
 ) -> None:
@@ -183,6 +202,46 @@ async def test_partial_line_timeout_closes_stalled_connection(
     finally:
         await receiver.stop()
 
+    assert remaining == b""
+    assert ("connection_closed", "partial_line_timeout") in audit_actions(audit_stream)
+
+
+async def test_trickling_a_partial_line_does_not_extend_its_deadline(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
+    """One byte per interval is not a stalled line and must not be immortal.
+
+    Re-arming the timer on every chunk would let a peer hold a connection slot
+    forever by sending one byte just before each expiry; with every slot taken,
+    the intake stops accepting canaries.
+    """
+    receiver = await make_receiver(sink, audit, partial_line_timeout=0.2)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 1.0
+    closed_while_sending = False
+    remaining = b""
+    try:
+        reader, writer = await open_connection(receiver)
+        try:
+            while loop.time() < deadline:
+                if reader.at_eof():
+                    closed_while_sending = True
+                    break
+                try:
+                    await send(writer, b"{")
+                except ConnectionError:
+                    closed_while_sending = True
+                    break
+                await asyncio.sleep(0.05)
+            remaining = await wait_for_eof(reader, timeout=1.0)
+        finally:
+            writer.close()
+    finally:
+        await receiver.stop()
+
+    # The connection must close *while* it is still trickling. A close only after
+    # the trickling stopped would mean every byte pushed the deadline forward.
+    assert closed_while_sending
     assert remaining == b""
     assert ("connection_closed", "partial_line_timeout") in audit_actions(audit_stream)
 

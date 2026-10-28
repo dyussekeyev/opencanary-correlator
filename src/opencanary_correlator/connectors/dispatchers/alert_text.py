@@ -19,8 +19,18 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
+
+from opencanary_correlator.core.logdata import decode_logdata
+from opencanary_correlator.enrichment.models import Enrichment
+from opencanary_correlator.redaction import (
+    REDACTION_MARKER,
+    is_sensitive_key,
+    redact,
+    sanitize_text,
+)
 
 AlertDetail = Literal["minimal", "standard", "detailed"]
 AlertFlavor = Literal["telegram", "slack", "discord", "plain"]
@@ -37,23 +47,6 @@ _MAX_LOG_ITEMS: Final[int] = 10
 _MAX_LOG_PAIRS: Final[int] = 6
 _MAX_LOG_VALUE: Final[int] = 120
 _MAX_LOG_KEY: Final[int] = 40
-_REDACTED: Final[str] = "***"
-#: Sentinel for "this address has no port", matching the event schema default.
-_NO_PORT: Final[int] = -1
-
-#: Keys whose value must never leave the correlator.
-_SECRET_MARKERS: Final[tuple[str, ...]] = (
-    "PASSWORD",
-    "PASSWD",
-    "PASS",
-    "SECRET",
-    "TOKEN",
-    "APIKEY",
-    "API_KEY",
-    "AUTH",
-    "PRIVATE",
-)
-
 _CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
 #: MarkdownV2 reserved characters; an unescaped one makes Telegram reject the message.
 _TELEGRAM_RESERVED: Final[re.Pattern[str]] = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
@@ -72,6 +65,7 @@ class AlertIncident(Protocol):
     events_count: int
     logdata: str | None
     description: str
+    enrichment: Enrichment | None
 
     @property
     def display_description(self) -> str:
@@ -84,12 +78,8 @@ class AlertIncident(Protocol):
 
 
 def _clean(value: object, limit: int = _MAX_FIELD) -> str:
-    """Strip control characters, collapse whitespace and clip a field."""
-    text = _CONTROL_CHARS.sub(" ", str(value))
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[: limit - 1] + "…"
-    return text
+    """Flatten a value to one clipped line (see `redaction.sanitize_text`)."""
+    return sanitize_text(value, limit=limit, collapse=True)
 
 
 def _escape(text: str, flavor: AlertFlavor) -> str:
@@ -124,33 +114,40 @@ def _header(description: str, flavor: AlertFlavor) -> str:
     return f"🛡 OpenCanary: {markers}{_escape(title, flavor)}{markers}"
 
 
-def _decode_logdata(logdata: str | None) -> list[object]:
-    """Decode the stored `logdata` JSON, tolerating legacy shapes."""
-    if not logdata:
-        return []
-    try:
-        parsed = json.loads(logdata)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if isinstance(parsed, list):
-        return parsed
-    return [parsed]
-
-
-def _is_secret_key(key: str) -> bool:
-    upper = key.upper()
-    return any(marker in upper for marker in _SECRET_MARKERS)
-
-
 def _log_value(key: str, value: object) -> str:
-    """Render one log field, masking anything that looks like a credential."""
-    if _is_secret_key(key):
-        return _REDACTED
+    """Render one log field, masking anything that looks like a credential.
+
+    A nested value is redacted before it is serialised, not just the outer key:
+    the login rules store an event as ``{"raw": [{"PASSWORD": ...}]}``, so
+    deciding by the outer key alone printed the captured password of every RDP,
+    SSH or Telnet attempt in the alert.
+    """
+    if is_sensitive_key(key):
+        return REDACTION_MARKER
     if isinstance(value, str):
         return _clean(value, _MAX_LOG_VALUE)
     if isinstance(value, (int, float, bool)) or value is None:
         return _clean(value, _MAX_LOG_VALUE)
-    return _clean(json.dumps(value, ensure_ascii=False, default=str), _MAX_LOG_VALUE)
+    safe = redact(value)
+    return _clean(json.dumps(safe, ensure_ascii=False, default=str), _MAX_LOG_VALUE)
+
+
+def _unwrap_raw(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the captured event that the login rules wrapped under `raw`.
+
+    Those rules store ``{"raw": [{"USERNAME": ..., "PASSWORD": ...}]}``, so
+    rendering the outer key printed ``raw=[{...}]`` next to every RDP, SSH and
+    Telnet alert. The wrapper carries no information of its own, so it is dropped
+    when it is the entry's only key.
+    """
+    if len(entry) != 1:
+        return entry
+    inner = entry.get("raw")
+    if isinstance(inner, list) and len(inner) == 1 and isinstance(inner[0], Mapping):
+        return inner[0]
+    if isinstance(inner, Mapping):
+        return inner
+    return entry
 
 
 def log_summary(
@@ -166,7 +163,7 @@ def log_summary(
     a comma-separated list of the first entries. The two limits let the detail
     level decide how much evidence the channel shows.
     """
-    entries = _decode_logdata(logdata)
+    entries = decode_logdata(logdata)
     if not entries:
         return ""
     if all(not isinstance(entry, (dict, list)) for entry in entries):
@@ -180,7 +177,7 @@ def log_summary(
         if isinstance(entry, dict):
             pairs = [
                 f"{_clean(key, _MAX_LOG_KEY)}={_log_value(str(key), value)}"
-                for key, value in list(entry.items())[:_MAX_LOG_PAIRS]
+                for key, value in list(_unwrap_raw(entry).items())[:_MAX_LOG_PAIRS]
             ]
             if pairs:
                 rendered.append(", ".join(pairs))
@@ -225,6 +222,49 @@ def clip(text: str, limit: int | None) -> str:
     return cut + "…"
 
 
+def _enrichment_lines(
+    enrichment: Enrichment | None,
+    *,
+    detailed: bool,
+    flavor: AlertFlavor,
+) -> list[str]:
+    """Render the attacker context rows, if any are known.
+
+    `standard` shows country and the detection ratio; `detailed` adds city, the
+    network and VirusTotal's reputation and analysis date. A throttled or broken
+    provider is shown as a status instead of silently disappearing, so an
+    operator can tell "no detections" from "never asked".
+    """
+    if enrichment is None:
+        return []
+    lines: list[str] = []
+    geo = enrichment.geo
+    if geo is not None:
+        location = geo.location if detailed else (geo.country or geo.country_code)
+        if location:
+            lines.append(_line("📍", "Location", location, flavor))
+        network = geo.network
+        if detailed and network:
+            lines.append(_line("🏢", "ASN", network, flavor))
+
+    report = enrichment.virus_total
+    if report is not None:
+        # VirusTotal's own wording for an address: ``12/94 malicious``.
+        summary = f"{report.malicious}/{report.total} malicious"
+        if report.suspicious:
+            summary += f" (+{report.suspicious} suspicious)"
+        if detailed and report.reputation is not None:
+            summary += f", reputation {report.reputation}"
+        if detailed and report.checked:
+            summary += f", {report.checked}"
+        lines.append(_line("🦠", "VT", summary, flavor))
+    elif enrichment.virus_total_status == "quota":
+        lines.append(_line("🦠", "VT", "quota exhausted", flavor))
+    elif enrichment.virus_total_status == "unavailable":
+        lines.append(_line("🦠", "VT", "unavailable", flavor))
+    return lines
+
+
 def render_alert(
     incident: AlertIncident,
     *,
@@ -245,21 +285,18 @@ def render_alert(
         _header(incident.display_description, flavor),
         "",
         _line("🖥", "Instance", incident.node_id, flavor),
-        _line("🌐", "IP", _address(incident.dst_host, _NO_PORT), flavor),
+        # The destination port belongs to the instance address, not to a separate
+        # row: printing `IP` and `Destination` repeated the host on every alert.
+        _line("🌐", "IP", _address(incident.dst_host, incident.dst_port), flavor),
         "",
         _line("🎯", "Attacker", _address(incident.src_host, incident.src_port), flavor),
         _line("🕒", "Time", _format_time(incident.created), flavor),
     ]
 
     detailed = detail == "detailed"
+    lines.extend(_enrichment_lines(incident.enrichment, detailed=detailed, flavor=flavor))
     if detailed:
-        lines.extend(
-            [
-                "",
-                _line("🔌", "Destination", _address(incident.dst_host, incident.dst_port), flavor),
-                _line("📊", "Events", incident.events_count, flavor),
-            ]
-        )
+        lines.append(_line("📊", "Events", incident.events_count, flavor))
     summary = log_summary(
         incident.logdata,
         max_entries=_MAX_LOG_ENTRIES if detailed else 1,

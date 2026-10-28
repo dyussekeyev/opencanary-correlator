@@ -64,6 +64,11 @@ class NetworkReceiver(BaseReceiver):
         """Counters for health reporting and tests."""
         return self._pipeline.stats
 
+    @property
+    def pending(self) -> int:
+        """Events queued but not yet handed to the sink."""
+        return self._pipeline.pending
+
     @abstractmethod
     def parse_payload(self, payload: bytes, peer_ip: str) -> CanaryEvent | None:
         """Turn one framed payload into an event, or reject it with an audit record."""

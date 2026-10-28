@@ -1,105 +1,16 @@
-"""Incident models, legacy report formatting and atomic create-or-merge."""
+"""Incident persistence: atomic create-or-merge, pointers and the bounded scan."""
 
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
 import pytest
 
 from opencanary_correlator.constants import KEY_INCIDENTS
-from opencanary_correlator.core.incident import (
-    IncidentFTPLogin,
-    IncidentHostPortScan,
-    IncidentNetworkPortScan,
-    IncidentRepository,
-    IncidentSMBFileOpen,
-)
+from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.schemas import CanaryEvent
 from opencanary_correlator.storage.keys import incident_latest_key
-
-
-def make_incident(incident_cls: Any = IncidentFTPLogin, **overrides: Any) -> Any:
-    params = {
-        "key": "incident:ftplogin:10.0.0.5:1418997029",
-        "node_id": "canary-1",
-        "src_host": "10.0.0.5",
-        "src_port": 40000,
-        "dst_host": "10.0.0.2",
-        "dst_port": 21,
-        "logtype": 2000,
-        "created": 1418997029,
-        "events_list": "1418997029",
-        "events_count": 1,
-        "logdata": json.dumps([{"USERNAME": "admin"}]),
-    }
-    params.update(overrides)
-    return incident_cls(**params)
-
-
-def test_title_and_short_report_match_the_legacy_text() -> None:
-    incident = make_incident()
-
-    assert incident.format_title() == "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
-    assert incident.format_report_short() == (
-        "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1 (10.0.0.2)."
-    )
-
-
-def test_full_report_matches_the_legacy_layout() -> None:
-    report = make_incident().format_report()
-
-    assert report.startswith("\n" + "=" * 70)
-    assert "  Incident: FTP Login Attempt" in report
-    assert "  Time    : 2014-12-19 13:50:29 (UTC)" in report
-    assert "  Source  : 10.0.0.5" in report
-    assert "  Target  : 10.0.0.2 (id canary-1)" in report
-    assert "EXTRA" not in report
-
-
-def test_smb_report_includes_file_and_user() -> None:
-    incident = make_incident(
-        IncidentSMBFileOpen,
-        logdata=json.dumps([{"FILENAME": "payroll.xlsx", "USER": "admin"}]),
-    )
-
-    assert "  File    : payroll.xlsx" in incident.format_report()
-    assert "  User    : admin" in incident.format_report()
-    assert 'File "payroll.xlsx", user "admin"' in incident.format_report_short()
-
-
-def test_smb_report_without_logdata_falls_back_to_the_base_report() -> None:
-    incident = make_incident(IncidentSMBFileOpen, logdata=None)
-
-    assert "Shared File Opened" in incident.format_report()
-    assert "EXTRA" not in incident.format_report()
-
-
-def test_smb_failure_never_logs_the_stored_payload(caplog: Any) -> None:
-    """The fallback branch used to log `logdata` raw, which can hold a password."""
-    incident = make_incident(IncidentSMBFileOpen, logdata='{"PASSWORD": "hunter2"')
-
-    with caplog.at_level(logging.ERROR, logger="opencanary_correlator.core.incident"):
-        report = incident.format_report()
-
-    assert "Shared File Opened" in report
-    assert "hunter2" not in caplog.text
-    assert incident.key in caplog.text
-
-
-def test_network_scan_report_lists_targets() -> None:
-    incident = make_incident(
-        IncidentNetworkPortScan,
-        logdata=json.dumps(["10.0.0.2", "10.0.0.3"]),
-        logtype=5002,
-        dst_port=22,
-    )
-
-    report = incident.format_report()
-
-    assert "  Port    : 22" in report
-    assert "  Targets : 10.0.0.2, 10.0.0.3" in report
 
 
 async def test_repository_creates_then_merges_within_horizon(
@@ -612,27 +523,3 @@ async def test_a_live_pointer_answers_without_scanning(store: Any, clock: Any) -
     assert lookup.key == pointed
     assert lookup.scanned == 0
     assert lookup.truncated is False
-
-
-async def test_incident_classes_are_registered() -> None:
-    from opencanary_correlator.core.incident import INCIDENT_TYPES
-
-    assert set(INCIDENT_TYPES) == {
-        "ftp.login_attempt",
-        "http.login_attempt",
-        "ssh.login_attempt",
-        "telnet.login_attempt",
-        "httpproxy.login_attempt",
-        "mysql.login_attempt",
-        "mssql.login_attempt",
-        "tftp.action",
-        "ntp.monlist",
-        "vnc.login_attempt",
-        "snmp.cmd",
-        "rdp.login_attempt",
-        "sip.login_attempt",
-        "smb.file_open",
-        "scans.host_portscan",
-        "scans.network_portscan",
-    }
-    assert INCIDENT_TYPES["scans.host_portscan"] is IncidentHostPortScan
