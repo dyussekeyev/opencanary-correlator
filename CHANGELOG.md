@@ -3,7 +3,11 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.3] - 2026-10-28
+## [0.4.0] - 2026-10-28
+
+This release changes defaults: the intake listens on loopback and the default
+ports differ. Read [Changed — breaking](#changed--breaking) before upgrading, or
+set the old values explicitly to keep the previous layout.
 
 ### Added
 
@@ -84,7 +88,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Uncommon default ports.** The correlator no longer listens next to the
   services a honeypot imitates:
 
-  | Purpose | ≤ 0.3.2 | 0.3.3 |
+  | Purpose | ≤ 0.3.2 | 0.4.0 |
   |---|---|---|
   | TCP JSON intake | `1514` | `15140` |
   | Syslog TCP + UDP | `5514` | `15141` |

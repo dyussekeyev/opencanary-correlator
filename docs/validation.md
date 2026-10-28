@@ -233,7 +233,7 @@ incident key, source address or payload is exported.
 ### Container smoke test (executed)
 
 `docker compose build` → `docker compose up -d --wait` on Docker Desktop 29.9.2.
-The port numbers below are the ones in effect for that run; v0.3.3 moved intake to
+The port numbers below are the ones in effect for that run; v0.4.0 moved intake to
 `15140`/`15141` and health to `15142`, so the same checks now use those values.
 
 | Check | Result |
@@ -254,7 +254,7 @@ the published port are verified in a real container, not only in unit tests. The
 stack was removed with `docker compose down -v` afterwards (containers, network
 and volume gone); the CI `docker` job repeats the same flow on GitHub.
 
-### v0.3.3 intake re-run (executed)
+### v0.4.0 intake re-run (executed)
 
 Same Docker Desktop host, `docker compose up -d --build --wait`, with the new
 default ports and publish bindings:
