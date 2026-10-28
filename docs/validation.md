@@ -1,6 +1,9 @@
 # Validation and acceptance record
 
-Measured on 2026-10-24.
+Local figures were measured on 2026-10-24; the suite counts and the CI section
+below were re-measured on 2026-10-28 against the commit the `v0.4.0` tag points
+at (`e7337fd`), in run
+[40769958410](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40769958410).
 
 **Environment:** Windows 11 with Python 3.14.9 in `.venv` (project requires
 3.11+), ruff 0.17.2, mypy 2.4.0, pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis
@@ -15,10 +18,14 @@ container.
 
 | Command | Result |
 |---|---|
-| `ruff check .` | All checks passed (legacy root tree removed, so `src/` and `tests/` are now linted too) |
-| `ruff format --check .` | 77 files already formatted |
-| `mypy src tools` (`strict = true`, pydantic plugin) | Success: no issues found in 42 source files |
-| `pytest` | **291 passed, 3 skipped**, coverage **91.30 %** (gate: 85 %); the skips are the opt-in real-infrastructure checks below |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | No files would be reformatted |
+| `mypy src tools` (`strict = true`, pydantic plugin) | Success: no issues found |
+| `pytest` | **780 passed, 0 skipped**, coverage **96.65 %** (gates: 85 % overall, 90 % in `core`, `storage` and `connectors/receivers`) |
+| `pip-audit` on the exported lockfile | No known vulnerabilities found |
+
+The opt-in real-infrastructure checks below skip on a machine without a real
+Redis; CI runs them, which is why the CI counts have no skips.
 
 `grep -rnE "twisted|mandrill|twilio|simplejson|pkg_resources|nacl\.|iteritems|has_key|print >>" src tests`
 finds no imports or runtime usage. The only textual mentions are deliberate:
@@ -34,17 +41,25 @@ deleted; a smoke test asserts they stay gone.
 
 | Job | Checks |
 |---|---|
-| `quality` | `uv lock --check`, `uv sync --frozen --extra dev`, `uv pip check`, `ruff check`, `ruff format --check`, `mypy src tools` on Python 3.13 |
-| `test` | `uv sync --frozen --extra dev` and `pytest` on Python 3.11, 3.12, 3.13 and 3.14 with a digest-pinned `redis:7-alpine` service and `OCC_TEST_REDIS_URL=redis://localhost:6379/15`, so the two-replica and POSIX SIGTERM checks execute |
-| `package` | `python -m build`, `twine check`, wheel install, `--version` and parsed `--check-config` output |
-| `docker` | `docker compose up --build --wait`, a real `SocketJSONHandler` event over TCP 15140, published-intake loopback assertions, then checks on the incident key, `startup` audit line, uid 10001, container health and the `/metrics` exposition |
+| `Lint and type check` | `uv lock --check`, `uv sync --extra dev`, `uv pip check`, `pip-audit` on the exported lockfile, `ruff check`, `ruff format --check`, `mypy src tools` on Python 3.13 |
+| `Tests (Python 3.11–3.14)` | `pytest` on all four versions against a digest-pinned `redis:7-alpine` service with `OCC_TEST_REDIS_URL=redis://localhost:6379/15`, so the two-replica and POSIX SIGTERM checks execute; then the overall 85 % coverage gate, a 90 % floor on `core`/`storage`/`connectors/receivers`, a `coverage-xml` artifact from 3.13 and a coverage comment on pull requests |
+| `Tests (Windows)` | The same suite on `windows-latest`, so the platform-specific paths are exercised outside this machine too |
+| `Benchmark (hot incident, native loopback)` | The hot-incident workload on a native Linux runner, recorded rather than gated |
+| `Build wheel` | `python -m build`, `twine check`, wheel install, `--version` and parsed `--check-config` output |
+| `Docker build and compose smoke` | `docker compose up --build --wait`, a real `SocketJSONHandler` event over TCP 15140, published-intake loopback assertions, then checks on the incident key, `startup` audit line, uid 10001, container health and the `/metrics` exposition |
 
-The workflow has executed on GitHub (run [40114309203](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40114309203), PR #1): all seven checks pass — `quality` 14 s, four `test` jobs 29–34 s with **294 passed and 0 skipped** (the real-Redis two-replica checks and the POSIX SIGTERM test actually execute there), `package` 19 s, `docker` 37 s with `incident count: 1`, the uid 10001 check and container health. The Docker job repeats the container smoke test below on a clean runner.
+All nine jobs of the 0.4.0 run above pass. The first end-to-end run (earlier
+commit, seven jobs at the time — run
+[40114309203](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40114309203),
+PR #1) was green too: `quality` 14 s, four `test` jobs 29–34 s with **294 passed
+and 0 skipped** then (`package` 19 s, `docker` 37 s with `incident count: 1`,
+the uid 10001 check and container health). The Docker job repeats the container
+smoke test below on a clean runner.
 
 The CI test job can be reproduced locally with `tools/linux_check.sh`, which
 mounts the tree into a cached `python:3.11-slim` image built from `uv.lock` and
-runs pytest against a disposable `redis:7-alpine`: `294 passed`, coverage
-91.33 %, 18 s. The same container now runs `ruff check`, `ruff format --check`
+runs pytest against a disposable `redis:7-alpine`: `294 passed` (the count at
+the time; the 0.4.0 suite is 780 tests), coverage 91.33 %, 18 s. The same container now runs `ruff check`, `ruff format --check`
 and `mypy src tools` first, because mypy answers per platform: PR #7 was green
 locally and red in CI on `warn_unreachable` for a `sys.platform != "win32"`
 guard, and then on a `ctypes.WinDLL` that the POSIX stub does not declare - both
