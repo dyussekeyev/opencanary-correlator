@@ -17,6 +17,7 @@ from opencanary_correlator.core.incident import (
     IncidentRepository,
     IncidentSMBFileOpen,
 )
+from opencanary_correlator.enrichment.models import Enrichment, GeoInfo
 from opencanary_correlator.schemas import CanaryEvent
 from opencanary_correlator.storage.keys import incident_latest_key
 
@@ -68,6 +69,20 @@ def test_smb_report_includes_file_and_user() -> None:
     assert "  File    : payroll.xlsx" in incident.format_report()
     assert "  User    : admin" in incident.format_report()
     assert 'File "payroll.xlsx", user "admin"' in incident.format_report_short()
+
+
+def test_enrichment_is_transient_and_never_stored() -> None:
+    """The engine attaches it just before dispatch; Redis must not grow a field."""
+    incident = make_incident(
+        IncidentFTPLogin,
+        enrichment=Enrichment(geo=GeoInfo(country_code="NL", country="Netherlands")),
+    )
+
+    fields = incident.to_fields()
+    rebuilt = IncidentFTPLogin.from_fields(incident.key, fields)
+
+    assert "enrichment" not in fields
+    assert rebuilt.enrichment is None
 
 
 def test_http_request_report_shows_the_request_line() -> None:

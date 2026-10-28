@@ -20,6 +20,7 @@ from opencanary_correlator.constants import IGNORED_LOGTYPES
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.rules import Rule
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
+from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -35,6 +36,7 @@ class CorrelationEngine:
         settings: Settings,
         audit: AuditLogger,
         clock: Callable[[], float] = time.time,
+        enricher: IncidentEnricher | None = None,
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -42,6 +44,7 @@ class CorrelationEngine:
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        self._enricher = enricher
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -102,7 +105,28 @@ class CorrelationEngine:
             return
 
         if incidents:
+            await self._enrich(incidents)
             await self._dispatch(incidents)
+
+    async def _enrich(self, incidents: Sequence[Incident]) -> None:
+        """Attach attacker context to the incidents that are about to be sent.
+
+        Only newly created incidents reach this point (a merge inside the horizon
+        does not notify), so the cost stays at one lookup per alert. `enrich`
+        never waits longer than its own budget, and a failure here only means the
+        alert goes out without context.
+        """
+        if self._enricher is None:
+            return
+        for incident in incidents:
+            try:
+                incident.enrichment = await self._enricher.enrich(incident.src_host)
+            except Exception as exc:  # a broken enrichment must not lose the alert
+                self._audit.emit(
+                    "enrichment_failed",
+                    "error",
+                    {"incident": incident.key, "error_type": type(exc).__name__},
+                )
 
     async def _dispatch(self, incidents: Sequence[Incident]) -> None:
         tasks = [

@@ -223,6 +223,26 @@ class Settings(BaseSettings):
     webhook_detail: AlertDetail = "minimal"
     smtp_detail: AlertDetail = "minimal"
 
+    # --- Attacker enrichment ------------------------------------------------
+    # Off unless configured. The geo databases are local files (DB-IP Lite or
+    # GeoLite2, MMDB), so no attacker address leaves the host; VirusTotal is a
+    # remote service and needs an explicit key, which also documents that the
+    # addresses are disclosed to a third party.
+    geoip_city_db: str | None = Field(default=None, max_length=4096)
+    geoip_asn_db: str | None = Field(default=None, max_length=4096)
+    virustotal_api_key: SecretStr | None = Field(default=None, repr=False)
+    #: Free-tier ceilings. The client reserves a slot in all three windows before
+    #: it spends a request; a full window yields a `VT: quota exhausted` line.
+    virustotal_per_minute: int = Field(default=4, ge=0, le=1000)
+    virustotal_per_day: int = Field(default=500, ge=0, le=100_000)
+    virustotal_per_month: int = Field(default=15_500, ge=0, le=2_000_000)
+    #: How long a verdict is reused for the same address. Long by default: an
+    #: attacker that returns tomorrow should not cost another quota slot.
+    virustotal_cache_ttl: float = Field(default=7 * 24 * 3600.0, ge=0.0)
+    virustotal_timeout: float = Field(default=5.0, gt=0.0, le=60.0)
+    #: Budget for one enrichment pass, below `dispatch_timeout` on purpose.
+    enrichment_timeout: float = Field(default=6.0, gt=0.0, le=120.0)
+
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
     # Operational log file. Empty means "stderr only", which is what containers

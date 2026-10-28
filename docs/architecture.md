@@ -49,6 +49,7 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 |---|---|
 | `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer; wires field validators |
 | `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
+| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `service.py` bounds the whole pass |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
 | `constants.py` | `LogType` registry, incident key prefixes, legacy Redis key names, defaults |
 | `redaction.py` | secret masking and control-character stripping for audit output |

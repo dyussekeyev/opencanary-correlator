@@ -30,4 +30,26 @@ end
 return 1
 """
 
-__all__ = ["RELEASE_LOCK_LUA", "SAVE_INCIDENT_LUA"]
+#: Reserve one call in every configured quota window, or refuse without
+#: spending anything. ARGV is `limit, ttl_ms` pairs, one per key. Checking and
+#: incrementing separately would let two replicas both pass the check on the
+#: last free slot, so the whole decision is one atomic script.
+RESERVE_QUOTA_LUA = """
+for i = 1, #KEYS do
+    local limit = tonumber(ARGV[(i - 1) * 2 + 1])
+    local current = tonumber(redis.call('GET', KEYS[i]) or '0')
+    if current >= limit then
+        return 0
+    end
+end
+for i = 1, #KEYS do
+    local ttl = tonumber(ARGV[(i - 1) * 2 + 2])
+    local value = redis.call('INCR', KEYS[i])
+    if value == 1 then
+        redis.call('PEXPIRE', KEYS[i], ttl)
+    end
+end
+return 1
+"""
+
+__all__ = ["RELEASE_LOCK_LUA", "RESERVE_QUOTA_LUA", "SAVE_INCIDENT_LUA"]

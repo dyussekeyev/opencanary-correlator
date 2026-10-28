@@ -41,6 +41,13 @@ from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache
+from opencanary_correlator.enrichment import (
+    GeoLookup,
+    GeoLookupError,
+    IncidentEnricher,
+    QuotaLimits,
+    VirusTotalClient,
+)
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.log_setup import (
     LOG_DATE_FORMAT,
@@ -185,6 +192,10 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "smtp": settings.smtp_detail,
         },
         "channels": channel_names(settings),
+        "enrichment": {
+            "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),
+            "virustotal": settings.virustotal_api_key is not None,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }
@@ -266,6 +277,43 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
             )
         )
     return dispatchers
+
+
+def build_enricher(
+    settings: Settings, store: RedisStore, audit: AuditLogger
+) -> IncidentEnricher | None:
+    """Build the attacker-IP enricher, or None when nothing is configured.
+
+    A configured geo database that cannot be opened stops startup: the operator
+    asked for country data and would otherwise get alerts without it, with no
+    hint about why. VirusTotal needs a key, which is also the consent to send
+    attacker addresses to a third party.
+    """
+    geo: GeoLookup | None = None
+    if settings.geoip_city_db or settings.geoip_asn_db:
+        try:
+            geo = GeoLookup.open(settings.geoip_city_db, settings.geoip_asn_db)
+        except GeoLookupError as exc:
+            raise CorrelatorStartupError(f"geoip database: {exc}") from exc
+
+    virustotal: VirusTotalClient | None = None
+    if settings.virustotal_api_key is not None:
+        virustotal = VirusTotalClient(
+            api_key=settings.virustotal_api_key,
+            store=store,
+            cache_ttl=settings.virustotal_cache_ttl,
+            timeout=settings.virustotal_timeout,
+            limits=QuotaLimits(
+                per_minute=settings.virustotal_per_minute,
+                per_day=settings.virustotal_per_day,
+                per_month=settings.virustotal_per_month,
+            ),
+        )
+    if geo is None and virustotal is None:
+        return None
+    return IncidentEnricher(
+        geo=geo, virustotal=virustotal, audit=audit, timeout=settings.enrichment_timeout
+    )
 
 
 def build_receivers(
@@ -368,12 +416,14 @@ async def run_correlator(
     active_dispatchers = (
         list(dispatchers) if dispatchers is not None else build_dispatchers(settings, store)
     )
+    enricher = build_enricher(settings, store, audit)
     engine = CorrelationEngine(
         rules=build_rules(store, repository, settings),
         dispatchers=active_dispatchers,
         dedup=DedupCache(store, ttl=settings.dedup_ttl),
         settings=settings,
         audit=audit,
+        enricher=enricher,
     )
     rate_limiter = build_rate_limiter(settings, store)
     receivers = build_receivers(settings, engine, audit, rate_limiter)
@@ -423,6 +473,8 @@ async def run_correlator(
             *(dispatcher.aclose() for dispatcher in active_dispatchers),
             return_exceptions=True,
         )
+        if enricher is not None:
+            await enricher.aclose()
         package_logger.removeHandler(log_handler)
         await log_handler.stop()
         if owns_store:

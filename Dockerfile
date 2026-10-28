@@ -16,7 +16,9 @@ WORKDIR /build
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 
-RUN uv sync --frozen --no-dev --no-editable
+# The `geo` extra (maxminddb) is small and lets an operator enrich alerts by
+# mounting a DB-IP/GeoLite2 file, without which it is never imported.
+RUN uv sync --frozen --no-dev --no-editable --extra geo
 
 FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS runtime
 

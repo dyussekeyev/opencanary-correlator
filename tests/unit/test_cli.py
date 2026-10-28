@@ -16,6 +16,7 @@ from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.cli import (
     CorrelatorStartupError,
     build_dispatchers,
+    build_enricher,
     build_receivers,
     channel_names,
     install_signal_handlers,
@@ -195,6 +196,46 @@ async def test_build_dispatchers_follows_settings(settings_factory: Any, store: 
         ]
     finally:
         await asyncio.gather(*(dispatcher.aclose() for dispatcher in dispatchers))
+
+
+def test_no_enrichment_is_built_without_configuration(
+    settings_factory: Any, store: Any, audit: Any
+) -> None:
+    assert build_enricher(settings_factory(), store, audit) is None
+
+
+def test_a_missing_geo_database_stops_startup(
+    settings_factory: Any, store: Any, audit: Any, tmp_path: Any
+) -> None:
+    settings = settings_factory(geoip_city_db=str(tmp_path / "absent.mmdb"))
+
+    with pytest.raises(CorrelatorStartupError, match="geoip database"):
+        build_enricher(settings, store, audit)
+
+
+async def test_a_virustotal_key_builds_the_enricher(
+    settings_factory: Any, store: Any, audit: Any
+) -> None:
+    settings = settings_factory(virustotal_api_key="1:key")
+
+    enricher = build_enricher(settings, store, audit)
+
+    assert enricher is not None
+    assert enricher.enabled is True
+    await enricher.aclose()
+
+
+def test_check_config_reports_enrichment(monkeypatch: Any, capsys: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_GEOIP_CITY_DB", "/data/geoip/city.mmdb")
+    monkeypatch.setenv("OCC_VIRUSTOTAL_API_KEY", "1:key")
+
+    assert main(["--check-config"]) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["enrichment"] == {"geoip": True, "virustotal": True}
+    assert "1:key" not in captured.out
 
 
 async def test_build_dispatchers_passes_the_configured_detail(

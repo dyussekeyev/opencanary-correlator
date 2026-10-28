@@ -237,6 +237,24 @@ def test_health_port_default_avoids_the_emulated_http_port(settings_factory: Any
     assert DEFAULT_HEALTH_PORT != 8080
 
 
+def test_enrichment_is_off_until_it_is_configured(settings_factory: Any) -> None:
+    settings = settings_factory()
+
+    assert settings.geoip_city_db is None
+    assert settings.geoip_asn_db is None
+    assert settings.virustotal_api_key is None
+    # The published free-tier ceilings are the defaults.
+    assert (settings.virustotal_per_minute, settings.virustotal_per_day) == (4, 500)
+    assert settings.virustotal_per_month == 15_500
+
+
+def test_the_virustotal_key_stays_out_of_repr(settings_factory: Any) -> None:
+    settings = settings_factory(virustotal_api_key="vt-secret-value")
+
+    assert "vt-secret-value" not in repr(settings)
+    assert settings.virustotal_api_key is not None
+
+
 def test_slack_is_disabled_until_it_has_a_webhook(settings_factory: Any) -> None:
     """`enabled` with no endpoint is a dead switch, not a working channel."""
     assert settings_factory().slack_enabled is False

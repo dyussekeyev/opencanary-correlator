@@ -21,6 +21,7 @@ from opencanary_correlator.core.incident_report import (
     render_scan_report,
     render_title,
 )
+from opencanary_correlator.enrichment.models import Enrichment
 
 logger = logging.getLogger("opencanary_correlator.core.incident")
 
@@ -81,6 +82,10 @@ class Incident(BaseModel):
     notified: bool = False
     updated: bool = True
     description: str = ""
+    #: Attacker-IP enrichment attached by the engine right before dispatch.
+    #: Transient on purpose: `to_fields` builds its dict explicitly, so this
+    #: never reaches Redis, and an incident rebuilt from a hash has it as None.
+    enrichment: Enrichment | None = None
 
     # --- Formatting (ported string-for-string from the legacy code) ---------
 

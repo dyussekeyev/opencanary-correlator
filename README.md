@@ -193,6 +193,64 @@ not hammered by every replica while the other URLs of the same channel keep
 receiving alerts. `OCC_DISPATCH_TIMEOUT` bounds a single delivery. One failing
 endpoint never blocks the others and never blocks ingestion.
 
+## Attacker enrichment (optional)
+
+The attacker block can carry where the address comes from and how VirusTotal
+rates it. Both providers are off until configured; with neither, alerts are
+byte-identical to a build without the feature.
+
+```bash
+# Country/city/ASN from local files — nothing leaves the host
+OCC_GEOIP_CITY_DB=/data/geoip/dbip-city-lite.mmdb
+OCC_GEOIP_ASN_DB=/data/geoip/dbip-asn-lite.mmdb
+# VirusTotal reputation — setting the key is the consent to send IPs there
+OCC_VIRUSTOTAL_API_KEY=<key>
+```
+
+| Level | Rows added under the attacker block |
+|---|---|
+| `minimal` | none |
+| `standard` | `📍 Location: Kazakhstan`, `🦠 VT: 0/94 malicious` |
+| `detailed` | `📍 Location: Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+
+```
+🛡 OpenCanary: *RDP Login Attempt*
+
+🖥 *Instance:* opencanary-embassy
+🌐 *IP:* 2.126.2.164:3389
+
+🎯 *Attacker:* 89.126.202.164:52344
+🕒 *Time:* 2026-10-28 17:30:28 UTC
+📍 *Location:* Kazakhstan, Almaty
+🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
+🦠 *VT:* 0/94 malicious, reputation 0, 2026-10-26
+📊 *Events:* 1
+📝 *Log:* USERNAME=administrator
+```
+
+**Geo data is local.** The correlator reads MMDB files, so country, city and
+ASN work without a key, a quota or a network call, and an attacker address never
+leaves the host. The reader is an extra (`pip install
+"opencanary-correlator[geo]"`, already in the image); without it the correlator
+starts normally and only complains when `OCC_GEOIP_CITY_DB` is set. A configured
+path that cannot be opened is a startup error, not a silent gap. Private,
+loopback and invalid addresses are skipped — `10.0.0.5` gets no country.
+
+**VirusTotal is opt-in and quota-first.** The free public API allows 4 lookups
+per minute, 500 per day and 15.5K per month. Before every request the client
+reserves a slot in all three windows through one atomic Redis script
+(`OCC_VIRUSTOTAL_PER_MINUTE`, `OCC_VIRUSTOTAL_PER_DAY`,
+`OCC_VIRUSTOTAL_PER_MONTH`), so replicas cannot exceed the limits together, and a
+verdict is cached per address for `OCC_VIRUSTOTAL_CACHE_TTL` (7 days). An empty
+window renders `🦠 VT: quota exhausted`, a timeout or HTTP error renders
+`🦠 VT: unavailable` — the alert itself is always delivered, and enrichment can
+never delay it by more than `OCC_ENRICHMENT_TIMEOUT` (6 s). The key travels in
+the `x-apikey` header, so it cannot appear in a request-URL log line, and it is
+hidden from `repr()` and `--check-config`.
+
+**Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 ## Correlation semantics
 
 - Global horizon `OCC_INCIDENT_HORIZON` (60 s): a repeat from the same `src_host`

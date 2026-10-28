@@ -22,6 +22,8 @@ import re
 from datetime import UTC, datetime
 from typing import Final, Literal, Protocol
 
+from opencanary_correlator.enrichment.models import Enrichment
+
 AlertDetail = Literal["minimal", "standard", "detailed"]
 AlertFlavor = Literal["telegram", "slack", "discord", "plain"]
 
@@ -70,6 +72,7 @@ class AlertIncident(Protocol):
     events_count: int
     logdata: str | None
     description: str
+    enrichment: Enrichment | None
 
     @property
     def display_description(self) -> str:
@@ -223,6 +226,49 @@ def clip(text: str, limit: int | None) -> str:
     return cut + "…"
 
 
+def _enrichment_lines(
+    enrichment: Enrichment | None,
+    *,
+    detailed: bool,
+    flavor: AlertFlavor,
+) -> list[str]:
+    """Render the attacker context rows, if any are known.
+
+    `standard` shows country and the detection ratio; `detailed` adds city, the
+    network and VirusTotal's reputation and analysis date. A throttled or broken
+    provider is shown as a status instead of silently disappearing, so an
+    operator can tell "no detections" from "never asked".
+    """
+    if enrichment is None:
+        return []
+    lines: list[str] = []
+    geo = enrichment.geo
+    if geo is not None:
+        location = geo.location if detailed else (geo.country or geo.country_code)
+        if location:
+            lines.append(_line("📍", "Location", location, flavor))
+        network = geo.network
+        if detailed and network:
+            lines.append(_line("🏢", "ASN", network, flavor))
+
+    report = enrichment.virus_total
+    if report is not None:
+        # VirusTotal's own wording for an address: ``12/94 malicious``.
+        summary = f"{report.malicious}/{report.total} malicious"
+        if report.suspicious:
+            summary += f" (+{report.suspicious} suspicious)"
+        if detailed and report.reputation is not None:
+            summary += f", reputation {report.reputation}"
+        if detailed and report.checked:
+            summary += f", {report.checked}"
+        lines.append(_line("🦠", "VT", summary, flavor))
+    elif enrichment.virus_total_status == "quota":
+        lines.append(_line("🦠", "VT", "quota exhausted", flavor))
+    elif enrichment.virus_total_status == "unavailable":
+        lines.append(_line("🦠", "VT", "unavailable", flavor))
+    return lines
+
+
 def render_alert(
     incident: AlertIncident,
     *,
@@ -252,6 +298,7 @@ def render_alert(
     ]
 
     detailed = detail == "detailed"
+    lines.extend(_enrichment_lines(incident.enrichment, detailed=detailed, flavor=flavor))
     if detailed:
         lines.append(_line("📊", "Events", incident.events_count, flavor))
     summary = log_summary(

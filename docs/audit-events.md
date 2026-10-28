@@ -48,6 +48,8 @@ a compatibility risk, because consumers only rely on these five keys.
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
+| `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
+| `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 
 Rejection reasons: `invalid_utf8`, `line_too_large`, `canary_error_line` (an

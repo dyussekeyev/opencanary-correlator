@@ -88,6 +88,10 @@ services:
     # unprivileged process can write there without a privileged init step.
     volumes:
       - correlator-logs:/var/log/opencanary-correlator
+      # Optional: read-only geo databases for attacker enrichment. Drop the
+      # DB-IP Lite files into ./geoip on the host and set OCC_GEOIP_CITY_DB /
+      # OCC_GEOIP_ASN_DB; with both unset the mount is simply unused.
+      - ./geoip:/data/geoip:ro
     read_only: true
     tmpfs:
       - /tmp

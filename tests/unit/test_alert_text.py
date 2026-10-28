@@ -11,6 +11,100 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
     log_summary,
     render_alert,
 )
+from opencanary_correlator.enrichment.models import Enrichment, GeoInfo, VirusTotalReport
+
+
+def enriched(**overrides: Any) -> Enrichment:
+    """Enrichment carrying country, city, network and a VirusTotal verdict."""
+    payload: dict[str, Any] = {
+        "geo": GeoInfo(
+            country_code="NL",
+            country="Netherlands",
+            city="Amsterdam",
+            asn=202425,
+            as_org="IP Volume inc",
+        ),
+        "virus_total": VirusTotalReport(
+            malicious=12,
+            suspicious=2,
+            harmless=60,
+            undetected=20,
+            reputation=-34,
+            checked="2026-10-26",
+        ),
+        "virus_total_status": "ok",
+    }
+    payload.update(overrides)
+    return Enrichment(**payload)
+
+
+def test_standard_shows_the_country_and_the_detection_ratio(incident_factory: Any) -> None:
+    incident = incident_factory(enrichment=enriched())
+
+    text = render_alert(incident, detail="standard", flavor="plain")
+
+    assert "Location: Netherlands" in text
+    # City, network and reputation belong to the detailed level.
+    assert "Amsterdam" not in text
+    assert "AS202425" not in text
+    assert "VT: 12/94 malicious (+2 suspicious)" in text
+
+
+def test_detailed_shows_city_network_and_reputation(incident_factory: Any) -> None:
+    incident = incident_factory(enrichment=enriched())
+
+    text = render_alert(incident, detail="detailed", flavor="plain")
+
+    assert "Location: Netherlands, Amsterdam" in text
+    assert "ASN: AS202425 IP Volume inc" in text
+    assert "VT: 12/94 malicious (+2 suspicious), reputation -34, 2026-10-26" in text
+
+
+def test_an_exhausted_quota_is_shown_as_a_status(incident_factory: Any) -> None:
+    enrichment = Enrichment(
+        geo=GeoInfo(country_code="NL", country="Netherlands"), virus_total_status="quota"
+    )
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
+
+    assert "VT: quota exhausted" in text
+    assert "Location: Netherlands" in text
+
+
+def test_an_unavailable_provider_is_shown_as_a_status(incident_factory: Any) -> None:
+    enrichment = Enrichment(
+        geo=GeoInfo(country_code="NL", country="Netherlands"), virus_total_status="unavailable"
+    )
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
+
+    assert "VT: unavailable" in text
+
+
+def test_minimal_never_shows_enrichment(incident_factory: Any) -> None:
+    incident = incident_factory(enrichment=enriched())
+
+    text = render_alert(incident, detail="minimal", flavor="plain")
+
+    assert text == incident.format_report_short()
+    assert "Netherlands" not in text
+
+
+def test_an_alert_without_enrichment_has_no_extra_rows(incident_factory: Any) -> None:
+    text = render_alert(incident_factory(), detail="detailed", flavor="plain")
+
+    assert "Location" not in text
+    assert "VT:" not in text
+
+
+def test_enrichment_values_cannot_forge_lines(incident_factory: Any) -> None:
+    enrichment = Enrichment(geo=GeoInfo(country="NL\r\n🎯 Attacker: 6.6.6.6", city="Ams\rterdam"))
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="detailed", flavor="plain")
+
+    # The CRLFs collapse into spaces, so the payload stays on the Location row.
+    assert "NL 🎯 Attacker: 6.6.6.6" in text
+    assert sum(1 for line in text.split(CRLF) if line.startswith("🎯")) == 1
 
 
 def test_minimal_level_is_the_legacy_one_liner(incident_factory: Any) -> None:

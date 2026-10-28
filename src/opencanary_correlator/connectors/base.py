@@ -8,11 +8,14 @@ The core must not import concrete connectors; it talks to :class:`EventSink`
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar, Literal, Protocol
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from opencanary_correlator.schemas import CanaryEvent
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.enrichment.models import Enrichment
 
 
 class EventSink(Protocol):
@@ -65,6 +68,10 @@ class IncidentLike(Protocol):
     events_count: int
     logdata: str | None
     description: str
+    #: Attacker-IP context attached by the engine before dispatch. Optional: a
+    #: deployment without enrichment, or a plugin's own incident object, simply
+    #: leaves it None and the alert renders without those rows.
+    enrichment: Enrichment | None
 
     @property
     def display_description(self) -> str:

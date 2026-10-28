@@ -7,6 +7,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Optional attacker-IP enrichment in the alert. `OCC_GEOIP_CITY_DB` /
+  `OCC_GEOIP_ASN_DB` read DB-IP Lite or GeoLite2 MMDB files locally, so country,
+  city and ASN work without a key, a quota or sending the address anywhere; the
+  reader is the new `geo` extra (`pip install "opencanary-correlator[geo]"`,
+  included in the image). Private and invalid addresses are skipped, and a
+  configured database that cannot be opened stops startup.
+- `OCC_VIRUSTOTAL_API_KEY` adds the VirusTotal detection ratio and reputation.
+  Off by default; setting the key is also the consent to disclose attacker
+  addresses to a third party. The free-tier limits (4/min, 500/day, 15.5K/month)
+  are enforced through one atomic Redis reservation before every request, and a
+  verdict is cached per address for `OCC_VIRUSTOTAL_CACHE_TTL` (7 days), so
+  repeated attacks cost one lookup. An exhausted window renders
+  `VT: quota exhausted`, an error `VT: unavailable`, and the alert is always
+  delivered.
+- `minimal` alerts are unchanged; `standard` adds country and the detection
+  ratio, `detailed` adds city, network and VirusTotal's reputation and analysis
+  date. `docker-compose.yml` mounts an optional read-only `./geoip` directory.
+
 - `http.request` incidents. OpenCanary logs a plain `GET` as `3000`, an
   unsupported method as `3002` and a redirect as `3003`; all three were audited
   as `event_unrouted` and dropped. They now create one incident type

@@ -19,6 +19,8 @@ from opencanary_correlator.constants import (
 DEDUP_KEY_PREFIX = "dedup:"
 INCIDENT_LOCK_PREFIX = "incident-lock:"
 INCIDENT_LATEST_PREFIX = "incident-latest:"
+ENRICHMENT_PREFIX = "enrichment:"
+VIRUSTOTAL_QUOTA_PREFIX = "virustotal:quota:"
 
 
 def device_hash(node_id: str) -> str:
@@ -74,6 +76,26 @@ def dedup_key(fingerprint: str) -> str:
     return f"{DEDUP_KEY_PREFIX}{fingerprint}"
 
 
+def enrichment_cache_key(source: str, value: str) -> str:
+    """Key holding one cached enrichment result.
+
+    `source` names the provider (`vt`) and `value` the looked-up address. An IP
+    address is public data and is not a credential, so it is used verbatim; a
+    hashed key would make an operator's `redis-cli` debugging needlessly hard.
+    """
+    return f"{ENRICHMENT_PREFIX}{source}:{value}"
+
+
+def quota_key(provider: str, window: str, stamp: str) -> str:
+    """Counter for one provider quota window.
+
+    The window stamp is part of the key (`virustotal:quota:day:20261028`), so a
+    window that has rolled over starts at zero without any reset logic and a
+    stale key simply expires.
+    """
+    return f"{VIRUSTOTAL_QUOTA_PREFIX}{provider}:{window}:{stamp}"
+
+
 def console_setting_key(setting: str) -> str:
     """Key of one console setting, as the legacy console reads it."""
     return f"{KEY_CONSOLE_SETTING_PREFIX}{setting}"
@@ -81,16 +103,20 @@ def console_setting_key(setting: str) -> str:
 
 __all__ = [
     "DEDUP_KEY_PREFIX",
+    "ENRICHMENT_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
+    "VIRUSTOTAL_QUOTA_PREFIX",
     "console_setting_key",
     "dedup_key",
     "device_hash",
     "device_key",
+    "enrichment_cache_key",
     "host_scan_key",
     "incident_key",
     "incident_latest_key",
     "incident_lock_key",
     "incident_prefix",
     "network_scan_key",
+    "quota_key",
 ]

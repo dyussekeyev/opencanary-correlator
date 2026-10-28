@@ -12,6 +12,7 @@ from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
 from opencanary_correlator.core.rules import Rule, build_rules
 from opencanary_correlator.core.windows import DedupCache
+from opencanary_correlator.enrichment.models import Enrichment, GeoInfo
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -61,7 +62,13 @@ class BrokenRule(Rule):
 
 
 def make_engine(
-    store: Any, settings: Any, audit: Any, clock: Any, dispatchers: Any, rules: Any = None
+    store: Any,
+    settings: Any,
+    audit: Any,
+    clock: Any,
+    dispatchers: Any,
+    rules: Any = None,
+    enricher: Any = None,
 ) -> CorrelationEngine:
     repository = IncidentRepository(store, settings, audit, clock=clock)
     engine_rules = rules if rules is not None else build_rules(store, repository, settings)
@@ -72,7 +79,23 @@ def make_engine(
         settings=settings,
         audit=audit,
         clock=clock,
+        enricher=enricher,
     )
+
+
+class RecordingEnricher:
+    """Enricher stand-in that records calls and can fail on demand."""
+
+    def __init__(self, result: Any = None, error: Exception | None = None) -> None:
+        self.result = result or Enrichment(geo=GeoInfo(country_code="NL", country="Netherlands"))
+        self.error = error
+        self.calls: list[str] = []
+
+    async def enrich(self, src_host: str) -> Any:
+        self.calls.append(src_host)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 def audit_actions(audit_stream: Any) -> list[str]:
@@ -95,6 +118,51 @@ async def test_login_event_creates_incident_and_notifies(
     assert dispatcher.incidents[0].INCIDENT_NAME == "ftp.login_attempt"
     assert len(await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf")) == 1
     assert "alert_dispatch" in audit_actions(audit_stream)
+
+
+async def test_enrichment_is_attached_before_dispatch(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    dispatcher = RecordingDispatcher()
+    enricher = RecordingEnricher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher], enricher=enricher)
+
+    await engine.handle_event(login_event(event_factory))
+
+    assert enricher.calls == ["10.0.0.5"]
+    assert dispatcher.incidents[0].enrichment is enricher.result
+
+
+async def test_a_broken_enricher_still_delivers_the_alert(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
+) -> None:
+    dispatcher = RecordingDispatcher()
+    enricher = RecordingEnricher(error=RuntimeError("lookup exploded"))
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher], enricher=enricher)
+
+    await engine.handle_event(login_event(event_factory))
+
+    assert len(dispatcher.incidents) == 1
+    assert dispatcher.incidents[0].enrichment is None
+    assert "enrichment_failed" in audit_actions(audit_stream)
+
+
+async def test_a_merged_event_is_not_enriched(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """One alert per incident means one lookup per alert, not per event."""
+    dispatcher = RecordingDispatcher()
+    enricher = RecordingEnricher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher], enricher=enricher)
+
+    await engine.handle_event(login_event(event_factory))
+    clock.advance(1)
+    await engine.handle_event(
+        CanaryEvent.model_validate(event_factory(logdata={"USERNAME": "root"}))
+    )
+
+    assert enricher.calls == ["10.0.0.5"]
+    assert len(dispatcher.incidents) == 1
 
 
 async def test_duplicate_event_is_deduplicated(

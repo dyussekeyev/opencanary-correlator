@@ -32,7 +32,11 @@ from redis.exceptions import RedisError
 
 from opencanary_correlator.constants import KEY_INCIDENTS, KEY_LOGS
 from opencanary_correlator.storage.keys import dedup_key
-from opencanary_correlator.storage.scripts import RELEASE_LOCK_LUA, SAVE_INCIDENT_LUA
+from opencanary_correlator.storage.scripts import (
+    RELEASE_LOCK_LUA,
+    RESERVE_QUOTA_LUA,
+    SAVE_INCIDENT_LUA,
+)
 
 DEFAULT_LOCK_TTL_MS: int = 5_000
 DEFAULT_LOCK_WAIT_SECONDS: float = 5.0
@@ -62,6 +66,7 @@ class RedisStore:
         self._client = client
         self._release_lock_script = cast(Script, client.register_script(RELEASE_LOCK_LUA))
         self._save_incident_script = cast(Script, client.register_script(SAVE_INCIDENT_LUA))
+        self._reserve_quota_script = cast(Script, client.register_script(RESERVE_QUOTA_LUA))
 
     @classmethod
     def from_url(cls, url: str) -> RedisStore:
@@ -171,6 +176,31 @@ class RedisStore:
             # The key expired between SET NX and INCR: recreate its window.
             await self._client.expire(key, seconds)
         return count
+
+    # --- Quotas -------------------------------------------------------------
+
+    async def reserve_quota(
+        self,
+        windows: Sequence[tuple[str, int, int]],
+    ) -> bool:
+        """Reserve one call in every quota window, or refuse without spending.
+
+        `windows` holds `(key, limit, ttl_ms)` tuples. The check and the
+        increments happen in one Lua script, so two replicas can never both take
+        the last free slot. A refused reservation leaves every counter
+        untouched, which is what keeps a throttled provider from drifting over
+        its published limits.
+
+        Returns True when the call may be made.
+        """
+        if not windows:
+            return True
+        keys = [key for key, _limit, _ttl in windows]
+        args: list[str] = []
+        for _key, limit, ttl_ms in windows:
+            args.extend([str(int(limit)), str(max(1, int(ttl_ms)))])
+        granted = await self._run_script(self._reserve_quota_script, keys, args)
+        return bool(granted)
 
     # --- Plain reads and writes --------------------------------------------
 
