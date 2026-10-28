@@ -16,6 +16,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `OCC_INCIDENT_HORIZONS`.
 - `OCC_TCP_PUBLISH_HOST` and `OCC_SYSLOG_PUBLISH_HOST` set the host side of the
   compose port mapping, defaulting to `127.0.0.1`.
+- [docs/opencanary-side.md](docs/opencanary-side.md) documents the two
+  honeypot-side problems a deployment hits — `SocketJSONHandler` losing the first
+  record and not reconnecting after a correlator restart, and a `twistd.pid`
+  that survives a container restart — with a tested reconnect handler and the
+  three ways to stop the PID file blocking startup.
+- A peer that closes its intake connection is audited as `connection_closed`
+  with `reason: peer_closed` at INFO. That is the moment a canary stops
+  delivering, and the correlator cannot ask it to reconnect: the audit record
+  makes the gap visible instead of leaving a silent drop.
+
+### Fixed
+
+- `OCC_LOG_LEVEL=DEBUG` no longer opens `httpx`, `httpcore`, `h11` and `hpack`.
+  `httpx` logs every request URL at INFO — the Telegram Bot API keeps its token
+  in the URL path — and the other three log connection and frame details at
+  DEBUG, so a debug session wrote network internals to stderr and the rotated
+  log file. They are capped at `WARNING` at startup; their real failures are
+  still logged and still redacted.
+- Node lifecycle `logtype` values (`1000` boot, `1001` base message, `1002`
+  debug, `1003` error, `1004` ping, `1005` config save, `1006` example) are
+  audited as `event_ignored` at INFO instead of `event_unrouted` at WARNING.
+  A plain-text syslog body becomes `1001`, so ordinary `opencanaryd` output no
+  longer fills the warning stream; a genuinely unrouted type still does.
+
+### Changed
+
+- `OCC_SLACK_ENABLED` defaults to `false`. The old default was `true`, which
+  meant `OCC_SLACK_ENABLED=true` with no `OCC_SLACK_WEBHOOKS` silently created
+  no channel at all. Enabling Slack without a webhook is now a startup error,
+  and a webhook with the switch off logs a warning. Deployments that set only
+  `OCC_SLACK_WEBHOOKS` must add `OCC_SLACK_ENABLED=true`.
 
 ### Changed — breaking
 

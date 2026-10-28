@@ -171,6 +171,25 @@ async def test_oversized_line_closes_connection(sink: Any, audit: Any, audit_str
     assert sink.events == []
 
 
+async def test_a_peer_hangup_is_audited_as_the_canary_going_silent(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
+    """A closed keep-alive socket is how a canary stops delivering."""
+    receiver = await make_receiver(sink, audit)
+    try:
+        _reader, writer = await open_connection(receiver)
+        writer.close()
+        await wait_for_eof(_reader)
+        for _ in range(50):
+            if ("connection_closed", "peer_closed") in audit_actions(audit_stream):
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await receiver.stop()
+
+    assert ("connection_closed", "peer_closed") in audit_actions(audit_stream)
+
+
 async def test_partial_line_timeout_closes_stalled_connection(
     sink: Any, audit: Any, audit_stream: Any
 ) -> None:

@@ -174,6 +174,32 @@ def normalise_alert_detail(value: Any) -> Any:
     return aliases.get(text, text)
 
 
+def require_slack_endpoints(enabled: bool, webhooks: list[str]) -> None:
+    """Reject a Slack channel that is switched on but has nowhere to send.
+
+    ``OCC_SLACK_ENABLED=true`` with an empty ``OCC_SLACK_WEBHOOKS`` was a silent
+    no-op: the flag promised a channel that never existed, and nothing in the
+    logs said so. Failing at startup turns the contradiction into a message the
+    operator can act on. The flag defaults to false now, so simply configuring a
+    webhook is not enough on its own — see ``slack_configured_but_disabled``.
+    """
+    if enabled and not webhooks:
+        raise ValueError(
+            "slack_enabled requires at least one URL in slack_webhooks; "
+            "set OCC_SLACK_WEBHOOKS or unset OCC_SLACK_ENABLED"
+        )
+
+
+def slack_configured_but_disabled(enabled: bool, webhooks: list[str]) -> bool:
+    """True when webhooks exist but the kill switch is off.
+
+    The other half of the same mistake: a webhook pasted into ``.env`` next to a
+    forgotten ``OCC_SLACK_ENABLED=false``. Startup logs a warning for it instead
+    of failing, because disabling a channel on purpose is legitimate.
+    """
+    return bool(webhooks) and not enabled
+
+
 def require_email_address(value: str) -> str:
     """Minimal structural check: an address with a local part and a domain."""
     if "@" not in value or value.startswith("@") or value.endswith("@"):
@@ -222,6 +248,8 @@ __all__ = [
     "require_email_address",
     "require_http_urls",
     "require_redis_scheme",
+    "require_slack_endpoints",
+    "slack_configured_but_disabled",
     "split_comma_separated",
     "validate_allowed_ips",
     "validate_incident_horizons",

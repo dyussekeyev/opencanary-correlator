@@ -113,8 +113,10 @@ therefore never touches correlation logic.
    audited as `event_deduplicated`.
 6. **Route** — every rule is asked `matches(event)`, then `apply(event, now)`.
    A rule raising is audited as `rule_failed` and does not stop the others. If
-   no rule matched, the event is audited as `event_unrouted` (this is how new
-   `logtype` values stay harmless).
+   no rule matched, a node-lifecycle `logtype` (boot, base message, ping, …) is
+   audited as `event_ignored` at INFO, and anything else as `event_unrouted` at
+   WARNING — the distinction keeps expected chatter out of the warning stream
+   while a genuinely new `logtype` still shows up there.
 7. **Create or merge** — `IncidentRepository.record()` takes
    `incident-lock:<incident>:<src_host>` (5 s TTL) and looks for a live incident
    with the same incident type and exact `src_host` segment (the lookup

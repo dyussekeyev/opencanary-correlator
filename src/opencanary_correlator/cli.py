@@ -232,6 +232,12 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
     add_endpoints("webhook", settings.webhook_urls, WebhookDispatcher, settings.webhook_detail)
     if settings.slack_enabled:
         add_endpoints("slack", settings.slack_webhooks, SlackDispatcher, settings.slack_detail)
+    elif settings.slack_webhooks:
+        # The opposite of the startup error: a webhook with the switch off would
+        # otherwise be ignored without a word.
+        _logger.warning(
+            "OCC_SLACK_WEBHOOKS is set but OCC_SLACK_ENABLED is false: Slack alerts are disabled"
+        )
     add_endpoints("discord", settings.discord_webhooks, DiscordDispatcher, settings.discord_detail)
     if settings.telegram_token is not None:
         for chat_id in settings.telegram_chat_ids:

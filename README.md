@@ -109,6 +109,12 @@ interface is an unauthenticated write path. A canary on another machine needs
 `OCC_TCP_HOST=0.0.0.0` (or its own address) — and the same for syslog — plus the
 firewall rule described in [Transport security](#transport-security).
 
+Two known `opencanaryd` problems — a `SocketJSONHandler` that does not reconnect
+after a correlator restart, and a `twistd.pid` that survives a container restart
+— are honeypot-side and cannot be fixed from here. [docs/opencanary-side.md](docs/opencanary-side.md)
+has the patch and the workarounds, plus what the correlator does to make a silent
+canary visible.
+
 ### Migrating from the Python 2 release
 
 The old `opencanary_correlator.conf` can be imported directly:
@@ -141,7 +147,7 @@ override re-enables it.
 | Channel | Settings |
 |---|---|
 | Generic webhook / SIEM | `OCC_WEBHOOK_URLS` — JSON `{"title", "text", "key"}`, one URL per delivery |
-| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, report in `text` |
+| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, report in `text`. Off by default: `OCC_SLACK_ENABLED=true` without a webhook is a startup error, and a webhook with the switch off logs a warning |
 | Telegram | `OCC_TELEGRAM_TOKEN`, `OCC_TELEGRAM_CHAT_IDS` — one message per chat, truncated to 4096 chars |
 | Discord | `OCC_DISCORD_WEBHOOKS` — `content` under 2000 chars, otherwise a single embed; both `200` and `204 No Content` count as success |
 | SMTP | `OCC_SMTP_ENABLED`, `OCC_SMTP_HOST`, `OCC_SMTP_PORT`, `OCC_SMTP_FROM`, `OCC_SMTP_TO`, optional `OCC_SMTP_USERNAME` / `OCC_SMTP_PASSWORD`, `OCC_SMTP_STARTTLS` (port 587), `OCC_SMTP_USE_TLS` (implicit TLS, usually port 465; mutually exclusive with STARTTLS) |
@@ -212,7 +218,11 @@ endpoint never blocks the others and never blocks ingestion.
   growing. The `events_truncated` field marks a partial history, and the console
   payload reports the difference as `events_skipped`. Port scans keep every
   distinct port or target — they store one entry per member, not per event.
-- Unknown `logtype` values are audited as `event_unrouted` and otherwise ignored.
+- Node lifecycle records (`1000` boot, `1001` base message — which is also what a
+  plain-text syslog body becomes — `1002` debug, `1003` error, `1004` ping,
+  `1005` config save, `1006` example) are audited as `event_ignored` at **INFO**.
+  Any other `logtype` that no rule handles is a routing gap and stays
+  `event_unrouted` at **WARNING**.
 
 ## Scaling
 
@@ -301,6 +311,13 @@ deployments both work:
 (case-insensitive; `WARN` and `FATAL` are accepted too) and defaults to `INFO`.
 Use `DEBUG` when chasing a correlation or dispatch problem; `INFO` is enough to
 see every failed delivery, rejected event and start/stop reason.
+
+`DEBUG` applies to the correlator's own loggers only. `httpx`, `httpcore`, `h11`
+and `hpack` are pinned to `WARNING` at startup, whatever the root level says:
+`httpx` logs every request URL at INFO and the other three log connection and
+frame details at DEBUG, and a Telegram bot token or a Slack/Discord webhook
+secret lives in that URL path. Their real failures (`WARNING` and above) are
+still logged and still pass through the redaction filters.
 
 `OCC_LOG_FILE` adds a log file next to stderr without removing it, so
 `docker logs` keeps working. The file is UTF-8, rotates at 10 MiB and keeps 5

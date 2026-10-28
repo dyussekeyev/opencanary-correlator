@@ -98,6 +98,24 @@ INCIDENT_LOGTYPE_HOST_PORT_SCAN: Final[int] = 5003
 
 DEFAULT_LOGTYPE: Final[LogType] = LogType.LOG_BASE_MSG
 
+#: Log types that describe the canary node itself (boot, heartbeat, debug, a
+#: plain operational message) rather than an interaction with an attacker. They
+#: are expected, so the engine audits them at INFO as `event_ignored`; any other
+#: `logtype` that no rule handles is a routing gap and stays a WARNING.
+#: `plain text` syslog bodies become `LOG_BASE_MSG`, which is why this set also
+#: keeps `opencanaryd` startup output out of the warning stream.
+IGNORED_LOGTYPES: Final[frozenset[int]] = frozenset(
+    {
+        int(LogType.LOG_BASE_BOOT),
+        int(LogType.LOG_BASE_MSG),
+        int(LogType.LOG_BASE_DEBUG),
+        int(LogType.LOG_BASE_ERROR),
+        int(LogType.LOG_BASE_PING),
+        int(LogType.LOG_BASE_CONFIG_SAVE),
+        int(LogType.LOG_BASE_EXAMPLE),
+    }
+)
+
 #: Field defaults applied by `opencanary.logger.LoggerBase.sanitizeLog()`.
 DEFAULT_EVENT_FIELDS: Final[dict[str, Any]] = {
     "src_host": "",
@@ -144,6 +162,7 @@ MAX_EVENT_COUNT: Final[int] = 100
 __all__ = [
     "DEFAULT_EVENT_FIELDS",
     "DEFAULT_LOGTYPE",
+    "IGNORED_LOGTYPES",
     "INCIDENT_KEY_PREFIX",
     "INCIDENT_LOGTYPE_HOST_PORT_SCAN",
     "INCIDENT_LOGTYPE_NETWORK_PORT_SCAN",

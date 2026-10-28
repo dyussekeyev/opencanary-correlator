@@ -32,6 +32,7 @@ from opencanary_correlator.config_validation import (
     require_email_address,
     require_http_urls,
     require_redis_scheme,
+    require_slack_endpoints,
     split_comma_separated,
     validate_allowed_ips,
     validate_incident_horizons,
@@ -190,7 +191,10 @@ class Settings(BaseSettings):
     # show up there, and a `repr()` in a traceback or debug print is exactly how
     # such a promise gets broken. `--check-config` never prints them either.
     webhook_urls: CommaSeparated = Field(default_factory=list, repr=False)
-    slack_enabled: bool = True
+    # A channel switch that starts off: `enabled` is a real decision, not a
+    # default that silently does nothing without a webhook (see
+    # `require_slack_endpoints`).
+    slack_enabled: bool = False
     slack_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
     discord_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
     telegram_token: SecretStr | None = None
@@ -327,6 +331,12 @@ class Settings(BaseSettings):
         """
         if self.smtp_use_tls and self.smtp_starttls:
             raise ValueError("smtp_use_tls and smtp_starttls are mutually exclusive")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_slack(self) -> Self:
+        """An enabled Slack channel must have somewhere to send."""
+        require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
         return self
 
     @field_validator("health_host", mode="before")

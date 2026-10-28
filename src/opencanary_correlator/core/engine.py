@@ -16,6 +16,7 @@ from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
+from opencanary_correlator.constants import IGNORED_LOGTYPES
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.rules import Rule
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
@@ -80,11 +81,23 @@ class CorrelationEngine:
                 )
 
         if not matched:
+            logtype = int(event.logtype)
+            if logtype in IGNORED_LOGTYPES:
+                # Node lifecycle records: expected, and nothing to correlate. An
+                # INFO record keeps them traceable without filling the warning
+                # stream an operator scans for real routing gaps.
+                metrics.EVENTS_TOTAL.labels(result="ignored").inc()
+                self._audit.emit(
+                    "event_ignored",
+                    "info",
+                    {"node_id": event.node_id, "logtype": logtype},
+                )
+                return
             metrics.EVENTS_TOTAL.labels(result="unrouted").inc()
             self._audit.emit(
                 "event_unrouted",
                 "warning",
-                {"node_id": event.node_id, "logtype": int(event.logtype)},
+                {"node_id": event.node_id, "logtype": logtype},
             )
             return
 

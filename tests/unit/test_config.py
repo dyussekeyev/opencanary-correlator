@@ -237,6 +237,26 @@ def test_health_port_default_avoids_the_emulated_http_port(settings_factory: Any
     assert DEFAULT_HEALTH_PORT != 8080
 
 
+def test_slack_is_disabled_until_it_has_a_webhook(settings_factory: Any) -> None:
+    """`enabled` with no endpoint is a dead switch, not a working channel."""
+    assert settings_factory().slack_enabled is False
+    only_webhook = settings_factory(slack_webhooks="https://hooks.slack.com/services/a")
+    assert only_webhook.slack_enabled is False
+
+
+def test_enabling_slack_without_a_webhook_fails_at_startup(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError, match="slack_webhooks"):
+        settings_factory(slack_enabled=True)
+
+
+def test_enabling_slack_with_a_webhook_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(
+        slack_enabled=True, slack_webhooks="https://hooks.slack.com/services/a"
+    )
+
+    assert settings.slack_enabled is True
+
+
 def test_intake_defaults_to_loopback_and_uncommon_ports(settings_factory: Any) -> None:
     """The common deployment is one host, and honeypot traps own the common ports."""
     settings = settings_factory()

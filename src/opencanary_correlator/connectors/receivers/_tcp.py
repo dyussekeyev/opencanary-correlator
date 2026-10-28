@@ -33,6 +33,7 @@ CLOSE_REASON_LINE_TOO_LARGE: Final[str] = "line_too_large"
 CLOSE_REASON_PARTIAL_LINE_TIMEOUT: Final[str] = "partial_line_timeout"
 CLOSE_REASON_CONNECTION_LIMIT: Final[str] = "connection_limit"
 CLOSE_REASON_RATE_LIMITED: Final[str] = "connection_rate_limited"
+CLOSE_REASON_PEER_CLOSED: Final[str] = "peer_closed"
 
 
 class StreamProtocol(asyncio.Protocol):
@@ -74,10 +75,17 @@ class StreamProtocol(asyncio.Protocol):
         self._arm_timeout()
 
     def connection_lost(self, exc: Exception | None) -> None:
-        """Release the timer and deregister the connection."""
+        """Release the timer and deregister the connection.
+
+        The receiver is told whether *it* closed the connection or the peer did,
+        because the two mean different things operationally: a peer closing
+        `opencanaryd`'s keep-alive socket is how a canary goes silent, and a
+        `SocketJSONHandler` does not always come back on its own.
+        """
         self._cancel_timeout()
+        closed_by_receiver = self._closed
         self._closed = True
-        self._receiver.connection_lost(self)
+        self._receiver.connection_lost(self, peer_closed=not closed_by_receiver)
 
     # --- Framing ------------------------------------------------------------
 
@@ -289,10 +297,26 @@ class TCPStreamReceiver(NetworkReceiver):
             )
             protocol.close(CLOSE_REASON_RATE_LIMITED)
 
-    def connection_lost(self, protocol: StreamProtocol) -> None:
-        """Forget a closed connection."""
+    def connection_lost(self, protocol: StreamProtocol, *, peer_closed: bool = False) -> None:
+        """Forget a closed connection, and note who closed it.
+
+        A peer-initiated close is audited at INFO: it is the moment a canary
+        stopped delivering, and the correlator cannot ask it to reconnect. A
+        close the receiver performed is already audited at WARNING by
+        :meth:`connection_closed`.
+        """
         self._connections.discard(protocol)
         metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(len(self._connections))
+        if peer_closed:
+            self._audit.emit(
+                "connection_closed",
+                "info",
+                {
+                    "receiver": self.name,
+                    "reason": CLOSE_REASON_PEER_CLOSED,
+                    "peer": protocol.peer_ip,
+                },
+            )
 
     def connection_closed(self, protocol: StreamProtocol, reason: str) -> None:
         """Audit a connection that the receiver itself terminated."""
@@ -327,6 +351,7 @@ __all__ = [
     "CLOSE_REASON_CONNECTION_LIMIT",
     "CLOSE_REASON_LINE_TOO_LARGE",
     "CLOSE_REASON_PARTIAL_LINE_TIMEOUT",
+    "CLOSE_REASON_PEER_CLOSED",
     "CLOSE_REASON_RATE_LIMITED",
     "StreamProtocol",
     "TCPStreamReceiver",

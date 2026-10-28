@@ -10,6 +10,7 @@ import pytest
 from opencanary_correlator.log_setup import (
     DEFAULT_BACKUPS,
     DEFAULT_MAX_BYTES,
+    NOISY_LOGGERS,
     LogSetupError,
     configure_logging,
 )
@@ -113,7 +114,7 @@ def test_a_payload_cannot_forge_an_extra_log_line(tmp_path: Path) -> None:
     assert "2026-01-01 ERROR forged line" in lines[0]
 
 
-def test_http_request_lines_do_not_carry_the_bot_token(tmp_path: Path) -> None:
+def test_http_library_request_lines_never_reach_the_log(tmp_path: Path) -> None:
     target = tmp_path / "correlator.log"
 
     configure_logging("INFO", target)
@@ -126,8 +127,23 @@ def test_http_request_lines_do_not_carry_the_bot_token(tmp_path: Path) -> None:
     flush_root()
 
     text = target.read_text(encoding="utf-8")
+    # Dropped at the source: nothing to mask, nothing to leak, no response
+    # fragments either.
+    assert text == ""
+
+
+def test_a_warning_from_the_http_library_is_kept_and_masked(tmp_path: Path) -> None:
+    target = tmp_path / "correlator.log"
+
+    configure_logging("INFO", target)
+    logging.getLogger("httpx").warning(
+        "retrying https://api.telegram.org/bot123456:SUPERSECRET/sendMessage"
+    )
+    flush_root()
+
+    text = target.read_text(encoding="utf-8")
+    assert "retrying" in text
     assert "SUPERSECRET" not in text
-    assert "123456" not in text
     assert "https://api.telegram.org/bot***/sendMessage" in text
 
 
@@ -169,6 +185,34 @@ def test_an_unopenable_path_raises_instead_of_logging_nowhere(tmp_path: Path) ->
 
     with pytest.raises(LogSetupError):
         configure_logging("INFO", blocker / "correlator.log")
+
+
+def test_debug_does_not_open_the_http_libraries(tmp_path: Path) -> None:
+    """`httpx` logs request URLs and response fragments, which a token hides in."""
+    target = tmp_path / "correlator.log"
+
+    configure_logging("DEBUG", target)
+    for name in NOISY_LOGGERS:
+        logging.getLogger(name).warning("a real failure still shows")
+        logging.getLogger(name).debug("POST https://api.telegram.org/bot123:SECRET/sendMessage")
+    flush_root()
+
+    text = target.read_text(encoding="utf-8")
+    assert "a real failure still shows" in text
+    assert "sendMessage" not in text
+    assert logging.getLogger().level == logging.DEBUG
+    for name in NOISY_LOGGERS:
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
+
+
+def test_an_operator_can_still_raise_a_library_level() -> None:
+    """The cap is applied at startup; an explicit later change is respected."""
+    configure_logging("DEBUG")
+
+    logging.getLogger("httpx").setLevel(logging.DEBUG)
+
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.DEBUG
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
 
 
 def test_defaults_are_documented_values() -> None:

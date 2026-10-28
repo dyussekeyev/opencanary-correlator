@@ -60,6 +60,7 @@ def test_safe_redis_url_masks_the_password() -> None:
 def test_check_config_prints_redacted_summary(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "redis://user:supersecret@redis.example:6379/0")
     monkeypatch.setenv("OCC_SLACK_WEBHOOKS", "https://hooks.slack.test/x")
+    monkeypatch.setenv("OCC_SLACK_ENABLED", "true")
 
     code = main(["--check-config"])
 
@@ -173,6 +174,7 @@ def test_check_config_without_redis_url_fails(monkeypatch: Any, capsys: Any) -> 
 async def test_build_dispatchers_follows_settings(settings_factory: Any, store: Any) -> None:
     settings = settings_factory(
         webhook_urls=["https://siem.test/hook"],
+        slack_enabled=True,
         slack_webhooks=["https://hooks.slack.test/x"],
         discord_webhooks=["https://discord.test/webhook"],
         telegram_token="1:token",
@@ -250,6 +252,19 @@ async def test_build_dispatchers_respects_disabled_channels(
     assert channel_names(settings) == []
 
 
+async def test_a_slack_webhook_with_the_switch_off_is_reported(
+    settings_factory: Any, store: Any, caplog: Any
+) -> None:
+    """The mirror image of the startup error: configured, but silently off."""
+    settings = settings_factory(slack_webhooks=["https://hooks.slack.test/x"])
+
+    with caplog.at_level(logging.WARNING):
+        dispatchers = build_dispatchers(settings, store)
+
+    assert dispatchers == []
+    assert "OCC_SLACK_ENABLED is false" in caplog.text
+
+
 async def test_build_dispatchers_passes_implicit_tls_to_smtp(
     settings_factory: Any, store: Any, monkeypatch: Any
 ) -> None:
@@ -286,6 +301,7 @@ async def test_build_dispatchers_scopes_breakers_to_each_endpoint(
     monkeypatch.setattr("opencanary_correlator.cli.CircuitBreaker", RecordingBreaker)
     settings = settings_factory(
         webhook_urls=["https://siem.test/a", "https://siem.test/b"],
+        slack_enabled=True,
         slack_webhooks=["https://slack.test/a", "https://slack.test/b"],
         discord_webhooks=["https://discord.test/a", "https://discord.test/b"],
         telegram_token="1:token",

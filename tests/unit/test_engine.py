@@ -110,6 +110,26 @@ async def test_duplicate_event_is_deduplicated(
     assert len(dispatcher.incidents) == 1
 
 
+async def test_node_lifecycle_logtypes_are_ignored_quietly(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
+) -> None:
+    """Boot, base-message and ping records are expected noise, not routing bugs."""
+    dispatcher = RecordingDispatcher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
+
+    for logtype in (1000, 1001, 1002, 1003, 1004):
+        await engine.handle_event(CanaryEvent.model_validate(event_factory(logtype=logtype)))
+
+    records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
+    actions = [record["action"] for record in records]
+    assert "event_unrouted" not in actions
+    assert actions.count("event_ignored") == 5
+    assert {record["status"] for record in records if record["action"] == "event_ignored"} == {
+        "info"
+    }
+    assert dispatcher.incidents == []
+
+
 async def test_unknown_logtype_is_audited(
     store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:

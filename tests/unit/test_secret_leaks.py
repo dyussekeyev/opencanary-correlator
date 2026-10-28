@@ -111,10 +111,10 @@ async def test_no_secret_reaches_a_log_or_an_outbound_body(
         assert secret not in stderr, f"{secret} leaked into stderr"
         assert secret not in outbound, f"{secret} leaked into a delivered message"
 
-    # The logs still have to be useful: the request lines are there, just masked.
-    assert "api.telegram.org/bot***/sendMessage" in log_text
-    assert "hooks.slack.com/services/***" in log_text
-    assert "siem.example" in log_text
+    # `NOISY_LOGGERS` caps httpx/httpcore at WARNING, so their request lines are
+    # not written at all: the endpoints never appear, masked or otherwise.
+    for marker in ("api.telegram.org", "hooks.slack.com", "discord.com", "siem.example"):
+        assert marker not in log_text, f"{marker} reached the log file"
     # The alert shows the log entry with the credential masked, not dropped.
     assert "PASSWORD=***" in outbound
 
