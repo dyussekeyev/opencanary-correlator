@@ -125,3 +125,75 @@ def test_invalid_event_body_raises_validation_error() -> None:
 
     with pytest.raises(ValidationError):
         build_event(message, "10.0.0.9")
+
+
+# --- structured data ---------------------------------------------------------
+
+
+def test_brackets_inside_a_quoted_value_do_not_end_the_block_early() -> None:
+    """A ``]`` inside a quoted parameter is data, not the end of the block.
+
+    The block is skipped with a quote-aware scan; a naive ``text.split("]")``
+    would hand the rest of the block to the event parser as the body.
+    """
+    message = parse_syslog(
+        b"<34>1 2026-10-24T10:00:00Z canary-1 opencanary - ID47 "
+        b'[exampleSDID@32473 note="closed ] bracket"] login attempt'
+    )
+
+    assert message.message == "login attempt"
+
+
+def test_escaped_quotes_do_not_end_the_block_early() -> None:
+    message = parse_syslog(
+        b"<34>1 2026-10-24T10:00:00Z canary-1 opencanary - ID47 "
+        b'[exampleSDID@32473 note="say \\"hi\\" ]"] login attempt'
+    )
+
+    assert message.message == "login attempt"
+
+
+def test_several_structured_blocks_are_skipped() -> None:
+    message = parse_syslog(
+        b"<34>1 2026-10-24T10:00:00Z canary-1 opencanary - ID47 "
+        b'[a@1 x="1"][b@2 y="2"] login attempt'
+    )
+
+    assert message.message == "login attempt"
+
+
+def test_an_unterminated_structured_block_leaves_no_body() -> None:
+    """Half a block must not be reinterpreted as the message."""
+    message = parse_syslog(b'<34>1 2026-10-24T10:00:00Z canary-1 opencanary - ID47 [a@1 note="x"')
+
+    assert message.message == ""
+
+
+# --- node id hygiene ---------------------------------------------------------
+
+
+def test_hostname_control_characters_are_replaced_in_the_node_id() -> None:
+    """The node id becomes a storage key, so a control byte must not survive.
+
+    A hostile honeypot can put ``\x00`` or a newline in the hostname field; the
+    id is used in Redis key composition and in audit records.
+    """
+    message = parse_syslog(b"<134>Oct 24 10:00:00 bad\x00host app: hello")
+
+    event = build_event(message, "10.0.0.9")
+
+    assert event.node_id == "bad_host"
+
+
+def test_an_over_long_hostname_is_clipped_to_the_key_limit() -> None:
+    message = parse_syslog(b"<134>Oct 24 10:00:00 " + b"h" * 200 + b" app: hello")
+
+    event = build_event(message, "10.0.0.9")
+
+    assert len(event.node_id) == 128
+
+
+def test_a_message_without_a_hostname_falls_back_to_the_default_node_id() -> None:
+    event = build_event(parse_syslog(b"<134>just some text"), "10.0.0.9")
+
+    assert event.node_id == "syslog"
