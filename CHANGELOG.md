@@ -108,7 +108,65 @@ with `opencanaryd` (TCP JSON over `SocketHandler`, and syslog).
   exception details; there is a test for this.
 - Webhook, Slack and Discord URLs are validated in configuration: only http/https, and plain http only for loopback hosts.
 
-## [0.2.0]
+## [0.2.0] - 2026-10-24
 
-- Initial async rewrite: TCP JSON and syslog receivers, Redis-backed correlation,
-  dispatchers for Telegram, SIEM webhooks, Slack, Discord and SMTP.
+First release of the modernized fork. The Python 2 / Twisted correlator is
+replaced by a stateless asyncio service, and `opencanaryd` nodes keep sending to
+the same address without any change on the honeypot side.
+
+### Added
+
+- TCP JSON receiver for `SocketJSONHandler` traffic: newline-delimited UTF-8
+  JSON on port `1514`, with `OCC_MAX_LINE_BYTES` (64 KiB), a partial-line
+  timeout, `OCC_MAX_CONNECTIONS` and a bounded queue that applies backpressure
+  instead of dropping events. Idle keep-alive sockets are left open.
+- Syslog receiver (RFC 3164/5424, octet-counting or newline framing over TCP,
+  `OCC_SYSLOG_UDP_ENABLED` for UDP). A plain-text body becomes a synthetic
+  `LOG_BASE_MSG` event instead of being discarded.
+- Pydantic v2 models for every event, keeping `src_host`, `src_port`,
+  `dst_host`, `dst_port`, `logtype`, `node_id`, `local_time`, `utc_time`,
+  `logdata` and unknown extra fields. Lenient on purpose: empty `src_host`, `-1`
+  ports, hostnames, unknown `logtype` integers and unparsable timestamps are
+  accepted rather than dropped.
+- Stateless correlation in Redis: time windows, deduplication, incident locks
+  and incident state, so replicas scale horizontally behind a load balancer.
+  `OCC_EVENT_CONCURRENCY` shards events by source host into consumer lanes, so
+  one slow host cannot stall the others.
+- Dispatchers for Telegram, Slack, Discord, SMTP (`use_tls`) and generic SIEM
+  webhooks, behind abstract receiver and dispatcher interfaces, each with a
+  per-endpoint circuit breaker, a dispatch timeout and failure isolation.
+- Operational surface: `GET /healthz` pings Redis before answering, Prometheus
+  metrics on `/metrics`, and an audit log in strict JSON carrying `timestamp`,
+  `component`, `action`, `status` and `details`.
+- `--config` imports an existing legacy `opencanary_correlator.conf`, including
+  per-incident horizons (`ftp.incident_horizon`, `smb.file_open_horizon`,
+  `scans.*_horizon`, and the rest). Twilio and Mandrill keys are ignored with a
+  log line, since SMS and the deprecated Mandrill SDK are not part of this
+  release.
+- Container image that runs as uid `10001` with a read-only root filesystem, and
+  a `docker-compose.yml` for a correlator plus Redis.
+
+### Changed
+
+- Stored incident history is capped by `OCC_MAX_STORED_EVENTS` (default `100`):
+  the timestamps and log entries kept per incident are bounded while
+  `events_count` stays exact and the overflow is reported through
+  `events_skipped` / `events_truncated`. The arrays previously grew without
+  limit, which made a single hot incident quadratic to merge.
+- Rate-limit windows are fixed rather than sliding, so a window resets on its
+  boundary even under continuous traffic.
+- Circuit breakers are per endpoint, not per channel type: one dead webhook no
+  longer suppresses the healthy ones.
+
+### Security
+
+- Hostile payloads are rejected per line with an audit record instead of
+  reaching the correlator: oversized lines, invalid UTF-8, non-JSON, `NaN` and
+  infinity, excessive `logdata` nesting, and the `[ERR] '…'` line that
+  `PyLogger.error()` emits when a canary fails internally.
+- Every setting comes from the environment. `.env` is git-ignored and holds no
+  committed secret; real deployments inject the variables from Docker secrets,
+  a Kubernetes Secret or a systemd `EnvironmentFile`.
+- Redis must be one logical server. Redis Cluster is unsupported because the
+  incident write is a script over keys that hash to different slots; TLS
+  (`rediss://`) and Unix sockets (`unix://`) are supported.
