@@ -143,6 +143,9 @@ the audit trail and every alert channel (`redaction.py`, `core/logdata.py`).
 - The syslog codec (`receivers/_syslog_codec.py`) and RFC 6587 framing
   (`receivers/_framing.py`) left the transports, so partial-frame and
   octet-counting behaviour is unit-tested without a socket.
+- The incident base model (`core/incident_base.py`) left the type registry, and
+  the per-connection protocol (`receivers/_stream.py`) left the listening side.
+  No module holds more than ~300 lines now, apart from the settings schema.
 - The 713-line `test_cli.py` and 685-line `test_incident.py` split along the
   same seams.
 

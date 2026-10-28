@@ -57,7 +57,8 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `log_setup.py` | root logger level, stderr handler and the optional size-rotated `OCC_LOG_FILE` handler; raises `LogSetupError` when the file cannot be opened |
 | `connectors/base.py` | `EventSink`, `RateLimiter`, `BaseReceiver`, `BaseDispatcher`, `DispatchResult` — the only types `core` may import |
 | `connectors/receivers/_base.py` | `NetworkReceiver`: shared scaffolding for TCP and UDP receivers (pipeline, counters, bound port, audit) |
-| `connectors/receivers/_tcp.py` | asyncio stream lifecycle: 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
+| `connectors/receivers/_stream.py` | per-connection protocol: framing loop, 64 KiB cap, partial-line timeout, TCP keep-alive |
+| `connectors/receivers/_tcp.py` | listening side: server socket, connection cap, admission, payload dispatch to the pipeline |
 | `connectors/receivers/_framing.py` | RFC 6587 framing as pure functions: newline/NUL split, octet counting, overflow |
 | `connectors/receivers/_pipeline.py` | bounded queue, per-host consumer lanes, rate limiting, audit, counters |
 | `connectors/receivers/tcp_json.py` | `SocketJSONHandler` compatibility: newline-delimited JSON, `[ERR]` tolerance |
@@ -68,7 +69,8 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `core/windows.py` | sliding window (ZSET), fixed-TTL distinct-set window (port scans), dedup cache, event fingerprint |
 | `core/rules/` | `LoginRule` (14 log types), `SmbFileOpenRule`, host/network port-scan rules |
 | `incident_specs.py` | one declarative row per incident type (name, class name, key prefix, description); `INCIDENT_TYPES` and `constants.INCIDENT_KEY_PREFIX` are derived from it |
-| `core/incident_model.py` | `Incident` base, the four types with custom logic, and the generated subclasses; each carries its own merge rules and Redis hash fields |
+| `core/incident_base.py` | `Incident` base: Redis hash fields, logdata merge and truncation rules, report defaults |
+| `core/incident_model.py` | the four types with custom logic, the generated subclasses and the type registry |
 | `core/logdata.py` | the single `logdata` decoder shared by the alert renderer and the incident model |
 | `core/incident_report.py` | legacy plain-text alert templates (title, full, short and scan reports), pure functions |
 | `core/incident.py` | `IncidentRepository`: atomic create-or-merge in Redis; re-exports the model names |
