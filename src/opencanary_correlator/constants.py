@@ -11,6 +11,10 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Any, Final
 
+from opencanary_correlator.incident_specs import (
+    INCIDENT_KEY_PREFIX as INCIDENT_KEY_PREFIX_TABLE,
+)
+
 
 class LogType(IntEnum):
     """Known OpenCanary log types.
@@ -126,26 +130,9 @@ DEFAULT_EVENT_FIELDS: Final[dict[str, Any]] = {
     "logdata": {},
 }
 
-#: Canonical incident name -> legacy Redis key prefix.
-INCIDENT_KEY_PREFIX: Final[dict[str, str]] = {
-    "ftp.login_attempt": "incident:ftplogin:",
-    "http.login_attempt": "incident:httplogin:",
-    "http.request": "incident:httprequest:",
-    "ssh.login_attempt": "incident:sshlogin:",
-    "telnet.login_attempt": "incident:telnetlogin:",
-    "httpproxy.login_attempt": "incident:httpproxylogin:",
-    "mysql.login_attempt": "incident:mysqllogin:",
-    "mssql.login_attempt": "incident:mssqllogin:",
-    "tftp.action": "incident:tftp:",
-    "ntp.monlist": "incident:ntpmonlist:",
-    "vnc.login_attempt": "incident:vnclogin:",
-    "snmp.cmd": "incident:snmplogin:",
-    "rdp.login_attempt": "incident:rdplogin:",
-    "sip.login_attempt": "incident:siplogin:",
-    "smb.file_open": "incident:smbfileopen:",
-    "scans.host_portscan": "incident:hostportscan:",
-    "scans.network_portscan": "incident:networkportscan:",
-}
+#: Canonical incident name -> legacy Redis key prefix, derived from the incident
+#: spec table so a type cannot be registered in one place and missing here.
+INCIDENT_KEY_PREFIX: Final[dict[str, str]] = INCIDENT_KEY_PREFIX_TABLE
 
 #: Redis keys shared with the legacy console.
 KEY_INCIDENTS: Final[str] = "incidents"
