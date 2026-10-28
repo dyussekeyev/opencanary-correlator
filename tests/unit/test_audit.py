@@ -37,6 +37,25 @@ class BrokenStream(io.StringIO):
         raise OSError("stream closed")
 
 
+def test_audit_lines_never_carry_a_url_credential() -> None:
+    stream = io.StringIO()
+    logger = AuditLogger("correlator", stream=stream)
+
+    logger.emit(
+        "alert_dispatch",
+        "error",
+        {
+            "endpoint": "https://api.telegram.org/bot123456:AUDITSECRET/sendMessage",
+            "reason": "http_401",
+        },
+    )
+
+    line = stream.getvalue()
+    assert "AUDITSECRET" not in line
+    assert "https://api.telegram.org/bot***/sendMessage" in line
+    assert json.loads(line)["details"]["reason"] == "http_401"
+
+
 def make_logger(name: str, handler: logging.Handler) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.handlers = [handler]

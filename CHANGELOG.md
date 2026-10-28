@@ -3,6 +3,65 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.2] - 2026-10-28
+
+### Added
+
+- `OCC_LOG_FILE` writes the operational log to a size-rotated UTF-8 file
+  (10 MiB × 5 backups) in addition to stderr, and `--log-file` overrides it.
+  `OCC_LOG_LEVEL` now also accepts `WARN` and `FATAL`. An unopenable log path
+  stops startup with exit code `2` instead of running without logs.
+- `docker-compose.yml` mounts a `correlator-logs` volume at
+  `/var/log/opencanary-correlator` and points `OCC_LOG_FILE` at
+  `/var/log/opencanary-correlator/logs/correlator.log`, so a file-based agent can
+  collect the rotated log. The image ships that `logs/` directory owned by the
+  runtime UID; Docker copies it into the volume with its ownership, so the
+  unprivileged process can write without an init container. An empty
+  `OCC_LOG_FILE` keeps stderr-only behaviour.
+- Log records are flattened to one line, so a payload containing CRLF cannot
+  forge an entry in the file a SIEM agent ingests.
+- Per-channel alert detail: `OCC_TELEGRAM_DETAIL`, `OCC_SLACK_DETAIL`,
+  `OCC_DISCORD_DETAIL`, `OCC_WEBHOOK_DETAIL` and `OCC_SMTP_DETAIL` accept
+  `minimal`, `standard` or `detailed`. Chat channels default to `standard`;
+  webhook and SMTP stay on `minimal` so SIEM parsers keep the legacy text.
+- `connectors/dispatchers/alert_text.py` renders the multiline alert: the
+  instance block (node name, host IP) first, then the attacker (IP and source
+  port), the detection time and a log message summary. `detailed` adds the
+  destination address, the event counter and more log entries.
+
+### Changed
+
+- Telegram sends the rendered layout with `parse_mode=MarkdownV2`, Slack with
+  mrkdwn and Discord with markdown; every field is escaped for its channel and
+  lines are separated with CRLF.
+- Alert fields are sanitised before delivery: control characters are stripped,
+  long values are clipped, and `logdata` keys that look like credentials
+  (`PASSWORD`, `SECRET`, `TOKEN`, ...) are masked as `***`.
+
+`minimal` stays byte-identical to 0.3.1 on every channel for messages that fit
+the channel limit; a truncated message now ends with `…` instead of a hard cut.
+
+### Fixed
+
+- Bot and webhook secrets no longer reach the logs. `httpx` logs every request
+  URL at `INFO`, and the Telegram Bot API only accepts the token as part of the
+  path, so the token appeared in stderr and in the rotated log file. Log output
+  is now redacted in the record and again at format time — covering tracebacks
+  as well — masking `api.telegram.org/bot<token>`, Slack and Discord webhook
+  paths, URL passwords, `?token=`/`?api_key=`-style query parameters and the
+  configured endpoint URLs by exact value (the case of a token in the path of an
+  arbitrary webhook host). The same filters cover the legacy console journal.
+- Captured credentials are no longer logged. The SMB fallback branch logged the
+  raw `logdata`, which can hold a password the canary captured; it now logs the
+  incident key.
+- Webhook, Slack and Discord URLs are hidden from `repr()` of the settings, and
+  configuration errors name the list position and host instead of echoing the
+  URL, so a bad entry cannot print its credential on startup.
+- SMTP no longer drops an alert when a honeypot field contains CR/LF. Header
+  values are flattened before rendering, and a rendering error is returned as a
+  failed delivery instead of escaping `dispatch`, so the incident is audited and
+  the remaining channels still receive it.
+
 ## [0.3.1] - 2026-10-26
 
 Internal refactor. Behaviour, public interfaces, Redis key layout and audit

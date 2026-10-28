@@ -68,6 +68,15 @@ class Incident(BaseModel):
 
     # --- Formatting (ported string-for-string from the legacy code) ---------
 
+    @property
+    def display_description(self) -> str:
+        """Human-facing incident name, falling back to the class constant.
+
+        Incidents rebuilt from Redis may carry an empty `description` when the
+        stored hash predates the field; alerts must still name the incident.
+        """
+        return self.description or self.DESCRIPTION
+
     def format_title(self) -> str:
         """One-line title used as an email/webhook subject."""
         return render_title(self.DESCRIPTION, self.src_host, self.node_id, self.dst_host)
@@ -246,7 +255,9 @@ class IncidentSMBFileOpen(Incident):
                 return None
             return str(entry.get("FILENAME", "")), str(entry.get("USER", ""))
         except (IndexError, TypeError):
-            logger.error("Could not extract SMB filename from log data: %r", self.logdata)
+            # Never log `logdata` itself: for an SMB incident it can hold a
+            # captured password, and this message goes to stderr and the log file.
+            logger.error("Could not extract the SMB file name from incident %s", self.key)
             return None
 
     def format_report(self) -> str:

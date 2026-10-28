@@ -353,7 +353,8 @@ class LongIncident:
 
 async def test_discord_switches_to_embed_for_long_reports() -> None:
     async with MockHTTPServer([(200, {})]) as server:
-        dispatcher = DiscordDispatcher(url=server.url("/discord"))
+        # `minimal` keeps the legacy reports this stub models.
+        dispatcher = DiscordDispatcher(url=server.url("/discord"), detail="minimal")
         try:
             result = await dispatcher.dispatch(LongIncident())
         finally:

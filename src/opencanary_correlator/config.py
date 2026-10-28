@@ -23,7 +23,9 @@ from opencanary_correlator.config_validation import (
     decode_incident_horizons,
     disable_health_port,
     health_allowlist_or_loopback,
+    normalise_alert_detail,
     normalise_health_host,
+    normalise_log_file,
     normalise_log_level,
     require_email_address,
     require_http_urls,
@@ -39,6 +41,10 @@ from opencanary_correlator.constants import INCIDENT_KEY_PREFIX, MAX_EVENT_COUNT
 _logger = logging.getLogger(__name__)
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+#: How much of an incident a channel puts in the message. ``minimal`` is the
+#: legacy single-line alert; see ``connectors.dispatchers.alert_text``.
+AlertDetail = Literal["minimal", "standard", "detailed"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
 
@@ -170,10 +176,14 @@ class Settings(BaseSettings):
     )
 
     # --- Dispatchers --------------------------------------------------------
-    webhook_urls: CommaSeparated = Field(default_factory=list)
+    # Webhook URLs carry their credential in the path or query string, so they
+    # are kept out of `repr()`: the docstring above promises that secrets never
+    # show up there, and a `repr()` in a traceback or debug print is exactly how
+    # such a promise gets broken. `--check-config` never prints them either.
+    webhook_urls: CommaSeparated = Field(default_factory=list, repr=False)
     slack_enabled: bool = True
-    slack_webhooks: CommaSeparated = Field(default_factory=list)
-    discord_webhooks: CommaSeparated = Field(default_factory=list)
+    slack_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
+    discord_webhooks: CommaSeparated = Field(default_factory=list, repr=False)
     telegram_token: SecretStr | None = None
     telegram_chat_ids: CommaSeparated = Field(default_factory=list)
 
@@ -188,8 +198,24 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     dispatch_timeout: float = Field(default=10.0, gt=0.0, le=300.0)
 
+    # --- Alert detail per channel -------------------------------------------
+    # `minimal` keeps the legacy message byte-for-byte; `standard` sends the
+    # multiline instance/attacker layout; `detailed` adds destination, counters
+    # and a redacted log summary. Chat channels default to the readable layout,
+    # while webhook and SMTP stay on the legacy text so existing SIEM parsers and
+    # mail filters keep working until the level is raised explicitly.
+    telegram_detail: AlertDetail = "standard"
+    slack_detail: AlertDetail = "standard"
+    discord_detail: AlertDetail = "standard"
+    webhook_detail: AlertDetail = "minimal"
+    smtp_detail: AlertDetail = "minimal"
+
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
+    # Operational log file. Empty means "stderr only", which is what containers
+    # rely on; a path adds a size-rotated UTF-8 file without changing stderr or
+    # the JSON audit stream on stdout. See `log_setup.py`.
+    log_file: str | None = Field(default=None, max_length=4096)
     # 0 is a valid input and means "disabled"; the before-validator maps it to
     # None, so the 1..65535 bound only applies to enabled ports.
     health_port: int | None = Field(default=8080, ge=0, le=65535)
@@ -258,6 +284,23 @@ class Settings(BaseSettings):
     @classmethod
     def _normalise_log_level(cls, value: Any) -> Any:
         return normalise_log_level(value)
+
+    @field_validator("log_file", mode="before")
+    @classmethod
+    def _normalise_log_file(cls, value: Any) -> Any:
+        return normalise_log_file(value)
+
+    @field_validator(
+        "telegram_detail",
+        "slack_detail",
+        "discord_detail",
+        "webhook_detail",
+        "smtp_detail",
+        mode="before",
+    )
+    @classmethod
+    def _normalise_alert_detail(cls, value: Any) -> Any:
+        return normalise_alert_detail(value)
 
     @field_validator("smtp_from")
     @classmethod

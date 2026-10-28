@@ -179,15 +179,29 @@ async def test_circuit_breaker_skips_after_repeated_failures(
     assert len(calls) == 6
 
 
-async def test_slack_uses_the_compact_report(incident_factory: Any) -> None:
+async def test_slack_minimal_detail_uses_the_compact_report(incident_factory: Any) -> None:
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(200)], calls))
-    dispatcher = SlackDispatcher(url="https://hooks.slack.test/x", client=client)
+    dispatcher = SlackDispatcher(url="https://hooks.slack.test/x", client=client, detail="minimal")
 
     result = await dispatcher.dispatch(incident_factory())
 
     assert result.status == "success"
     assert json.loads(calls[0].content)["text"].startswith("Canary Incident: FTP Login Attempt.")
+
+
+async def test_slack_sends_the_multiline_layout_by_default(incident_factory: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = SlackDispatcher(url="https://hooks.slack.test/x", client=client)
+
+    await dispatcher.dispatch(incident_factory())
+
+    text = json.loads(calls[0].content)["text"]
+    assert "\r\n" in text
+    assert "*Instance:* canary-1" in text
+    assert "*Attacker:* 10.0.0.5:40000" in text
+    assert "*Log:* USERNAME=admin" in text
 
 
 async def test_telegram_posts_chat_and_truncated_text(incident_factory: Any) -> None:
@@ -205,7 +219,9 @@ async def test_telegram_posts_chat_and_truncated_text(incident_factory: Any) -> 
 
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(200)], calls))
-    dispatcher = TelegramDispatcher(token="123:secret-token", chat_id="-100500", client=client)
+    dispatcher = TelegramDispatcher(
+        token="123:secret-token", chat_id="-100500", client=client, detail="minimal"
+    )
 
     result = await dispatcher.dispatch(LongIncident())
 
@@ -214,6 +230,22 @@ async def test_telegram_posts_chat_and_truncated_text(incident_factory: Any) -> 
     payload = json.loads(calls[0].content)
     assert payload["chat_id"] == "-100500"
     assert len(payload["text"]) == 4096
+    assert "parse_mode" not in payload
+
+
+async def test_telegram_sends_escaped_markdownv2_by_default(incident_factory: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = TelegramDispatcher(token="123:secret-token", chat_id="-100500", client=client)
+
+    await dispatcher.dispatch(incident_factory(node_id="canary (lab)"))
+
+    payload = json.loads(calls[0].content)
+    assert payload["parse_mode"] == "MarkdownV2"
+    assert "\r\n" in payload["text"]
+    # Reserved MarkdownV2 characters must be escaped or Telegram rejects the message.
+    assert "canary \\(lab\\)" in payload["text"]
+    assert "10\\.0\\.0\\.5" in payload["text"]
 
 
 async def test_telegram_token_never_appears_in_the_dispatch_result(incident_factory: Any) -> None:
@@ -259,7 +291,9 @@ async def test_discord_uses_embed_for_long_reports() -> None:
 
     calls: list[httpx.Request] = []
     client = make_client(scripted_handler([httpx.Response(204)], calls))
-    dispatcher = DiscordDispatcher(url="https://discord.test/webhook", client=client)
+    dispatcher = DiscordDispatcher(
+        url="https://discord.test/webhook", client=client, detail="minimal"
+    )
 
     result = await dispatcher.dispatch(LongIncident())
 
@@ -293,6 +327,57 @@ async def test_smtp_sends_email(incident_factory: Any) -> None:
     assert kwargs["hostname"] == "smtp.test"
     assert kwargs["start_tls"] is True
     assert kwargs["use_tls"] is False
+
+
+async def test_smtp_subject_cannot_be_split_by_a_payload(incident_factory: Any) -> None:
+    sent: list[Any] = []
+
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
+        sent.append(message)
+        return ({}, "ok")
+
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=25,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        send=fake_send,
+    )
+
+    result = await dispatcher.dispatch(incident_factory(node_id="canary\r\nBcc: evil@example.test"))
+
+    assert result.status == "success"
+    subject = sent[0]["Subject"]
+    assert "\r" not in subject
+    assert "\n" not in subject
+    # Flattened, not dropped: the forged header stays inside the subject line.
+    assert "Bcc: evil@example.test" in subject
+    assert "Bcc" not in sent[0]
+
+
+async def test_a_message_rendering_error_is_reported_not_raised(
+    monkeypatch: Any, incident_factory: Any
+) -> None:
+    async def fake_send(message: Any, **kwargs: Any) -> Any:  # pragma: no cover - must not run
+        raise AssertionError("send must not be called when rendering fails")
+
+    def boom(self: Any, incident: Any) -> Any:
+        raise ValueError("bad header")
+
+    monkeypatch.setattr(SmtpDispatcher, "build_message", boom)
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=25,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        send=fake_send,
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "error"
+    assert result.detail == "ValueError"
+    assert "bad header" not in repr(result)
 
 
 async def test_smtp_uses_implicit_tls(incident_factory: Any) -> None:

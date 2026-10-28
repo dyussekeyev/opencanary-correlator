@@ -54,6 +54,10 @@ services:
       # image HEALTHCHECK dials
       # 127.0.0.1 for a wildcard binding, so either value stays healthy.
       OCC_HEALTH_HOST: "${OCC_HEALTH_HOST:-127.0.0.1}"
+      # Operational log file inside the mounted volume. The `-` form (not `:-`)
+      # keeps an explicit empty value empty: `OCC_LOG_FILE=` in `.env` means
+      # "stderr only" and does not fall back to the path below.
+      OCC_LOG_FILE: "${OCC_LOG_FILE-/var/log/opencanary-correlator/logs/correlator.log}"
     # OCC_HEALTH_PORT is inherited from `.env`, so the listener and the image
     # HEALTHCHECK always agree; it stays container-internal because the probe
     # runs inside the container.
@@ -66,6 +70,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # Writable log volume for `OCC_LOG_FILE`; everything else is read-only. The
+    # mount point itself is root-owned (Docker does not carry the image
+    # directory's ownership onto the volume root), but the `logs/` directory
+    # inside it is copied from the image with the runtime UID/GID, so the
+    # unprivileged process can write there without a privileged init step.
+    volumes:
+      - correlator-logs:/var/log/opencanary-correlator
     read_only: true
     tmpfs:
       - /tmp
@@ -76,3 +87,4 @@ services:
 
 volumes:
   redis-data:
+  correlator-logs:

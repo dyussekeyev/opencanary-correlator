@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -23,6 +24,22 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+@pytest.fixture(autouse=True)
+def _drop_managed_log_handlers() -> Any:
+    """Detach handlers installed by `configure_logging` after every test.
+
+    The CLI sets up the root logger on the real object, so without this an
+    earlier test would keep writing into a temporary directory (or keep an
+    unflushed file descriptor alive) for the rest of the session.
+    """
+    yield
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "occ_managed", False):
+            root.removeHandler(handler)
+            handler.close()
 
 
 @pytest.fixture

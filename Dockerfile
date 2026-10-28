@@ -31,6 +31,13 @@ RUN groupadd --system --gid 10001 occ \
 
 COPY --from=builder /opt/venv /opt/venv
 
+# Directory for OCC_LOG_FILE, owned by the runtime user. A named volume mounted
+# on the parent starts out root-owned (Docker copies the image's content into the
+# volume but not the mount point's own ownership), so the log lives one level
+# down in `logs/`: that directory is copied into the volume with its 10001
+# ownership, which makes it writable without a privileged init step.
+RUN install -d -o 10001 -g 10001 -m 0750 /var/log/opencanary-correlator/logs
+
 USER 10001:10001
 
 # 8080 is only the default OCC_HEALTH_PORT; it stays container-internal.
