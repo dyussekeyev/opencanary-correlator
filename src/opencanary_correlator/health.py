@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
+from opencanary_correlator.config_validation import DEFAULT_HEALTH_HOST, DEFAULT_HEALTH_PORT
 from opencanary_correlator.connectors.receivers._allowlist import (
     AllowedNetworks,
     is_peer_allowed,
@@ -29,8 +30,8 @@ class HealthServer:
         self,
         store: RedisStore,
         *,
-        host: str = "0.0.0.0",  # noqa: S104 - probes are served on every interface by default
-        port: int = 8080,
+        host: str = DEFAULT_HEALTH_HOST,
+        port: int = DEFAULT_HEALTH_PORT,
         audit: AuditLogger | None = None,
         allowed_networks: AllowedNetworks = (),
     ) -> None:

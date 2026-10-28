@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from opencanary_correlator import metrics
-from opencanary_correlator.config import DEFAULT_HEALTH_HOST
+from opencanary_correlator.config import DEFAULT_HEALTH_HOST, DEFAULT_HEALTH_PORT
 from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.storage.redis_store import RedisStore
@@ -63,7 +63,7 @@ async def test_health_server_defaults_to_all_interfaces(monkeypatch: Any, fake_r
 
     await server.start()
 
-    assert captured == {"host": DEFAULT_HEALTH_HOST, "port": 8080}
+    assert captured == {"host": DEFAULT_HEALTH_HOST, "port": DEFAULT_HEALTH_PORT}
 
 
 async def test_health_server_binds_the_configured_host(monkeypatch: Any, fake_redis: Any) -> None:

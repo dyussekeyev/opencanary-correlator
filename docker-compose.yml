@@ -44,10 +44,14 @@ services:
       # Built from the same password as the Redis service. Use a URL-safe value
       # (letters, digits, `-` and `_`): the password is embedded in the URL unescaped.
       OCC_REDIS_URL: "redis://:${OCC_REDIS_PASSWORD:?set OCC_REDIS_PASSWORD in .env or the environment}@redis:6379/0"
+      # The receivers stay on the wildcard *inside* the container: Docker's port
+      # mapping forwards to the container's bridge address, so a loopback
+      # listener would be unreachable through the published port. The public
+      # binding is narrowed below, in `ports:`.
       OCC_TCP_HOST: 0.0.0.0
-      OCC_TCP_PORT: "1514"
+      OCC_TCP_PORT: "${OCC_TCP_PORT:-15140}"
       OCC_SYSLOG_HOST: 0.0.0.0
-      OCC_SYSLOG_PORT: "5514"
+      OCC_SYSLOG_PORT: "${OCC_SYSLOG_PORT:-15141}"
       # Interface the probe listener binds to. The loopback default keeps the
       # listener and /metrics inside the container; export
       # OCC_HEALTH_HOST=0.0.0.0 (or set it in `.env`) only when an external probe needs it. The
@@ -58,15 +62,22 @@ services:
       # keeps an explicit empty value empty: `OCC_LOG_FILE=` in `.env` means
       # "stderr only" and does not fall back to the path below.
       OCC_LOG_FILE: "${OCC_LOG_FILE-/var/log/opencanary-correlator/logs/correlator.log}"
-    # OCC_HEALTH_PORT is inherited from `.env`, so the listener and the image
-    # HEALTHCHECK always agree; it stays container-internal because the probe
-    # runs inside the container.
-    # TCP and UDP are published for external canaries. Enable the listener with
-    # OCC_SYSLOG_ENABLED=true, plus OCC_SYSLOG_UDP_ENABLED=true for UDP.
+    # OCC_HEALTH_PORT is inherited from `.env` (default 15142), so the listener
+    # and the image HEALTHCHECK always agree; it stays container-internal because
+    # the probe runs inside the container.
+    #
+    # Intake is published on **loopback** by default: the canary usually runs on
+    # this same host, and an intake port open on every interface is an
+    # unauthenticated write path into the incident store. The publish address is
+    # a variable, so widening it is a `.env` value that survives every compose
+    # update instead of an edit to this file. Canaries on other machines need
+    # OCC_TCP_PUBLISH_HOST=0.0.0.0 (and the syslog equivalent).
+    # Enable the syslog entries with OCC_SYSLOG_ENABLED=true, plus
+    # OCC_SYSLOG_UDP_ENABLED=true for UDP.
     ports:
-      - "1514:1514"
-      - "5514:5514/tcp"
-      - "5514:5514/udp"
+      - "${OCC_TCP_PUBLISH_HOST:-127.0.0.1}:${OCC_TCP_PORT:-15140}:${OCC_TCP_PORT:-15140}"
+      - "${OCC_SYSLOG_PUBLISH_HOST:-127.0.0.1}:${OCC_SYSLOG_PORT:-15141}:${OCC_SYSLOG_PORT:-15141}/tcp"
+      - "${OCC_SYSLOG_PUBLISH_HOST:-127.0.0.1}:${OCC_SYSLOG_PORT:-15141}:${OCC_SYSLOG_PORT:-15141}/udp"
     depends_on:
       redis:
         condition: service_healthy

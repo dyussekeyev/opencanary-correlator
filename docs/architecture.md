@@ -9,14 +9,14 @@ balancer.
 
 ```
  canary nodes                    correlator replica                 external
-┌────────────┐   TCP 1514   ┌──────────────────────────┐          ┌──────────┐
+┌────────────┐  TCP 15140   ┌──────────────────────────┐          ┌──────────┐
 │opencanaryd │─────────────▶│ TCPJSONReceiver          │          │  Redis   │
 │ SocketJSON │              │  line framer → Pydantic  │─────────▶│ windows  │
 │  Handler   │              │  → per-host lanes        │          │ incidents│
 └────────────┘              │  → rate limiter          │          │ locks    │
                             │        │                 │          │ dedup    │
 ┌────────────┐  TCP/UDP     │        ▼                 │          │ breaker  │
-│ SysLog     │ 5514         │ CorrelationEngine        │          └──────────┘
+│ SysLog     │ 15141        │ CorrelationEngine        │          └──────────┘
 │ Handler    │─────────────▶│  dedup → rules → merge   │
 └────────────┘              │        │                 │
                             │        ▼                 │          ┌──────────┐
@@ -35,6 +35,13 @@ probes and Prometheus scraping. It binds every interface by default and follows
 unauthenticated, so a wildcard binding should be firewalled or fronted by the
 network policy. Configuration is read once at startup; every credential comes
 from the environment or `.env`.
+
+The two event receivers are the opposite case: they bind `127.0.0.1` by default,
+because the correlator usually shares a host with its canary and every listener
+here accepts unauthenticated events. Remote canaries set `OCC_TCP_HOST` /
+`OCC_SYSLOG_HOST`. All three ports sit in an uncommon block (`15140` TCP JSON,
+`15141` syslog, `15142` health) so they cannot collide with the services a
+honeypot imitates — notably `8080`, the classic HTTP-alt port.
 
 ## Package map
 

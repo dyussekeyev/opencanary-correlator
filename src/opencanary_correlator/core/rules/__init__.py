@@ -5,6 +5,7 @@ from __future__ import annotations
 from opencanary_correlator.config import Settings
 from opencanary_correlator.core.incident import Incident, IncidentRepository
 from opencanary_correlator.core.rules.base import Rule
+from opencanary_correlator.core.rules.http import HttpRequestRule
 from opencanary_correlator.core.rules.login import LoginRule, build_login_rules
 from opencanary_correlator.core.rules.portscan import HostPortScanRule, NetworkPortScanRule
 from opencanary_correlator.core.rules.smb import SmbFileOpenRule
@@ -18,6 +19,7 @@ def build_rules(
 ) -> list[Rule]:
     """Build the default rule set."""
     rules: list[Rule] = list(build_login_rules(repository))
+    rules.append(HttpRequestRule(repository))
     rules.append(SmbFileOpenRule(repository))
     rules.append(HostPortScanRule(store=store, repository=repository, settings=settings))
     rules.append(NetworkPortScanRule(store=store, repository=repository, settings=settings))
@@ -26,6 +28,7 @@ def build_rules(
 
 __all__ = [
     "HostPortScanRule",
+    "HttpRequestRule",
     "Incident",
     "LoginRule",
     "NetworkPortScanRule",

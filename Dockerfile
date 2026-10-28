@@ -40,8 +40,8 @@ RUN install -d -o 10001 -g 10001 -m 0750 /var/log/opencanary-correlator/logs
 
 USER 10001:10001
 
-# 8080 is only the default OCC_HEALTH_PORT; it stays container-internal.
-EXPOSE 1514/tcp 5514/tcp 5514/udp 8080/tcp
+# 15142 is only the default OCC_HEALTH_PORT; it stays container-internal.
+EXPOSE 15140/tcp 15141/tcp 15141/udp 15142/tcp
 
 # Reads OCC_HEALTH_PORT from the environment (0/empty = endpoint disabled), so a
 # changed or disabled health listener never leaves the container permanently

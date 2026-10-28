@@ -19,6 +19,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from opencanary_correlator.config_validation import (
     DEFAULT_HEALTH_ALLOWED_IPS,
     DEFAULT_HEALTH_HOST,
+    DEFAULT_HEALTH_PORT,
+    DEFAULT_INTAKE_HOST,
     MAX_INCIDENT_HORIZON_SECONDS,
     decode_incident_horizons,
     disable_health_port,
@@ -105,13 +107,20 @@ class Settings(BaseSettings):
     )
 
     # --- Event intake -------------------------------------------------------
+    # Loopback by default: the common deployment runs the canary and the
+    # correlator on the same host, and an intake port open on every interface is
+    # an unauthenticated write path into the incident store. A remote canary
+    # needs OCC_TCP_HOST=0.0.0.0 (or the address it should listen on).
     tcp_enabled: bool = True
-    tcp_host: str = "0.0.0.0"  # noqa: S104 - network service default, override with OCC_TCP_HOST
-    tcp_port: int = Field(default=1514, ge=1, le=65535)
+    tcp_host: str = Field(default=DEFAULT_INTAKE_HOST, max_length=253)
+    # Ports are deliberately outside the well-known and emulated-service ranges:
+    # a honeypot imitates 21, 80, 443, 8080 and friends, so binding a correlator
+    # listener next to them invites collisions with the traps themselves.
+    tcp_port: int = Field(default=15140, ge=1, le=65535)
 
     syslog_enabled: bool = False
-    syslog_host: str = "0.0.0.0"  # noqa: S104 - network service default, override with OCC_SYSLOG_HOST
-    syslog_port: int = Field(default=5514, ge=1, le=65535)
+    syslog_host: str = Field(default=DEFAULT_INTAKE_HOST, max_length=253)
+    syslog_port: int = Field(default=15141, ge=1, le=65535)
     syslog_udp_enabled: bool = False
 
     # --- Hardening ----------------------------------------------------------
@@ -217,8 +226,9 @@ class Settings(BaseSettings):
     # the JSON audit stream on stdout. See `log_setup.py`.
     log_file: str | None = Field(default=None, max_length=4096)
     # 0 is a valid input and means "disabled"; the before-validator maps it to
-    # None, so the 1..65535 bound only applies to enabled ports.
-    health_port: int | None = Field(default=8080, ge=0, le=65535)
+    # None, so the 1..65535 bound only applies to enabled ports. The default
+    # avoids 8080, which honeypot modules imitate as an alternative HTTP port.
+    health_port: int | None = Field(default=DEFAULT_HEALTH_PORT, ge=0, le=65535)
     # Every interface by default, because probes often arrive from a different
     # pod or the Docker bridge. Set 127.0.0.1 (or ::1) to keep the unauthenticated
     # listener on loopback and reach it through a sidecar or `docker exec`.
@@ -379,6 +389,9 @@ class Settings(BaseSettings):
 
 
 __all__ = [
+    "DEFAULT_HEALTH_HOST",
+    "DEFAULT_HEALTH_PORT",
+    "DEFAULT_INTAKE_HOST",
     "INCIDENT_KEY_PREFIX",
     "LEGACY_DROPPED_PREFIXES",
     "LEGACY_INCIDENT_HORIZON_KEYS",

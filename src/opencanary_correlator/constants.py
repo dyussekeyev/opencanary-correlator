@@ -112,6 +112,7 @@ DEFAULT_EVENT_FIELDS: Final[dict[str, Any]] = {
 INCIDENT_KEY_PREFIX: Final[dict[str, str]] = {
     "ftp.login_attempt": "incident:ftplogin:",
     "http.login_attempt": "incident:httplogin:",
+    "http.request": "incident:httprequest:",
     "ssh.login_attempt": "incident:sshlogin:",
     "telnet.login_attempt": "incident:telnetlogin:",
     "httpproxy.login_attempt": "incident:httpproxylogin:",

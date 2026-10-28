@@ -18,7 +18,7 @@ Nothing has to change on the honeypot side.
 
 | Aspect | Behaviour |
 |---|---|
-| Transport | TCP, newline-delimited UTF-8 JSON, default port `1514` — exactly `opencanary.logger.SocketJSONHandler.makePickle()` (`record.getMessage() + "\n"`) |
+| Transport | TCP, newline-delimited UTF-8 JSON, default port `15140` — exactly `opencanary.logger.SocketJSONHandler.makePickle()` (`record.getMessage() + "\n"`) |
 | Syslog | RFC 6587 octet-counting or newline framing over TCP, one message per UDP datagram; JSON bodies become events, plain text becomes a synthetic `LOG_BASE_MSG` event |
 | Event fields | `src_host`, `src_port`, `dst_host`, `dst_port`, `logtype`, `node_id`, `local_time`, `utc_time`, `logdata` and any extra fields are preserved |
 | Lenient parsing | empty `src_host`, `-1` ports, hostnames, unknown `logtype` integers and unparsable timestamps are accepted, never rejected |
@@ -93,7 +93,7 @@ the correlator accepts it unmodified:
       "json-tcp": {
         "class": "opencanary.logger.SocketJSONHandler",
         "host": "correlator.example.internal",
-        "port": 1514
+        "port": 15140
       }
     }
   }
@@ -101,7 +101,13 @@ the correlator accepts it unmodified:
 ```
 
 For syslog, use `logging.handlers.SysLogHandler` pointing at `OCC_SYSLOG_HOST` /
-`OCC_SYSLOG_PORT` (UDP `5514` by default) and set `OCC_SYSLOG_ENABLED=true`.
+`OCC_SYSLOG_PORT` (UDP `15141` by default) and set `OCC_SYSLOG_ENABLED=true`.
+
+Both receivers bind to `127.0.0.1` by default: the usual deployment runs the
+canary and the correlator on one host, and an intake port open on every
+interface is an unauthenticated write path. A canary on another machine needs
+`OCC_TCP_HOST=0.0.0.0` (or its own address) — and the same for syslog — plus the
+firewall rule described in [Transport security](#transport-security).
 
 ### Migrating from the Python 2 release
 
@@ -338,19 +344,33 @@ The bundled Redis requires a password: `OCC_REDIS_PASSWORD` has no default, and
 compose refuses to start without it. Use letters, digits, `-` and `_` only, since
 the password is embedded in the correlator's `OCC_REDIS_URL` unescaped.
 
-The image runs as an unprivileged user, accepts canary JSON on `1514/tcp`, and
-includes the syslog receiver for `5514/tcp` + `5514/udp`. Base images (Python,
+The image runs as an unprivileged user, accepts canary JSON on `15140/tcp`, and
+includes the syslog receiver for `15141/tcp` + `15141/udp`. Base images (Python,
 the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
 build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
 that reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
 changing the port, narrowing the binding to loopback, or setting the port to `0`
 to disable the endpoint keeps the health status meaningful instead of probing a
-dead 8080 or the wrong address.
+dead `15142` or the wrong address.
 
-Compose publishes both intake ports, so external canaries can reach the handler
-without editing the file; set `OCC_SYSLOG_ENABLED=true` (and
+Compose publishes both intake ports **on `127.0.0.1` only**, because the canary
+normally shares the host with the correlator. The binding is a variable, so it
+survives `docker compose` updates instead of being re-widened by them:
+
+```bash
+# .env — canaries on other machines
+OCC_TCP_PUBLISH_HOST=0.0.0.0
+OCC_TCP_HOST=0.0.0.0          # inside the container
+OCC_SYSLOG_PUBLISH_HOST=0.0.0.0
+OCC_SYSLOG_HOST=0.0.0.0
+```
+
+`OCC_TCP_HOST`/`OCC_SYSLOG_HOST` stay `0.0.0.0` **inside** the container: Docker
+forwards the published port to the container's bridge address, so a loopback
+listener there would never be reached through the mapping. The loopback part of
+the default is the host-side publish address. Set `OCC_SYSLOG_ENABLED=true` (and
 `OCC_SYSLOG_UDP_ENABLED=true` for UDP) in `.env` to start the syslog listener.
-The health port stays container-internal. Inspect it with
+The health port (`15142`) stays container-internal. Inspect it with
 `docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
 yourself if an external probe needs it.
 
@@ -359,10 +379,10 @@ Compose passes `OCC_HEALTH_HOST` through from the shell or `.env`, defaulting to
 inside the container while the image `HEALTHCHECK` keeps reporting `healthy`.
 Set `OCC_HEALTH_HOST=0.0.0.0` only together with a published health port.
 
-The compose file starts Redis and the correlator on a private network. Restrict
-the published intake ports (`1514`, `5514`) to your canary network at the
-firewall or cloud security-group level; they accept untrusted traffic by
-design.
+The compose file starts Redis and the correlator on a private network. If you
+widen the published intake ports (`15140`, `15141`) to a network interface,
+restrict them to your canary subnet at the firewall or cloud security-group
+level; they accept untrusted traffic by design.
 
 ### Log files in Docker
 
@@ -423,9 +443,9 @@ private interface behind it; the tunnel is the only thing that reaches it.
 
 - **SSH local/remote forwarding.** On the honeypot, forward a local port to the
   correlator's intake port through a key-only SSH session, for example
-  `ssh -N -L 127.0.0.1:1514:127.0.0.1:1514 correlator-host` with the OpenCanary
-  `logger` pointed at `127.0.0.1:1514`. Restrict the key with
-  `permitopen="127.0.0.1:1514"` and `no-pty` in `authorized_keys`. Keep the
+  `ssh -N -L 127.0.0.1:15140:127.0.0.1:15140 correlator-host` with the OpenCanary
+  `logger` pointed at `127.0.0.1:15140`. Restrict the key with
+  `permitopen="127.0.0.1:15140"` and `no-pty` in `authorized_keys`. Keep the
   autossh or systemd unit that restarts it.
 - **WireGuard or IPsec site-to-site VPN.** Put the honeypots and the correlator
   on one tunnel subnet and point the intake to the tunnel address. Both are

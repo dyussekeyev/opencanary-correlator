@@ -3,6 +3,45 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.3] - 2026-10-28
+
+### Added
+
+- `http.request` incidents. OpenCanary logs a plain `GET` as `3000`, an
+  unsupported method as `3002` and a redirect as `3003`; all three were audited
+  as `event_unrouted` and dropped. They now create one incident type
+  (`incident:httprequest:<src_host>:<ts>`) whose alert shows the method, path,
+  virtual host and user agent. Login attempts on `3001` keep their separate
+  `http.login_attempt` incident. `http.request` is a valid key for
+  `OCC_INCIDENT_HORIZONS`.
+- `OCC_TCP_PUBLISH_HOST` and `OCC_SYSLOG_PUBLISH_HOST` set the host side of the
+  compose port mapping, defaulting to `127.0.0.1`.
+
+### Changed — breaking
+
+- **Intake binds loopback by default.** `OCC_TCP_HOST` and `OCC_SYSLOG_HOST`
+  default to `127.0.0.1` instead of `0.0.0.0`, and `docker compose` publishes
+  `15140` and `15141` on `127.0.0.1` only. An intake port reachable from the
+  network accepts unauthenticated events, and the usual deployment keeps the
+  canary on the same host. Canaries on other machines need
+  `OCC_TCP_HOST=0.0.0.0` (and the syslog equivalent) plus
+  `OCC_TCP_PUBLISH_HOST=0.0.0.0` / `OCC_SYSLOG_PUBLISH_HOST=0.0.0.0`; the publish
+  address is now a variable, so a compose update cannot widen it back.
+- **Uncommon default ports.** The correlator no longer listens next to the
+  services a honeypot imitates:
+
+  | Purpose | ≤ 0.3.2 | 0.3.3 |
+  |---|---|---|
+  | TCP JSON intake | `1514` | `15140` |
+  | Syslog TCP + UDP | `5514` | `15141` |
+  | Health and `/metrics` | `8080` | `15142` |
+
+  `8080` was the worst offender: honeypot modules emulate web services there, so
+  a trap and the metrics listener competed for one port. To keep the previous
+  layout, set `OCC_TCP_PORT=1514`, `OCC_SYSLOG_PORT=5514` and
+  `OCC_HEALTH_PORT=8080` in `.env`; the canary's `SocketJSONHandler` port must
+  match whichever value is configured.
+
 ## [0.3.2] - 2026-10-28
 
 ### Added

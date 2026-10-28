@@ -371,14 +371,14 @@ jobs:
               "local_time": "2026-10-24 10:00:00.000000",
               "logdata": {"USERNAME": "admin", "PASSWORD": "ci"},
           }
-          with socket.create_connection(("127.0.0.1", 1514), timeout=10) as connection:
+          with socket.create_connection(("127.0.0.1", 15140), timeout=10) as connection:
               connection.sendall((json.dumps(event) + "\n").encode("utf-8"))
           PY
       - name: Verify the Prometheus endpoint
         run: |
           metrics=""
           for _ in $(seq 1 15); do
-            metrics=$(docker compose exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/metrics', timeout=5).read().decode())")
+            metrics=$(docker compose exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:15142/metrics', timeout=5).read().decode())")
             if printf '%s\n' "$metrics" | grep -q '^opencanary_events_total'; then
               break
             fi
@@ -403,6 +403,21 @@ jobs:
           docker compose logs correlator | grep -q '"action":"startup"'
           docker compose exec -T correlator python -c 'import os; raise SystemExit(0 if os.getuid() == 10001 else 1)'
           test "$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q correlator)")" = "healthy"
+      - name: Publish the intake on loopback only
+        run: |
+          # The default must keep the canary on this host safe: the published port
+          # is bound to 127.0.0.1, not to every interface. Print what compose
+          # actually bound instead of trusting the file.
+          for mapping in 15140 15141; do
+            bound=$(docker compose port correlator "$mapping" | head -n 1 | tr -d '\r')
+            echo "$mapping -> $bound"
+            test "$bound" = "127.0.0.1:$mapping"
+          done
+          # Widening stays one variable away, and the value lives in the
+          # environment rather than in the compose file.
+          bound=$(OCC_TCP_PUBLISH_HOST=0.0.0.0 docker compose port correlator 15140 | head -n 1 | tr -d '\r')
+          echo "0.0.0.0 -> $bound"
+          test "$bound" = "0.0.0.0:15140"
       - name: Keep the container healthy with a loopback-only listener
         env:
           OCC_HEALTH_HOST: 127.0.0.1
@@ -414,7 +429,7 @@ jobs:
           services:
             correlator:
               ports:
-                - "127.0.0.1:18080:8080"
+                - "127.0.0.1:18080:15142"
           YAML
           compose=(docker compose -f docker-compose.yml -f /tmp/health-loopback.yml)
           "${compose[@]}" up -d --no-deps --force-recreate correlator
@@ -429,7 +444,7 @@ jobs:
           echo "health with OCC_HEALTH_HOST=${OCC_HEALTH_HOST}: $status"
           test "$status" = "healthy"
           # The listener answers on loopback inside the container ...
-          "${compose[@]}" exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status)"
+          "${compose[@]}" exec -T correlator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:15142/healthz', timeout=5).status)"
           # ... and is not bound to the container interface, so the published port
           # cannot reach it. This is what a wildcard binding would have allowed.
           if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/healthz', timeout=5)" 2>/dev/null; then

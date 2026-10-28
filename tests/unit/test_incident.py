@@ -12,6 +12,7 @@ from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.incident import (
     IncidentFTPLogin,
     IncidentHostPortScan,
+    IncidentHTTPRequest,
     IncidentNetworkPortScan,
     IncidentRepository,
     IncidentSMBFileOpen,
@@ -67,6 +68,36 @@ def test_smb_report_includes_file_and_user() -> None:
     assert "  File    : payroll.xlsx" in incident.format_report()
     assert "  User    : admin" in incident.format_report()
     assert 'File "payroll.xlsx", user "admin"' in incident.format_report_short()
+
+
+def test_http_request_report_shows_the_request_line() -> None:
+    incident = make_incident(
+        IncidentHTTPRequest,
+        logtype=3000,
+        dst_port=80,
+        logdata=json.dumps(
+            [{"METHOD": "GET", "PATH": "/admin", "HOST": "canary-1", "USERAGENT": "curl/8.4.0"}]
+        ),
+    )
+
+    report = incident.format_report()
+
+    assert "  Incident: HTTP Request" in report
+    assert "  Method  : GET" in report
+    assert "  Path    : /admin" in report
+    assert "  Host    : canary-1" in report
+    assert "  Agent   : curl/8.4.0" in report
+    assert 'GET "/admin" on canary-1' in incident.format_report_short()
+
+
+def test_http_request_report_without_logdata_falls_back_to_the_base_report() -> None:
+    incident = make_incident(IncidentHTTPRequest, logtype=3000, logdata=None)
+
+    assert "  Incident: HTTP Request" in incident.format_report()
+    assert "  Path" not in incident.format_report()
+    assert incident.format_report_short() == (
+        "Canary Incident: HTTP Request. Source 10.0.0.5. Target canary-1 (10.0.0.2)."
+    )
 
 
 def test_smb_report_without_logdata_falls_back_to_the_base_report() -> None:
@@ -620,6 +651,7 @@ async def test_incident_classes_are_registered() -> None:
     assert set(INCIDENT_TYPES) == {
         "ftp.login_attempt",
         "http.login_attempt",
+        "http.request",
         "ssh.login_attempt",
         "telnet.login_attempt",
         "httpproxy.login_attempt",

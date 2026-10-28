@@ -1,6 +1,6 @@
 """Docker health probe for the optional HTTP health endpoint.
 
-The image uses this module instead of hard-coding port 8080, so changing or
+The image uses this module instead of hard-coding the port, so changing or
 disabling ``OCC_HEALTH_PORT`` keeps the container's health status meaningful.
 ``0`` or an empty value means the endpoint is disabled and the check succeeds.
 
@@ -17,7 +17,7 @@ import sys
 from collections.abc import Callable, Mapping
 from http.client import HTTPConnection, HTTPException
 
-DEFAULT_HEALTH_PORT = 8080
+DEFAULT_HEALTH_PORT = 15142
 LOOPBACK_HOST = "127.0.0.1"
 WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})  # noqa: S104 - compared, never bound
 PROBE_TIMEOUT_SECONDS = 3.0

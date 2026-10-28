@@ -24,6 +24,16 @@ LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "127.0.0.1", "::
 TELEGRAM_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
 DEFAULT_HEALTH_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - probe endpoint defaults to every interface
 
+#: Port for the health and `/metrics` listener. 8080 is the classic HTTP-alt
+#: port and collides with the web services a honeypot imitates, so the default
+#: sits in the same uncommon block as the intake ports.
+DEFAULT_HEALTH_PORT: Final[int] = 15142
+
+#: Interface the event receivers bind to when nothing is configured. Loopback
+#: keeps the unauthenticated event intake off the network in the common
+#: single-host deployment; remote canaries set OCC_TCP_HOST/OCC_SYSLOG_HOST.
+DEFAULT_INTAKE_HOST: Final[str] = "127.0.0.1"
+
 #: Peers allowed to read the health and metrics endpoints when nothing is configured.
 DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 
@@ -197,6 +207,8 @@ def disable_health_port(value: Any) -> Any:
 __all__ = [
     "DEFAULT_HEALTH_ALLOWED_IPS",
     "DEFAULT_HEALTH_HOST",
+    "DEFAULT_HEALTH_PORT",
+    "DEFAULT_INTAKE_HOST",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
     "TELEGRAM_TOKEN_RE",

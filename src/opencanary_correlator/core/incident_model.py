@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict
 
-from opencanary_correlator.constants import DEFAULT_LOGTYPE
+from opencanary_correlator.constants import DEFAULT_LOGTYPE, LogType
 from opencanary_correlator.core.incident_report import (
     render_report,
     render_report_short,
@@ -22,6 +23,21 @@ from opencanary_correlator.core.incident_report import (
 )
 
 logger = logging.getLogger("opencanary_correlator.core.incident")
+
+
+#: Control characters would break the line layout of a plain-text report, and a
+#: value echoed from a request can be arbitrarily long or contain newlines.
+_REPORT_CONTROL: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
+_MAX_REPORT_FIELD: Final[int] = 200
+
+
+def _safe_field(value: Any) -> str:
+    """Render one log value as a single clipped printable line."""
+    text = _REPORT_CONTROL.sub(" ", str(value))
+    text = " ".join(text.split())
+    if len(text) > _MAX_REPORT_FIELD:
+        return text[: _MAX_REPORT_FIELD - 1] + "…"
+    return text
 
 
 def _entries(existing: str | None) -> list[Any]:
@@ -199,6 +215,70 @@ class IncidentTelnetLogin(Incident):
     DESCRIPTION = "Telnet Login Attempt"
 
 
+class IncidentHTTPRequest(Incident):
+    """A request that reached the canary HTTP service (log types 3000/3002/3003)."""
+
+    INCIDENT_NAME = "http.request"
+    DESCRIPTION = "HTTP Request"
+
+    def _http_details(self) -> tuple[str, str, str, str] | None:
+        """Return `(method, path, host, user agent)` from the first log entry."""
+        try:
+            entry = _entries(self.logdata)[0]
+        except (IndexError, TypeError):
+            logger.error("Could not extract HTTP request details from incident %s", self.key)
+            return None
+        if not isinstance(entry, dict):
+            logger.error("Could not extract HTTP request details from incident %s", self.key)
+            return None
+        method = entry.get("METHOD")
+        if not method and int(self.logtype) == int(LogType.LOG_HTTP_GET):
+            # A 3000 event is a GET by definition; older canaries omit the field.
+            method = "GET"
+        return (
+            _safe_field(method or ""),
+            _safe_field(entry.get("PATH", "")),
+            _safe_field(entry.get("HOST", "")),
+            _safe_field(entry.get("USERAGENT", "")),
+        )
+
+    def format_report(self) -> str:
+        details = self._http_details()
+        if details is None:
+            return super().format_report()
+        method, path, host, agent = details
+        extra = (
+            "".join(
+                f"  {label:<8}: {value}\n"
+                for label, value in (
+                    ("Method", method),
+                    ("Path", path),
+                    ("Host", host),
+                    ("Agent", agent),
+                )
+                if value
+            )
+            + "\n"
+        )
+        return render_report(
+            description=self.DESCRIPTION,
+            created=self.created,
+            src_host=self.src_host,
+            dst_host=self.dst_host,
+            node_id=self.node_id,
+            extra=extra,
+        )
+
+    def format_report_short(self) -> str:
+        details = self._http_details()
+        if details is None:
+            return super().format_report_short()
+        method, path, host, _agent = details
+        request = f'{method} "{path}"'.strip() if method else f'"{path}"'
+        suffix = f" on {host}" if host else ""
+        return super().format_report_short().rstrip(".") + f". Request {request}{suffix}."
+
+
 class IncidentHTTPProxy(Incident):
     INCIDENT_NAME = "httpproxy.login_attempt"
     DESCRIPTION = "HTTP Proxy Login Attempt"
@@ -350,6 +430,7 @@ INCIDENT_TYPES: Final[dict[str, type[Incident]]] = {
     for incident_cls in (
         IncidentFTPLogin,
         IncidentHTTPLogin,
+        IncidentHTTPRequest,
         IncidentSSHLogin,
         IncidentTelnetLogin,
         IncidentHTTPProxy,
@@ -373,6 +454,7 @@ __all__ = [
     "IncidentFTPLogin",
     "IncidentHTTPLogin",
     "IncidentHTTPProxy",
+    "IncidentHTTPRequest",
     "IncidentHostPortScan",
     "IncidentMSSQLLogin",
     "IncidentMySQLLogin",

@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from opencanary_correlator.config import DEFAULT_HEALTH_HOST, Settings
+from opencanary_correlator.config import DEFAULT_HEALTH_HOST, DEFAULT_HEALTH_PORT, Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_REDIS_URL = "redis://localhost:6379/0"
@@ -232,8 +232,19 @@ def test_health_port_zero_or_empty_disables_the_endpoint(settings_factory: Any, 
     assert settings.health_port is None
 
 
-def test_health_port_defaults_to_8080(settings_factory: Any) -> None:
-    assert settings_factory().health_port == 8080
+def test_health_port_default_avoids_the_emulated_http_port(settings_factory: Any) -> None:
+    assert settings_factory().health_port == DEFAULT_HEALTH_PORT
+    assert DEFAULT_HEALTH_PORT != 8080
+
+
+def test_intake_defaults_to_loopback_and_uncommon_ports(settings_factory: Any) -> None:
+    """The common deployment is one host, and honeypot traps own the common ports."""
+    settings = settings_factory()
+
+    assert settings.tcp_host == "127.0.0.1"
+    assert settings.syslog_host == "127.0.0.1"
+    assert (settings.tcp_port, settings.syslog_port) == (15140, 15141)
+    assert settings.tcp_port not in {21, 22, 23, 25, 80, 443, 8080, 8443}
 
 
 def test_health_port_reads_a_custom_value_from_the_environment(monkeypatch: Any) -> None:
