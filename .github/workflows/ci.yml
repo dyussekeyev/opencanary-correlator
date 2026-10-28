@@ -413,11 +413,19 @@ jobs:
             echo "$mapping -> $bound"
             test "$bound" = "127.0.0.1:$mapping"
           done
-          # Widening stays one variable away, and the value lives in the
-          # environment rather than in the compose file.
-          bound=$(OCC_TCP_PUBLISH_HOST=0.0.0.0 docker compose port correlator 15140 | head -n 1 | tr -d '\r')
-          echo "0.0.0.0 -> $bound"
-          test "$bound" = "0.0.0.0:15140"
+          # Widening stays one variable away. `docker compose port` reports the
+          # mapping of the container that is already running, so it cannot show
+          # what a changed variable would produce; the rendered configuration
+          # can, and that is what the next `up` would create.
+          default_ips=$(docker compose config | grep -c 'host_ip: 127.0.0.1')
+          # One variable per protocol family: the syslog mapping has its own.
+          widened_ips=$(
+            OCC_TCP_PUBLISH_HOST=0.0.0.0 OCC_SYSLOG_PUBLISH_HOST=0.0.0.0 \
+              docker compose config | grep -c 'host_ip: 0.0.0.0'
+          )
+          echo "loopback bindings: $default_ips, widened bindings: $widened_ips"
+          test "$default_ips" = "3"
+          test "$widened_ips" = "3"
       - name: Keep the container healthy with a loopback-only listener
         env:
           OCC_HEALTH_HOST: 127.0.0.1
