@@ -232,3 +232,99 @@ async def test_health_allowlist_gates_metrics_and_probes(
     if expected.endswith(b"Forbidden"):
         for response in (metrics_response, probe_response):
             assert response.endswith(b'{"error": "forbidden"}')
+
+
+def test_bound_port_before_start_raises(fake_redis: Any) -> None:
+    """A caller that reads the port before binding gets a clear error, not None."""
+    server = HealthServer(fake_redis, host="127.0.0.1", port=0)
+
+    with pytest.raises(RuntimeError, match="not started"):
+        _ = server.bound_port
+
+
+async def test_start_is_idempotent(fake_redis: Any) -> None:
+    """Starting twice must not bind a second listener on a different port."""
+    server = await start_server(fake_redis)
+    port = server.bound_port
+    try:
+        await server.start()
+        assert server.bound_port == port
+        assert (await http_get(port, "/healthz")).startswith(b"HTTP/1.1 200")
+    finally:
+        await server.stop()
+
+
+async def test_an_empty_connection_does_not_take_the_listener_down(fake_redis: Any) -> None:
+    """A TCP probe that connects and hangs up without a request line is normal."""
+    server = await start_server(fake_redis)
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.05)
+
+        response = await http_get(server.bound_port, "/healthz")
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 200")
+
+
+async def test_a_rejected_peer_is_audited(audit: Any, audit_stream: Any, fake_redis: Any) -> None:
+    """A 403 without an audit record leaves no trace of who probed the endpoint."""
+    server = HealthServer(
+        fake_redis,
+        host="127.0.0.1",
+        port=0,
+        audit=audit,
+        allowed_networks=parse_allowed_networks(["10.0.0.0/8"]),
+    )
+    await server.start()
+    try:
+        response = await http_get(server.bound_port, "/healthz")
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert "health_request_rejected" in audit_stream.getvalue()
+
+
+async def test_a_silent_probe_is_audited_as_a_timeout(
+    monkeypatch: Any, audit: Any, audit_stream: Any, fake_redis: Any
+) -> None:
+    """A connection that never sends a request must be closed and recorded.
+
+    Otherwise a slowloris on the probe port holds a task for the full timeout
+    and an operator cannot tell a hung probe from a dead endpoint.
+    """
+    from opencanary_correlator import health
+
+    monkeypatch.setattr(health, "_REQUEST_TIMEOUT", 0.05)
+    server = HealthServer(fake_redis, host="127.0.0.1", port=0, audit=audit)
+    await server.start()
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        await asyncio.sleep(0.3)
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await server.stop()
+
+    assert "health_request_failed" in audit_stream.getvalue()
+    assert "timeout" in audit_stream.getvalue()
+
+
+async def test_a_header_block_beyond_the_byte_budget_is_still_answered(fake_redis: Any) -> None:
+    """The drain loop stops at the budget instead of reading forever."""
+    server = await start_server(fake_redis)
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        writer.write(b"GET /healthz HTTP/1.1\r\nX-Long: " + b"a" * 9000 + b"\r\n\r\n")
+        await writer.drain()
+        data = await asyncio.wait_for(_reader.read(), timeout=2)
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await server.stop()
+
+    assert data.startswith(b"HTTP/1.1 200")
