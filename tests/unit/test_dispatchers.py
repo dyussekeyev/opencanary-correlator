@@ -8,6 +8,7 @@ from typing import Any
 import aiosmtplib
 import httpx
 import pytest
+from redis.exceptions import RedisError
 
 from opencanary_correlator.connectors.dispatchers import (
     CircuitBreaker,
@@ -609,3 +610,79 @@ async def test_a_huge_retry_after_is_clamped(incident_factory: Any) -> None:
 
     assert result.status == "success"
     assert delays == [60.0]
+
+
+class BrokenBreaker:
+    """Circuit breaker whose Redis is unreachable."""
+
+    async def allow(self) -> bool:
+        raise RedisError("redis is down")
+
+    async def record_failure(self) -> None:
+        raise RedisError("redis is down")
+
+    async def record_success(self) -> None:
+        raise RedisError("redis is down")
+
+    def __repr__(self) -> str:
+        return "BrokenBreaker"
+
+
+async def test_a_broken_breaker_does_not_skip_a_delivery(incident_factory: Any) -> None:
+    """Breaker state is an optimisation; a Redis outage must not refuse the channel.
+
+    Before this, `allow()` raised out of `dispatch`, the engine audited an
+    exception, and the endpoint never saw the alert even though it was healthy.
+    """
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        retry=fast_retry(),
+        sleep=no_sleep,
+        breaker=BrokenBreaker(),
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "success"
+    assert len(calls) == 1
+
+
+async def test_a_broken_breaker_cannot_turn_a_delivery_into_an_error(
+    incident_factory: Any,
+) -> None:
+    """Recording the success also touches Redis; failing to record is not a failure."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        retry=fast_retry(),
+        sleep=no_sleep,
+        breaker=BrokenBreaker(),
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.detail == ""
+    assert result.status == "success"
+
+
+async def test_a_broken_breaker_does_not_hide_a_real_failure(incident_factory: Any) -> None:
+    """The HTTP outcome is still reported when the breaker cannot record it."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(503)], calls))
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        retry=fast_retry(),
+        sleep=no_sleep,
+        breaker=BrokenBreaker(),
+    )
+
+    result = await dispatcher.dispatch(incident_factory())
+
+    assert result.status == "error"
+    assert result.detail == "http_503"

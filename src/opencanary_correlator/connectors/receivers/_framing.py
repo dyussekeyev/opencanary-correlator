@@ -46,10 +46,16 @@ def split_delimited(buffer: bytearray, *, max_bytes: int) -> tuple[list[bytes], 
         line = bytes(buffer[:index]).rstrip(b"\r")
         del buffer[: index + 1]
         if len(line) > max_bytes:
-            return [], True
+            # The frames before this one are complete and already parsed: the
+            # caller delivers them and then closes on `overflow`. Returning an
+            # empty list here dropped every event batched before the hostile one
+            # in the same TCP segment.
+            return payloads, True
         payloads.append(line)
     if len(buffer) > max_bytes:
-        return [], True
+        # An unterminated line over the limit: the buffer cannot be framed, but
+        # whatever was already extracted from this segment is still valid.
+        return payloads, True
     return payloads, False
 
 

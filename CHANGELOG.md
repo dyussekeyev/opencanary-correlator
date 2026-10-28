@@ -78,6 +78,26 @@ set the old values explicitly to keep the previous layout.
   audited as `event_ignored` at INFO instead of `event_unrouted` at WARNING.
   A plain-text syslog body becomes `1001`, so ordinary `opencanaryd` output no
   longer fills the warning stream; a genuinely unrouted type still does.
+- The Redis client now has a 5 s command timeout, a 5 s connect timeout and a
+  30 s idle health check (`RedisStore.from_url` also takes them as arguments).
+  A Redis that accepted the connection and then stopped answering used to hang
+  every `await` forever: ingestion, the health probe and alert delivery share one
+  event loop, so the process stopped serving with nothing in the log to say why.
+  A stalled command now fails, is audited, and leaves the process responsive.
+- A circuit breaker that cannot read its own state no longer decides delivery.
+  Breaker state lives in Redis, and `allow()` raising there refused a healthy
+  channel, while a failed `record_success()` reported a delivered alert as an
+  error. Breaker failures are logged at WARNING and the delivery proceeds; the
+  reported outcome is always the HTTP outcome.
+- A sender that packs several frames into one TCP segment and then exceeds the
+  line limit no longer loses the earlier frames: they were parsed, removed from
+  the buffer and dropped together with the hostile one.
+- The single-incident read returns `None` for a stored hash it cannot render
+  instead of raising. The listing already skipped and logged such a record, so
+  one corrupt field used to break the detail view while the list worked.
+- `OCC_VIRUSTOTAL_API_KEY` is part of the log redaction list. It travels in a
+  header, which `httpx` does not log, but an exception carrying the request
+  would have printed it.
 
 ### Fixed — internal
 

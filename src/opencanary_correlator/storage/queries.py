@@ -129,12 +129,22 @@ async def get_all_incidents(
 
 
 async def get_incident(store: RedisStore, key: str) -> dict[str, Any] | None:
-    """Return one incident with its host, or None when it is gone."""
+    """Return one incident with its host, or None when it is gone or unreadable.
+
+    A stored hash can be corrupt (a field written by an older build, a manual
+    edit). The listing already skips such a record and logs it; the detail view
+    used to raise instead, so one bad hash broke the single-incident read while
+    the list of the same data worked.
+    """
     fields = await store.hgetall(key)
     if not fields:
         return None
     host = await store.hgetall(device_key(fields.get("node_id", "")))
-    return _jsonify_incident(key, fields, host=host)
+    try:
+        return _jsonify_incident(key, fields, host=host)
+    except (KeyError, TypeError, ValueError):
+        logger.warning("could not render incident %s", key, exc_info=True)
+        return None
 
 
 async def get_unacknowledged_incidents(

@@ -46,6 +46,10 @@ def log_secrets(settings: Settings) -> tuple[str, ...]:
         secrets.append(settings.telegram_token.get_secret_value())
     if settings.smtp_password is not None:
         secrets.append(settings.smtp_password.get_secret_value())
+    if settings.virustotal_api_key is not None:
+        # Sent in a header, so httpx does not log it - but an exception carrying
+        # the request, or any future library that logs headers, would.
+        secrets.append(settings.virustotal_api_key.get_secret_value())
     return tuple(secrets)
 
 
