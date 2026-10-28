@@ -196,3 +196,98 @@ async def test_logdata_is_truncated_for_the_console(
     payload = (await get_all_incidents(store, include_hosts=False))[0]
 
     assert len(payload["logdata"]) == 100
+
+
+async def test_get_incident_returns_the_payload_with_its_host(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """The console reads one incident by key; it needs the device block too."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.hset_mapping(device_key("canary-1"), {"node_id": "canary-1", "name": "canary"})
+
+    payload = await get_incident(store, incident.key)
+
+    assert payload is not None
+    assert payload["key"] == incident.key
+    assert payload["host"] == {"node_id": "canary-1", "name": "canary"}
+
+
+async def test_an_incident_without_logdata_reports_no_logdata(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """A rule that captures nothing must not surface as `logdata: ""`."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.hdel(incident.key, "logdata")
+
+    payload = (await get_all_incidents(store))[0]
+
+    assert "logdata" not in payload
+
+
+async def test_unparseable_logdata_is_returned_as_stored(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """Legacy writers stored plain text; the console shows it instead of failing."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.hset(incident.key, "logdata", "not json")
+
+    payload = (await get_all_incidents(store))[0]
+
+    assert payload["logdata"] == "not json"
+
+
+async def test_mapping_logdata_is_not_truncated(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """Only the event list is a list; a mapping is passed through untouched."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.hset(incident.key, "logdata", json.dumps({"USERNAME": "admin"}))
+
+    payload = (await get_all_incidents(store))[0]
+
+    assert payload["logdata"] == {"USERNAME": "admin"}
+
+
+async def test_a_dangling_index_entry_is_skipped(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """An incident whose hash disappeared must not turn the listing into a 500."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.zadd(KEY_INCIDENTS, {"incident:ftplogin:gone:1": 1.0})
+
+    payloads = await get_all_incidents(store)
+
+    assert [payload["key"] for payload in payloads] == [incident.key]
+
+
+async def test_a_corrupt_incident_does_not_hide_the_healthy_ones(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """One unreadable hash is logged and skipped; the rest of the listing stands."""
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.zadd(KEY_INCIDENTS, {"incident:ftplogin:bad:2": 2.0})
+    await store.client.hset(
+        "incident:ftplogin:bad:2",
+        mapping={"node_id": "canary-1", "created": "yesterday", "logtype": "2000"},
+    )
+
+    payloads = await get_all_incidents(store)
+
+    assert [payload["key"] for payload in payloads] == [incident.key]
+
+
+async def test_the_device_block_is_shared_by_incidents_of_one_node(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """Two incidents from one canary both get the host, read once between them."""
+    first = await create_incident(store, settings_factory, audit, clock, event_factory)
+    clock.advance(1)
+    second = await create_incident(
+        store, settings_factory, audit, clock, event_factory, src_host="10.0.0.6"
+    )
+    await store.hset_mapping(device_key("canary-1"), {"node_id": "canary-1", "name": "canary"})
+
+    payloads = await get_all_incidents(store)
+
+    assert {payload["key"] for payload in payloads} == {first.key, second.key}
+    assert all(payload["host"]["name"] == "canary" for payload in payloads)

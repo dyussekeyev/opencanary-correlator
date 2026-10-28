@@ -236,3 +236,65 @@ async def test_an_empty_verdict_is_cached_briefly(store: Any) -> None:
     assert len(seen) == 1
     ttl_ms = await store.client.pttl(keys.enrichment_cache_key("vt", ATTACKER))
     assert 0 < ttl_ms <= 3_600_000
+
+
+async def test_a_cache_entry_that_fails_validation_is_a_miss(store: Any) -> None:
+    """An entry written by an older build must be re-queried, not trusted."""
+    await store.set_with_ttl(
+        keys.enrichment_cache_key("vt", ATTACKER), json.dumps({"malicious": "many"}), ttl=60
+    )
+    client, seen = make_client(store, [httpx.Response(200, json=PAYLOAD)])
+    try:
+        report, status = await client.report(ATTACKER)
+    finally:
+        await client.aclose()
+
+    assert status == "ok"
+    assert report is not None and report.malicious == 12
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"data": []},
+        {"data": {"attributes": {"last_analysis_stats": "nope"}}},
+        {"data": {"attributes": {"last_analysis_stats": {}}}},
+        [{"data": {}}],
+    ],
+    ids=["shapes-not-dicts", "stats-not-dict", "stats-empty", "payload-not-an-object"],
+)
+async def test_a_body_without_usable_stats_answers_no_data_without_raising(
+    store: Any, body: dict[str, Any]
+) -> None:
+    """A changed API shape answers "no data" and is cached like one.
+
+    Two of these carry no evidence at all (`data` and `stats` are not objects);
+    the third is VirusTotal's own empty verdict. None of them may raise, and the
+    second call must come from the cache instead of spending quota again.
+    """
+    client, seen = make_client(store, [httpx.Response(200, json=body)])
+    try:
+        first = await client.report(ATTACKER)
+        second = await client.report(ATTACKER)
+    finally:
+        await client.aclose()
+
+    assert first[1] == "ok"
+    assert second[1] == "ok"
+    assert second[0] == first[0]
+    assert len(seen) == 1
+
+
+async def test_the_client_closes_the_http_pool_it_created_itself(store: Any) -> None:
+    """Without a caller-supplied client, `aclose()` is what frees the pool.
+
+    There is no public handle on the pool, so the assertion inspects the
+    instance's own client: a leak here shows up as an unclosed transport at
+    shutdown.
+    """
+    client = VirusTotalClient(api_key="test-key", store=store)
+
+    await client.aclose()
+
+    assert client._client.is_closed
