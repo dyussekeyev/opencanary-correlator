@@ -191,7 +191,10 @@ jobs:
           enable-cache: true
       - name: Install the locked environment
         shell: bash
-        run: uv sync --extra dev --python "$(command -v python)"
+        # `sys.executable` rather than `command -v python`: in Git Bash the
+        # latter resolves to a path without the `.exe` suffix, which uv then
+        # reports as "No interpreter found at path".
+        run: uv sync --extra dev --python "$(python -c 'import sys; print(sys.executable)')"
       - name: Pytest
         shell: bash
         run: uv run pytest
