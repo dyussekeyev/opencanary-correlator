@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 import opencanary_correlator
+from opencanary_correlator import __version__
 from opencanary_correlator.cli import main
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -124,4 +125,4 @@ def test_module_entry_point_runs_from_the_repository_root() -> None:
     )
 
     assert result.returncode == 0
-    assert "opencanary-correlator 0.4.0" in result.stdout
+    assert f"opencanary-correlator {__version__}" in result.stdout
