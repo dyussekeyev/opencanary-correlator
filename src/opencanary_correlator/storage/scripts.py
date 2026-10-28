@@ -52,4 +52,19 @@ end
 return 1
 """
 
-__all__ = ["RELEASE_LOCK_LUA", "RESERVE_QUOTA_LUA", "SAVE_INCIDENT_LUA"]
+#: Turn a short dedup lease into a real window, but only while the key still holds
+#: our token. A GET-then-PEXPIRE pair is racy: a lease expiring in between would
+#: extend a claim another replica has since taken over.
+CONFIRM_DEDUP_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+__all__ = [
+    "CONFIRM_DEDUP_LUA",
+    "RELEASE_LOCK_LUA",
+    "RESERVE_QUOTA_LUA",
+    "SAVE_INCIDENT_LUA",
+]

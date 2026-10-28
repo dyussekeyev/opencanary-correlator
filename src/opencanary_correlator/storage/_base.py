@@ -19,6 +19,7 @@ from redis.commands.core import Script
 from redis.exceptions import RedisError
 
 from opencanary_correlator.storage.scripts import (
+    CONFIRM_DEDUP_LUA,
     RELEASE_LOCK_LUA,
     RESERVE_QUOTA_LUA,
     SAVE_INCIDENT_LUA,
@@ -59,12 +60,14 @@ class _StoreBase:
     _release_lock_script: Script
     _save_incident_script: Script
     _reserve_quota_script: Script
+    _confirm_dedup_script: Script
 
     def __init__(self, client: Redis) -> None:
         self._client = client
         self._release_lock_script = cast(Script, client.register_script(RELEASE_LOCK_LUA))
         self._save_incident_script = cast(Script, client.register_script(SAVE_INCIDENT_LUA))
         self._reserve_quota_script = cast(Script, client.register_script(RESERVE_QUOTA_LUA))
+        self._confirm_dedup_script = cast(Script, client.register_script(CONFIRM_DEDUP_LUA))
 
     @classmethod
     def from_url(

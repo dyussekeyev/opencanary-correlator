@@ -85,7 +85,7 @@ async def run_correlator(
     engine = CorrelationEngine(
         rules=build_rules(store, repository, settings),
         dispatchers=active_dispatchers,
-        dedup=DedupCache(store, ttl=settings.dedup_ttl),
+        dedup=DedupCache(store, ttl=settings.dedup_ttl, lease=settings.dedup_lease),
         settings=settings,
         audit=audit,
         enricher=enricher,

@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,
+  so a process that died mid-correlation left a key that made the canary's
+  redelivery look like a duplicate of work that never happened. The claim is now
+  a lease (`OCC_DEDUP_LEASE`, 10 s) that a successful correlation extends to the
+  full window with a compare-and-expire Lua script; a rule failure still releases
+  it, and a lease that expired first is audited as `event_dedup_lease_lost`.
+  Duplicate suppression is unchanged for a live claim, and the worst case for a
+  redelivery after a crash is an event counted twice, never an alert sent twice.
+
 - An event still queued when the drain before shutdown ran out of time was
   cancelled with the consumer tasks and left no record at all, so a restart with
   a backlog looked like events that were never sent. The backlog is counted and
