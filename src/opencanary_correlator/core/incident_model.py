@@ -22,6 +22,7 @@ from opencanary_correlator.core.incident_report import (
 )
 from opencanary_correlator.core.logdata import decode_logdata
 from opencanary_correlator.enrichment.models import Enrichment
+from opencanary_correlator.incident_specs import INCIDENT_SPECS, IncidentSpec
 from opencanary_correlator.redaction import sanitize_text
 
 logger = logging.getLogger("opencanary_correlator.core.incident")
@@ -183,26 +184,6 @@ class Incident(BaseModel):
         return existing or "[]"
 
 
-class IncidentFTPLogin(Incident):
-    INCIDENT_NAME = "ftp.login_attempt"
-    DESCRIPTION = "FTP Login Attempt"
-
-
-class IncidentHTTPLogin(Incident):
-    INCIDENT_NAME = "http.login_attempt"
-    DESCRIPTION = "HTTP Login Attempt"
-
-
-class IncidentSSHLogin(Incident):
-    INCIDENT_NAME = "ssh.login_attempt"
-    DESCRIPTION = "SSH Login Attempt"
-
-
-class IncidentTelnetLogin(Incident):
-    INCIDENT_NAME = "telnet.login_attempt"
-    DESCRIPTION = "Telnet Login Attempt"
-
-
 class IncidentHTTPRequest(Incident):
     """A request that reached the canary HTTP service (log types 3000/3002/3003)."""
 
@@ -265,51 +246,6 @@ class IncidentHTTPRequest(Incident):
         request = f'{method} "{path}"'.strip() if method else f'"{path}"'
         suffix = f" on {host}" if host else ""
         return super().format_report_short().rstrip(".") + f". Request {request}{suffix}."
-
-
-class IncidentHTTPProxy(Incident):
-    INCIDENT_NAME = "httpproxy.login_attempt"
-    DESCRIPTION = "HTTP Proxy Login Attempt"
-
-
-class IncidentMySQLLogin(Incident):
-    INCIDENT_NAME = "mysql.login_attempt"
-    DESCRIPTION = "MySQL Login Attempt"
-
-
-class IncidentMSSQLLogin(Incident):
-    INCIDENT_NAME = "mssql.login_attempt"
-    DESCRIPTION = "MSSQL Login Attempt"
-
-
-class IncidentTFTP(Incident):
-    INCIDENT_NAME = "tftp.action"
-    DESCRIPTION = "tftp login Attempt"
-
-
-class IncidentNTPMonList(Incident):
-    INCIDENT_NAME = "ntp.monlist"
-    DESCRIPTION = "NTP Login Attempt"
-
-
-class IncidentVNCLogin(Incident):
-    INCIDENT_NAME = "vnc.login_attempt"
-    DESCRIPTION = "VNC Login Attempt"
-
-
-class IncidentSNMP(Incident):
-    INCIDENT_NAME = "snmp.cmd"
-    DESCRIPTION = "SNMP Command Received"
-
-
-class IncidentRDPLogin(Incident):
-    INCIDENT_NAME = "rdp.login_attempt"
-    DESCRIPTION = "RDP Login Attempt"
-
-
-class IncidentSIPLogin(Incident):
-    INCIDENT_NAME = "sip.login_attempt"
-    DESCRIPTION = "SIP Login Attempt"
 
 
 class IncidentSMBFileOpen(Incident):
@@ -413,28 +349,61 @@ class IncidentNetworkPortScan(Incident):
         )
 
 
-INCIDENT_TYPES: Final[dict[str, type[Incident]]] = {
-    incident_cls.INCIDENT_NAME: incident_cls
-    for incident_cls in (
-        IncidentFTPLogin,
-        IncidentHTTPLogin,
-        IncidentHTTPRequest,
-        IncidentSSHLogin,
-        IncidentTelnetLogin,
-        IncidentHTTPProxy,
-        IncidentMySQLLogin,
-        IncidentMSSQLLogin,
-        IncidentTFTP,
-        IncidentNTPMonList,
-        IncidentVNCLogin,
-        IncidentSNMP,
-        IncidentRDPLogin,
-        IncidentSIPLogin,
-        IncidentSMBFileOpen,
-        IncidentHostPortScan,
-        IncidentNetworkPortScan,
+#: Types whose behaviour is more than the base report and are declared above.
+_CUSTOM_INCIDENTS: Final[tuple[type[Incident], ...]] = (
+    IncidentHTTPRequest,
+    IncidentSMBFileOpen,
+    IncidentHostPortScan,
+    IncidentNetworkPortScan,
+)
+
+
+def _simple_incident(spec: IncidentSpec) -> type[Incident]:
+    """Build the class for an incident type that needs no custom behaviour.
+
+    The name, description and key prefix live in `incident_specs`, so a type that
+    is listed there cannot be missing from the registry or from the prefix map.
+    """
+    return type(
+        spec.class_name,
+        (Incident,),
+        {
+            "__module__": __name__,
+            "__doc__": f"Incident for `{spec.name}`.",
+            "INCIDENT_NAME": spec.name,
+            "DESCRIPTION": spec.description,
+        },
     )
+
+
+_CUSTOM_NAMES: Final[frozenset[str]] = frozenset(
+    incident_cls.INCIDENT_NAME for incident_cls in _CUSTOM_INCIDENTS
+)
+
+INCIDENT_TYPES: Final[dict[str, type[Incident]]] = {
+    **{
+        spec.name: _simple_incident(spec)
+        for spec in INCIDENT_SPECS
+        if spec.name not in _CUSTOM_NAMES
+    },
+    **{incident_cls.INCIDENT_NAME: incident_cls for incident_cls in _CUSTOM_INCIDENTS},
 }
+
+# The exported names stay real module attributes: imports, `isinstance` checks and
+# tracebacks keep working, while the metadata has a single owner.
+IncidentFTPLogin: Final[type[Incident]] = INCIDENT_TYPES["ftp.login_attempt"]
+IncidentHTTPLogin: Final[type[Incident]] = INCIDENT_TYPES["http.login_attempt"]
+IncidentSSHLogin: Final[type[Incident]] = INCIDENT_TYPES["ssh.login_attempt"]
+IncidentTelnetLogin: Final[type[Incident]] = INCIDENT_TYPES["telnet.login_attempt"]
+IncidentHTTPProxy: Final[type[Incident]] = INCIDENT_TYPES["httpproxy.login_attempt"]
+IncidentMySQLLogin: Final[type[Incident]] = INCIDENT_TYPES["mysql.login_attempt"]
+IncidentMSSQLLogin: Final[type[Incident]] = INCIDENT_TYPES["mssql.login_attempt"]
+IncidentTFTP: Final[type[Incident]] = INCIDENT_TYPES["tftp.action"]
+IncidentNTPMonList: Final[type[Incident]] = INCIDENT_TYPES["ntp.monlist"]
+IncidentVNCLogin: Final[type[Incident]] = INCIDENT_TYPES["vnc.login_attempt"]
+IncidentSNMP: Final[type[Incident]] = INCIDENT_TYPES["snmp.cmd"]
+IncidentRDPLogin: Final[type[Incident]] = INCIDENT_TYPES["rdp.login_attempt"]
+IncidentSIPLogin: Final[type[Incident]] = INCIDENT_TYPES["sip.login_attempt"]
 
 __all__ = [
     "INCIDENT_TYPES",
