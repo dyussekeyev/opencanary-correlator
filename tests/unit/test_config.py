@@ -23,6 +23,53 @@ def test_redis_url_is_required(monkeypatch: Any) -> None:
         Settings(_env_file=None)
 
 
+def test_alert_detail_defaults_favour_readable_chat_messages(settings_factory: Any) -> None:
+    settings = settings_factory()
+
+    assert settings.telegram_detail == "standard"
+    assert settings.slack_detail == "standard"
+    assert settings.discord_detail == "standard"
+    # Legacy text stays the default where a parser or mail filter may depend on it.
+    assert settings.webhook_detail == "minimal"
+    assert settings.smtp_detail == "minimal"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("detailed", "detailed"),
+        ("DETAILED", "detailed"),
+        (" Standard ", "standard"),
+        ("minimal", "minimal"),
+        ("brief", "minimal"),
+        ("short", "minimal"),
+        ("full", "detailed"),
+        ("verbose", "detailed"),
+    ],
+)
+def test_alert_detail_is_normalised(settings_factory: Any, raw: str, expected: str) -> None:
+    settings = settings_factory(telegram_detail=raw)
+
+    assert settings.telegram_detail == expected
+
+
+@pytest.mark.parametrize("value", ["loud", "", "standard-ish"])
+def test_unknown_alert_detail_is_rejected(settings_factory: Any, value: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(discord_detail=value)
+
+
+def test_alert_detail_is_read_from_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_TELEGRAM_DETAIL", "detailed")
+    monkeypatch.setenv("OCC_WEBHOOK_DETAIL", "full")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_detail == "detailed"
+    assert settings.webhook_detail == "detailed"
+
+
 def test_reads_values_from_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("OCC_REDIS_URL", "rediss://redis.example:6380/1")
     monkeypatch.setenv("OCC_TCP_PORT", "1515")
@@ -35,6 +82,27 @@ def test_reads_values_from_environment(monkeypatch: Any) -> None:
     assert settings.tcp_port == 1515
     assert settings.log_level == "DEBUG"
     assert settings.webhook_urls == ["https://siem.example/hook", "https://backup.example/hook"]
+
+
+def test_log_file_defaults_to_stderr_only(settings_factory: Any) -> None:
+    assert settings_factory().log_file is None
+    assert settings_factory(log_file="   ").log_file is None
+
+
+def test_log_file_reads_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_LOG_FILE", "/var/log/opencanary-correlator/correlator.log")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.log_file == "/var/log/opencanary-correlator/correlator.log"
+
+
+def test_log_level_accepts_the_warn_alias(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_LOG_LEVEL", "warn")
+
+    assert Settings(_env_file=None).log_level == "WARNING"
 
 
 def test_accepts_json_encoded_lists(settings_factory: Any) -> None:
@@ -104,14 +172,28 @@ def test_secrets_never_appear_in_repr(settings_factory: Any) -> None:
     assert settings.telegram_token.get_secret_value() == "123456:telegram-secret"
 
 
+def _declared_setting(line: str) -> str | None:
+    """Return the setting named on an `OCC_...=` line, commented or not.
+
+    An optional setting has to be documented in a comment: `OCC_LOG_FILE=` and
+    "the line is absent" are not the same thing, because the compose file uses
+    `${OCC_LOG_FILE-default}` and only an empty value opts out of the volume.
+    """
+    stripped = line.strip().removeprefix("#").strip()
+    if not stripped.startswith("OCC_") or "=" not in stripped:
+        return None
+    return stripped.split("=", 1)[0].removeprefix("OCC_").lower()
+
+
 def test_env_example_documents_every_setting() -> None:
+    fields = set(Settings.model_fields)
     documented = {
-        line.split("=", 1)[0].removeprefix("OCC_").lower()
+        name
         for line in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
-        if line.startswith("OCC_")
+        if (name := _declared_setting(line)) in fields
     }
 
-    assert documented == set(Settings.model_fields)
+    assert documented == fields
 
 
 def test_per_incident_horizons_are_read_from_the_environment(monkeypatch: Any) -> None:

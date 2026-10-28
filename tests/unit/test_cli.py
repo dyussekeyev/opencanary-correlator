@@ -195,6 +195,46 @@ async def test_build_dispatchers_follows_settings(settings_factory: Any, store: 
         await asyncio.gather(*(dispatcher.aclose() for dispatcher in dispatchers))
 
 
+async def test_build_dispatchers_passes_the_configured_detail(
+    settings_factory: Any, store: Any, monkeypatch: Any
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class RecordingTelegram:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("opencanary_correlator.cli.TelegramDispatcher", RecordingTelegram)
+    settings = settings_factory(
+        telegram_detail="detailed",
+        telegram_token="1:token",
+        telegram_chat_ids=["1"],
+    )
+
+    dispatchers = build_dispatchers(settings, store)
+
+    assert len(dispatchers) == 1
+    assert captured["detail"] == "detailed"
+
+
+async def test_build_dispatchers_defaults_to_the_standard_detail(
+    settings_factory: Any, store: Any, monkeypatch: Any
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class RecordingTelegram:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("opencanary_correlator.cli.TelegramDispatcher", RecordingTelegram)
+    settings = settings_factory(telegram_token="1:token", telegram_chat_ids=["1"])
+
+    dispatchers = build_dispatchers(settings, store)
+
+    assert len(dispatchers) == 1
+    assert captured["detail"] == "standard"
+
+
 async def test_build_dispatchers_respects_disabled_channels(
     settings_factory: Any, store: Any
 ) -> None:
@@ -428,6 +468,36 @@ def test_main_reports_an_unreachable_redis_and_exits_1(monkeypatch: Any, capsys:
     assert store.closed is True
 
 
+def test_a_startup_failure_reaches_the_log_file(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.delenv("OCC_REDIS_URL", raising=False)
+    store = UnreachableStore()
+    monkeypatch.setattr(RedisStore, "from_url", lambda *args, **kwargs: store)
+    target = tmp_path / "correlator.log"
+
+    code = main(["--redis-url", "redis://127.0.0.1:6390/0", "--log-file", str(target)])
+
+    assert code == 1
+    text = target.read_text(encoding="utf-8")
+    assert "CRITICAL" in text
+    assert "cannot start: Redis is not reachable" in text
+
+
+def test_an_unhandled_error_is_logged_with_a_traceback(monkeypatch: Any, tmp_path: Any) -> None:
+    async def boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("correlator exploded")
+
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setattr("opencanary_correlator.cli.run_correlator", boom)
+    target = tmp_path / "correlator.log"
+
+    code = main(["--log-file", str(target)])
+
+    assert code == 1
+    text = target.read_text(encoding="utf-8")
+    assert "correlator stopped on an unhandled error" in text
+    assert "RuntimeError: correlator exploded" in text
+
+
 def test_main_reports_a_missing_legacy_config(monkeypatch: Any, capsys: Any, tmp_path: Any) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
     missing = tmp_path / "absent.conf"
@@ -501,6 +571,39 @@ def test_log_level_flag_overrides_the_environment(monkeypatch: Any, capsys: Any)
 
     assert code == 0
     assert json.loads(capsys.readouterr().out)["log_level"] == "DEBUG"
+
+
+def test_check_config_reports_the_log_file(monkeypatch: Any, capsys: Any, tmp_path: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_LOG_FILE", str(tmp_path / "correlator.log"))
+
+    code = main(["--check-config"])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["log_file"].endswith("correlator.log")
+
+
+def test_log_file_flag_writes_the_operational_log(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("OCC_LOG_FILE", raising=False)
+    target = tmp_path / "logs" / "correlator.log"
+
+    code = main(["--check-config", "--log-file", str(target)])
+    logging.getLogger("opencanary_correlator.test").warning("probe record")
+
+    assert code == 0
+    assert "probe record" in target.read_text(encoding="utf-8")
+
+
+def test_an_unwritable_log_file_stops_startup(monkeypatch: Any, capsys: Any, tmp_path: Any) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+
+    code = main(["--check-config", "--log-file", str(blocker / "correlator.log")])
+
+    assert code == 2
+    assert "cannot open the log file" in capsys.readouterr().err
 
 
 def test_channel_names_counts_every_telegram_chat(settings_factory: Any) -> None:

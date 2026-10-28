@@ -46,6 +46,7 @@ from the environment or `.env`.
 | `constants.py` | `LogType` registry, incident key prefixes, legacy Redis key names, defaults |
 | `redaction.py` | secret masking and control-character stripping for audit output |
 | `audit.py` | `AuditEvent`/`AuditLogger` JSON lines, `RedisLogHandler` for the bounded console log |
+| `log_setup.py` | root logger level, stderr handler and the optional size-rotated `OCC_LOG_FILE` handler; raises `LogSetupError` when the file cannot be opened |
 | `connectors/base.py` | `EventSink`, `RateLimiter`, `BaseReceiver`, `BaseDispatcher`, `DispatchResult` — the only types `core` may import |
 | `connectors/receivers/_base.py` | `NetworkReceiver`: shared scaffolding for TCP and UDP receivers (pipeline, counters, bound port, audit) |
 | `connectors/receivers/_tcp.py` | asyncio stream lifecycle: framing, 64 KiB cap, partial-line timeout, connection cap, TCP keep-alive |
@@ -256,9 +257,21 @@ health and metrics, and `OCC_HEALTH_HOST` chooses the interface they listen on
 - Audit output redacts keys matching `password|secret|token|api_key|auth|
   credential|private_key` and strips CR/LF/NUL, so honeypot data cannot forge
   audit lines or leak captured credentials.
+- Every log sink — stderr, `OCC_LOG_FILE` and the legacy console journal — is
+  treated as hostile territory. Records are flattened (C0 controls, DEL,
+  U+0085/U+2028/U+2029, which several collectors treat as line breaks) and
+  secrets are masked twice: at record level for handlers that format on their
+  own, and again in the formatter so `exc_info` tracebacks are covered. Masked
+  values are the configured endpoint URLs and tokens by exact match, plus
+  `api.telegram.org/bot<token>`, Slack/Discord webhook paths, `?token=`/
+  `?api_key=`-style query parameters and `scheme://user:pass@`.
+- Incident `logdata` is never logged raw: it can hold a password the canary
+  captured. Fallback branches log the incident key instead.
 - Redis URLs are masked in logs and `--check-config` output.
 - Webhook/Slack/Discord URLs must be `http(s)`; Telegram, SMTP credentials and
-  Redis passwords are held in `SecretStr` and never appear in `repr()`.
+  Redis passwords are held in `SecretStr` and never appear in `repr()`. The URL
+  list fields are `repr=False` for the same reason, and configuration errors name
+  the list position and host rather than echoing the URL.
 - SMTP supports both STARTTLS (`OCC_SMTP_STARTTLS`, port 587) and implicit TLS
   (`OCC_SMTP_USE_TLS`, port 465); enabling both is rejected at startup.
 - Prometheus labels are fixed and low-cardinality; incident keys, source
@@ -281,3 +294,8 @@ health and metrics, and `OCC_HEALTH_HOST` chooses the interface they listen on
 - **New rule** — subclass `Rule` (`matches`, `apply`), append it in
   `build_rules()` in `core/rules/__init__.py`; incidents are created through
   `IncidentRepository.record()` so locking, merging and dedup stay consistent.
+- **New log line or channel** — treat every log statement as a potential secret
+  sink: never log `logdata`, settings objects or raw URLs; put new configured
+  secrets into `cli.log_secrets()` so the exact-match redaction covers them, and
+  add the value to `tests/unit/test_secret_leaks.py`, which fails if a secret
+  appears in the log file, on stderr or in a delivered message.

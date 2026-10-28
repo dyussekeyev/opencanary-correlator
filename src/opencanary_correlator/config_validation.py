@@ -47,15 +47,26 @@ def split_comma_separated(value: Any) -> Any:
 
 
 def require_http_urls(value: list[str]) -> list[str]:
-    """Accept http(s) URLs only, and plain http only for loopback targets."""
-    for url in value:
+    """Accept http(s) URLs only, and plain http only for loopback targets.
+
+    The message never echoes the URL: webhook credentials live in the path or
+    the query string, and startup errors end up in stderr and in the container
+    log. The position in the list is enough to fix the entry.
+    """
+    for index, url in enumerate(value):
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            raise ValueError(f"webhook URL must be http(s): {url!r}")
+            raise ValueError(
+                f"webhook_urls[{index}] must be an http(s) URL, got "
+                f"scheme {parsed.scheme or '<none>'!r}"
+            )
         # Plain http leaves the payload (incident data, sometimes tokens in
         # the URL path) readable on the wire; only loopback may use it.
         if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
-            raise ValueError(f"webhook URL must use https unless it is loopback: {url!r}")
+            raise ValueError(
+                f"webhook_urls[{index}] must use https unless it is loopback "
+                f"(host {parsed.hostname!r})"
+            )
     return value
 
 
@@ -115,8 +126,42 @@ def require_redis_scheme(value: str) -> str:
 
 
 def normalise_log_level(value: Any) -> Any:
-    """Log levels are case-insensitive; store them upper-cased."""
-    return value.upper() if isinstance(value, str) else value
+    """Log levels are case-insensitive and accept the customary short aliases.
+
+    ``WARN`` and ``FATAL`` are what operators and existing cron wrappers type;
+    an unknown name is passed through so pydantic reports the allowed set.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip().upper()
+    return {"WARN": "WARNING", "FATAL": "CRITICAL"}.get(text, text)
+
+
+def normalise_log_file(value: Any) -> Any:
+    """Treat a blank path as "no log file" instead of the working directory.
+
+    An empty ``OCC_LOG_FILE`` is the documented way to keep stderr-only output,
+    and `Path("")` would otherwise point at the current directory.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def normalise_alert_detail(value: Any) -> Any:
+    """Alert detail levels are case-insensitive and accept short aliases.
+
+    Unknown values are passed through so pydantic reports the allowed set; a
+    silently coerced level would change what an operator sees in chat.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip().lower()
+    aliases = {"brief": "minimal", "short": "minimal", "full": "detailed", "verbose": "detailed"}
+    return aliases.get(text, text)
 
 
 def require_email_address(value: str) -> str:
@@ -158,7 +203,9 @@ __all__ = [
     "decode_incident_horizons",
     "disable_health_port",
     "health_allowlist_or_loopback",
+    "normalise_alert_detail",
     "normalise_health_host",
+    "normalise_log_file",
     "normalise_log_level",
     "require_email_address",
     "require_http_urls",

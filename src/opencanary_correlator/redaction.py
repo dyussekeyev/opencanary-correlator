@@ -22,7 +22,35 @@ SENSITIVE_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(
 #: Guards against pathological nesting coming from a malicious payload.
 MAX_REDACTION_DEPTH: Final[int] = 8
 
-_CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+#: C0 controls, DEL and the Unicode line/paragraph separators. `str.splitlines()`
+#: and several log shippers treat U+0085, U+2028 and U+2029 as line breaks, so they
+#: can forge a line in a file that a collector ingests even though the record has
+#: no CR/LF.
+_CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]"
+)
+
+#: Credentials embedded in URLs, which libraries log verbatim.
+#:
+#: ``httpx`` writes ``HTTP Request: POST <url>`` at INFO for every delivery, and
+#: the Telegram Bot API only accepts the token as part of the path — there is no
+#: header or body alternative. Slack and Discord webhook URLs carry their secret
+#: in the path too, and Redis/Vault-style URLs may carry a password.
+_URL_SECRET_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"(api\.telegram\.org/bot)\d+:[A-Za-z0-9_-]+"), r"\1***"),
+    (re.compile(r"(hooks\.slack\.com/services/)[A-Za-z0-9/_-]+"), r"\1***"),
+    (re.compile(r"(discord(?:app)?\.com/api/webhooks/)[A-Za-z0-9/_-]+"), r"\1***"),
+    (re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@]*:)[^@/\s]+@"), r"\1***@"),
+    # Generic webhooks (SIEM shims, chat bridges) often carry their credential in
+    # the query string, where `httpx` logs it verbatim.
+    (
+        re.compile(
+            r"(?i)([?&](?:access[_-]?token|token|api[_-]?key|key|secret|password|passwd"
+            r"|signature|sig|auth|credential)=)[^&\s#]+"
+        ),
+        r"\1***",
+    ),
+)
 
 
 def is_sensitive_key(key: str) -> bool:
@@ -33,6 +61,18 @@ def is_sensitive_key(key: str) -> bool:
 def sanitize_text(value: str) -> str:
     """Strip characters that could break the JSON-per-line audit stream."""
     return _CONTROL_CHARS.sub(" ", value.replace("\r", " ").replace("\n", " "))
+
+
+def redact_url_secrets(text: str) -> str:
+    """Mask credentials embedded in URLs inside free text.
+
+    Applied to log messages: `httpx` logs the full request URL at INFO, so a
+    Telegram bot token, a Slack/Discord webhook path or a Redis password would
+    reach stderr, the rotated log file and any collector reading them.
+    """
+    for pattern, replacement in _URL_SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def redact(value: Any, *, _depth: int = 0) -> Any:
@@ -67,5 +107,6 @@ __all__ = [
     "is_sensitive_key",
     "redact",
     "redact_mapping",
+    "redact_url_secrets",
     "sanitize_text",
 ]

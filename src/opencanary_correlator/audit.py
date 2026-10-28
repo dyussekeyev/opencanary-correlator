@@ -19,7 +19,7 @@ from typing import Any, Final, Literal, Protocol, TextIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from opencanary_correlator.redaction import redact_mapping
+from opencanary_correlator.redaction import redact_mapping, redact_url_secrets
 
 AuditStatus = Literal["success", "error", "info", "warning"]
 
@@ -39,8 +39,13 @@ class AuditEvent(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
     def to_json_line(self) -> str:
-        """Serialise to a single JSON line without embedded newlines."""
-        return self.model_dump_json()
+        """Serialise to a single JSON line without embedded newlines.
+
+        URL credentials are masked here as well as in the log pipeline: the
+        audit trail is ingested by Elastic/Wazuh, and a future record that
+        carries an endpoint URL must not bring a token with it.
+        """
+        return redact_url_secrets(self.model_dump_json())
 
 
 class AuditLogger:

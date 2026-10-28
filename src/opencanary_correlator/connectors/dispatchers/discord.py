@@ -10,10 +10,16 @@ from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from opencanary_correlator.connectors.base import IncidentLike
+from opencanary_correlator.connectors.dispatchers.alert_text import (
+    AlertDetail,
+    clip,
+    render_alert,
+)
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
 
 DISCORD_MAX_CONTENT = 2000
 DISCORD_MAX_EMBED_DESCRIPTION = 4096
+DISCORD_MAX_TITLE = 256
 DISCORD_ALERT_COLOR = 15_158_332  # #E74C3C
 
 
@@ -25,22 +31,27 @@ class DiscordDispatcher(HTTPDispatcher):
     def __init__(
         self,
         *,
+        detail: AlertDetail = "standard",
         expected_status: Sequence[int] = (200, 204),
         **kwargs: Any,
     ) -> None:
         """Discord answers `204 No Content` for a successful webhook execution."""
+        self._detail: AlertDetail = detail
         super().__init__(expected_status=expected_status, **kwargs)
 
     def build_payload(self, incident: IncidentLike) -> dict[str, Any]:
         """Use `content` when it fits, otherwise a single embed."""
-        short = incident.format_report_short()
-        if len(short) <= DISCORD_MAX_CONTENT:
-            return {"content": short}
+        body = render_alert(incident, detail=self._detail, flavor="discord")
+        if len(body) <= DISCORD_MAX_CONTENT:
+            return {"content": body}
+        # The embed has more room, so ``minimal`` falls back to the legacy full
+        # report instead of the short line that did not fit.
+        description = incident.format_report() if self._detail == "minimal" else body
         return {
             "embeds": [
                 {
-                    "title": incident.format_title()[:256],
-                    "description": incident.format_report()[:DISCORD_MAX_EMBED_DESCRIPTION],
+                    "title": clip(incident.format_title(), DISCORD_MAX_TITLE),
+                    "description": clip(description, DISCORD_MAX_EMBED_DESCRIPTION),
                     "color": DISCORD_ALERT_COLOR,
                 }
             ]
@@ -51,5 +62,6 @@ __all__ = [
     "DISCORD_ALERT_COLOR",
     "DISCORD_MAX_CONTENT",
     "DISCORD_MAX_EMBED_DESCRIPTION",
+    "DISCORD_MAX_TITLE",
     "DiscordDispatcher",
 ]

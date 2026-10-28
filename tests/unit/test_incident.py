@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -73,6 +74,18 @@ def test_smb_report_without_logdata_falls_back_to_the_base_report() -> None:
 
     assert "Shared File Opened" in incident.format_report()
     assert "EXTRA" not in incident.format_report()
+
+
+def test_smb_failure_never_logs_the_stored_payload(caplog: Any) -> None:
+    """The fallback branch used to log `logdata` raw, which can hold a password."""
+    incident = make_incident(IncidentSMBFileOpen, logdata='{"PASSWORD": "hunter2"')
+
+    with caplog.at_level(logging.ERROR, logger="opencanary_correlator.core.incident"):
+        report = incident.format_report()
+
+    assert "Shared File Opened" in report
+    assert "hunter2" not in caplog.text
+    assert incident.key in caplog.text
 
 
 def test_network_scan_report_lists_targets() -> None:

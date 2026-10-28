@@ -15,13 +15,23 @@ import aiosmtplib
 from pydantic import SecretStr
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
+from opencanary_correlator.connectors.dispatchers.alert_text import (
+    AlertDetail,
+    render_alert,
+)
 from opencanary_correlator.connectors.dispatchers.base import RetryPolicy
+from opencanary_correlator.redaction import sanitize_text
 
 SendFunction = Callable[..., Awaitable[Any]]
 
 
 class SmtpDispatcher(BaseDispatcher):
-    """Send incidents by email."""
+    """Send incidents by email.
+
+    ``detail`` selects the body layout: ``minimal`` keeps the legacy plain-text
+    report, ``standard`` and ``detailed`` send the multiline layout without
+    markup (mail clients do not render chat markdown).
+    """
 
     name: ClassVar[str] = "smtp"
 
@@ -32,6 +42,7 @@ class SmtpDispatcher(BaseDispatcher):
         port: int,
         sender: str,
         recipients: Sequence[str],
+        detail: AlertDetail = "minimal",
         username: str | None = None,
         password: SecretStr | None = None,
         start_tls: bool = True,
@@ -45,6 +56,7 @@ class SmtpDispatcher(BaseDispatcher):
         self._port = port
         self._sender = sender
         self._recipients = list(recipients)
+        self._detail: AlertDetail = detail
         self._username = username
         self._password = password
         self._start_tls = start_tls
@@ -55,12 +67,24 @@ class SmtpDispatcher(BaseDispatcher):
         self._sleep = sleep
 
     def build_message(self, incident: IncidentLike) -> EmailMessage:
-        """Render the plain-text alert email."""
+        """Render the plain-text alert email.
+
+        Header values go through :func:`sanitize_text`. `EmailMessage` already
+        rejects a header containing CR/LF, which blocks the injection, but the
+        rejection is an exception raised mid-render: the alert would be lost and
+        the payload (`node_id` is a honeypot field) could not be delivered at
+        all. Flattening the header keeps both properties.
+        """
         message = EmailMessage()
-        message["From"] = self._sender
-        message["To"] = ", ".join(self._recipients)
-        message["Subject"] = incident.format_title()
-        message.set_content(incident.format_report())
+        message["From"] = sanitize_text(self._sender)
+        message["To"] = sanitize_text(", ".join(self._recipients))
+        message["Subject"] = sanitize_text(incident.format_title())
+        body = (
+            incident.format_report()
+            if self._detail == "minimal"
+            else render_alert(incident, detail=self._detail, flavor="plain")
+        )
+        message.set_content(body)
         return message
 
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
@@ -68,7 +92,14 @@ class SmtpDispatcher(BaseDispatcher):
         if not self._recipients:
             return DispatchResult(dispatcher=self.name, status="skipped", detail="no_recipients")
 
-        message = self.build_message(incident)
+        try:
+            message = self.build_message(incident)
+        except (TypeError, ValueError) as exc:
+            # Rendering must not escape `dispatch`: the contract is to return the
+            # outcome, so a malformed incident is audited instead of surfacing as
+            # an exception and losing the delivery silently.
+            return DispatchResult(dispatcher=self.name, status="error", detail=type(exc).__name__)
+
         password = self._password.get_secret_value() if self._password else None
         detail = "no_attempt"
         for attempt in range(1, self._retry.attempts + 1):

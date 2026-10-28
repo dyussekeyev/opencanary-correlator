@@ -48,9 +48,28 @@ class AllowAllRateLimiter:
 
 
 class IncidentLike(Protocol):
-    """What dispatchers need from a correlated incident."""
+    """What dispatchers need from a correlated incident.
+
+    The scalar fields feed the rich alert layout (see
+    ``connectors.dispatchers.alert_text``); the ``format_*`` methods render the
+    legacy reports that ``minimal`` detail level still sends.
+    """
 
     key: str
+    node_id: str
+    src_host: str
+    src_port: int
+    dst_host: str
+    dst_port: int
+    created: int
+    events_count: int
+    logdata: str | None
+    description: str
+
+    @property
+    def display_description(self) -> str:
+        """Incident name to show in an alert."""
+        ...
 
     def format_title(self) -> str:
         """Short one-line title."""

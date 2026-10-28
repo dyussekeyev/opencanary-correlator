@@ -48,7 +48,9 @@ def test_require_http_urls_accepts_https_and_loopback_http(url: str) -> None:
     ],
 )
 def test_require_http_urls_rejects_non_https_remote_targets(url: str) -> None:
-    with pytest.raises(ValueError, match="webhook URL"):
+    # The message names the position, never the URL itself: it is printed on
+    # startup and a webhook URL may carry a credential.
+    with pytest.raises(ValueError, match=r"webhook_urls\[0\]"):
         cv.require_http_urls([url])
 
 
@@ -144,12 +146,48 @@ def test_require_redis_scheme_rejects_other_schemes(value: str) -> None:
         cv.require_redis_scheme(value)
 
 
+def test_webhook_url_errors_do_not_echo_the_url() -> None:
+    secret_url = "http://siem.example/hook/SECRETTOKEN?token=ALSOSECRET"
+
+    with pytest.raises(ValueError) as excinfo:
+        cv.require_http_urls([secret_url])
+
+    message = str(excinfo.value)
+    assert "webhook_urls[0]" in message
+    assert "siem.example" in message
+    assert "SECRETTOKEN" not in message
+    assert "ALSOSECRET" not in message
+
+
+def test_webhook_scheme_errors_name_the_scheme_only() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        cv.require_http_urls(["ftp://user:pass@siem.example/hook"])
+
+    message = str(excinfo.value)
+    assert "'ftp'" in message
+    assert "pass" not in message
+
+
 def test_normalise_log_level_uppercases_strings() -> None:
     assert cv.normalise_log_level("warning") == "WARNING"
 
 
 def test_normalise_log_level_passes_non_strings_through() -> None:
     assert cv.normalise_log_level(10) == 10
+
+
+def test_normalise_log_level_accepts_the_short_aliases() -> None:
+    assert cv.normalise_log_level("warn") == "WARNING"
+    assert cv.normalise_log_level(" Fatal ") == "CRITICAL"
+    # An unknown name is reported by pydantic instead of being guessed.
+    assert cv.normalise_log_level("verbose") == "VERBOSE"
+
+
+def test_normalise_log_file_blank_becomes_none() -> None:
+    assert cv.normalise_log_file("") is None
+    assert cv.normalise_log_file("   ") is None
+    assert cv.normalise_log_file(None) is None
+    assert cv.normalise_log_file(" /var/log/occ.log ") == "/var/log/occ.log"
 
 
 @pytest.mark.parametrize("value", ["ops@example.com", "a@b"])

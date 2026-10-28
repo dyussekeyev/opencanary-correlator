@@ -72,8 +72,8 @@ OCC_SLACK_WEBHOOKS=https://hooks.slack.com/services/...
 ```
 
 CLI flags: `--config PATH` (import a legacy JSON `.conf`), `--redis-url URL`,
-`--log-level LEVEL`, `--health-port PORT` (`0` disables), `--check-config`,
-`--version`.
+`--log-level LEVEL`, `--log-file PATH`, `--health-port PORT` (`0` disables),
+`--check-config`, `--version`.
 
 While it runs, the service also appends its own log lines to the legacy `logs`
 Redis list (newest first, trimmed to 1000), so the old console shows a populated
@@ -135,10 +135,43 @@ override re-enables it.
 | Channel | Settings |
 |---|---|
 | Generic webhook / SIEM | `OCC_WEBHOOK_URLS` — JSON `{"title", "text", "key"}`, one URL per delivery |
-| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, compact report in `text` |
+| Slack | `OCC_SLACK_ENABLED`, `OCC_SLACK_WEBHOOKS` — incoming webhook, report in `text` |
 | Telegram | `OCC_TELEGRAM_TOKEN`, `OCC_TELEGRAM_CHAT_IDS` — one message per chat, truncated to 4096 chars |
 | Discord | `OCC_DISCORD_WEBHOOKS` — `content` under 2000 chars, otherwise a single embed; both `200` and `204 No Content` count as success |
 | SMTP | `OCC_SMTP_ENABLED`, `OCC_SMTP_HOST`, `OCC_SMTP_PORT`, `OCC_SMTP_FROM`, `OCC_SMTP_TO`, optional `OCC_SMTP_USERNAME` / `OCC_SMTP_PASSWORD`, `OCC_SMTP_STARTTLS` (port 587), `OCC_SMTP_USE_TLS` (implicit TLS, usually port 465; mutually exclusive with STARTTLS) |
+
+### Message detail
+
+Each channel has its own detail level: `OCC_TELEGRAM_DETAIL`, `OCC_SLACK_DETAIL`,
+`OCC_DISCORD_DETAIL`, `OCC_WEBHOOK_DETAIL` and `OCC_SMTP_DETAIL`. Three values
+are accepted (case-insensitive; `brief`/`short` mean `minimal`, `full`/`verbose`
+mean `detailed`):
+
+| Level | Message |
+|---|---|
+| `minimal` | The legacy alert, byte-identical for messages that fit the channel limit |
+| `standard` | Instance name and IP, then attacker IP and source port, the detection time and a one-entry log summary |
+| `detailed` | `standard` plus destination address, event count and up to three log entries |
+
+Lines are separated with CRLF, and chat channels use their native markup:
+MarkdownV2 for Telegram (with every field escaped, so no payload can break the
+message), mrkdwn for Slack and markdown for Discord. Chat channels default to
+`standard`; webhook and SMTP default to `minimal`, so existing SIEM parsers and
+mail filters keep receiving exactly the legacy text until you raise the level.
+Log values whose key looks like a credential (`PASSWORD`, `SECRET`, `TOKEN`,
+`AUTH`, ...) are masked as `***` at every level that shows log data.
+
+```
+🛡 OpenCanary: *RDP Login Attempt*
+
+🖥 *Instance:* opencanary-embassy
+🌐 *IP:* 89.126.202.164
+
+🎯 *Attacker:* 66.132.159.132:52344
+🕒 *Time:* 2026-10-26 07:01:15 UTC
+
+📝 *Log:* USERNAME=admin, PASSWORD=***
+```
 
 HTTP channels retry 429/5xx and transport errors three times with exponential
 backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
@@ -247,8 +280,52 @@ The container `HEALTHCHECK` follows both variables: it dials `OCC_HEALTH_HOST`
 (`127.0.0.1` when it is unset, blank, `0.0.0.0` or `::`; `::1` and explicit addresses are used as given) and skips the request
 entirely when the port is `0`.
 
-Audit records are JSON lines on stdout — see
-[docs/audit-events.md](docs/audit-events.md).
+### Logs
+
+The service keeps three separate streams, so container setups and file-based
+deployments both work:
+
+| Stream | Where | What |
+|---|---|---|
+| Operational log | stderr, plus `OCC_LOG_FILE` when set | Timestamp, level, logger and message: receiver errors, dispatcher failures, shutdown problems, Redis errors |
+| Audit trail | stdout | One JSON object per line (`timestamp`, `component`, `action`, `status`, `details`) — see [docs/audit-events.md](docs/audit-events.md) |
+| Legacy console journal | Redis `logs` list | The operational lines mirrored for the legacy console |
+
+`OCC_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+(case-insensitive; `WARN` and `FATAL` are accepted too) and defaults to `INFO`.
+Use `DEBUG` when chasing a correlation or dispatch problem; `INFO` is enough to
+see every failed delivery, rejected event and start/stop reason.
+
+`OCC_LOG_FILE` adds a log file next to stderr without removing it, so
+`docker logs` keeps working. The file is UTF-8, rotates at 10 MiB and keeps 5
+backups (`correlator.log`, `correlator.log.1`, …); its directory is created if
+missing. An empty value means stderr only, which is enough when the runtime
+already collects stderr; the bundled `docker-compose.yml` instead mounts a
+volume and points this variable at it — see
+[Log files in Docker](#log-files-in-docker).
+If the file cannot be opened the correlator exits with code `2` and prints the
+reason instead of running blind.
+
+A fatal startup failure and an unhandled crash are logged at `CRITICAL` with
+their traceback, so the file always explains why the process stopped; startup
+and shutdown records stay in the JSON audit trail on stdout.
+
+Every line is flattened (CR/LF, control characters and the Unicode line
+separators `U+0085/U+2028/U+2029` become spaces) and secrets are masked before
+it reaches stderr, the file, the audit trail or the legacy console journal,
+including inside tracebacks: bot tokens, webhook paths and `?token=`-style query
+parameters, `user:pass@` URL passwords, and the configured endpoints by exact
+value (which covers a token in the path of an arbitrary webhook host). That matters because
+`httpx` logs every request URL at `INFO`, and the Telegram Bot API only accepts
+the bot token as part of the path — there is no header or body alternative —
+while Slack and Discord webhook URLs carry their secret in the path as well. A
+delivery line therefore reads
+`POST https://api.telegram.org/bot***/sendMessage` instead of exposing the token.
+
+```dotenv
+OCC_LOG_LEVEL=DEBUG
+OCC_LOG_FILE=/var/log/opencanary-correlator/logs/correlator.log
+```
 
 ## Docker
 
@@ -286,6 +363,52 @@ The compose file starts Redis and the correlator on a private network. Restrict
 the published intake ports (`1514`, `5514`) to your canary network at the
 firewall or cloud security-group level; they accept untrusted traffic by
 design.
+
+### Log files in Docker
+
+Compose mounts the named volume `correlator-logs` at
+`/var/log/opencanary-correlator` and sets
+`OCC_LOG_FILE=/var/log/opencanary-correlator/logs/correlator.log`, so the rotated
+log survives container restarts and a file-based agent (Wazuh, Filebeat, Fluent
+Bit) or `docker compose cp` can collect it. `docker logs` is unchanged: stderr
+still receives the same lines, and the JSON audit trail still goes to stdout.
+
+The extra `logs/` level is deliberate. Docker creates the root of a named volume
+as `root:root` and only copies the *content* of the image directory into it, not
+the mount point's own ownership, so the process running as UID 10001 could not
+create a file directly under the mount. The image ships
+`/var/log/opencanary-correlator/logs` owned by `10001:10001`, and that directory
+is copied into the volume with its ownership intact.
+
+Read or copy it from the host:
+
+```bash
+docker compose exec correlator tail -f /var/log/opencanary-correlator/logs/correlator.log
+docker compose cp correlator:/var/log/opencanary-correlator/logs/correlator.log ./correlator.log
+```
+
+To let an agent read a host directory directly, swap the named volume for a bind
+mount:
+
+```yaml
+    volumes:
+      - ./logs:/var/log/opencanary-correlator
+```
+
+A bind mount does not inherit the image's ownership either, so hand the directory
+to the container user first: `sudo mkdir -p ./logs && sudo chown -R 10001:10001 ./logs`.
+The correlator then creates the `logs/` subdirectory itself before opening the
+file.
+
+Rotation bounds the volume: 10 MiB per file and 5 backups, so at most 60 MiB,
+regardless of how long the container runs.
+
+To keep the volume mounted but stop writing the file, set an empty value in
+`.env` — compose passes it through as-is and the correlator falls back to stderr:
+
+```dotenv
+OCC_LOG_FILE=
+```
 
 ### Transport limitation: honeypot traffic is plaintext
 

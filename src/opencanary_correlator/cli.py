@@ -42,6 +42,14 @@ from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.health import HealthServer
+from opencanary_correlator.log_setup import (
+    LOG_DATE_FORMAT,
+    LogSetupError,
+    RedactingFormatter,
+    SecretRedactionFilter,
+    SingleLineFilter,
+    configure_logging,
+)
 from opencanary_correlator.storage.rate_limit import RedisRateLimiter
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -72,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="override OCC_LOG_LEVEL",
     )
     parser.add_argument(
+        "--log-file",
+        metavar="PATH",
+        help="override OCC_LOG_FILE (adds a rotated log file next to stderr)",
+    )
+    parser.add_argument(
         "--health-port",
         type=int,
         help="override OCC_HEALTH_PORT (0 disables the endpoint)",
@@ -98,6 +111,8 @@ def load_settings(args: argparse.Namespace) -> Settings:
         overrides["redis_url"] = args.redis_url
     if args.log_level:
         overrides["log_level"] = args.log_level.upper()
+    if args.log_file:
+        overrides["log_file"] = args.log_file
     if args.health_port is not None:
         overrides["health_port"] = args.health_port if args.health_port > 0 else None
     if args.config:
@@ -114,6 +129,29 @@ def safe_redis_url(url: str) -> str:
             netloc += f":{parts.port}"
         parts = parts._replace(netloc=netloc)
     return urlunsplit(parts)
+
+
+def log_secrets(settings: Settings) -> tuple[str, ...]:
+    """Values that must never survive into a log line.
+
+    For webhook URLs only the path and query are returned: they hold the
+    credential, while the scheme and host keep the line readable. That literal
+    match is what covers an arbitrary webhook host whose secret sits in a path
+    segment, which no URL pattern can recognise. The Telegram token is matched
+    on its own, because the Bot API requires it inside the path of ``/bot<id>:<token>``
+    and the pattern pass already knows that shape.
+    """
+    secrets: list[str] = []
+    for url in (*settings.webhook_urls, *settings.slack_webhooks, *settings.discord_webhooks):
+        parts = urlsplit(url)
+        tail = parts.path if not parts.query else f"{parts.path}?{parts.query}"
+        if len(tail) > 1:  # a bare "/" carries no secret
+            secrets.append(tail)
+    if settings.telegram_token is not None:
+        secrets.append(settings.telegram_token.get_secret_value())
+    if settings.smtp_password is not None:
+        secrets.append(settings.smtp_password.get_secret_value())
+    return tuple(secrets)
 
 
 def describe_settings(settings: Settings) -> dict[str, Any]:
@@ -139,8 +177,16 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "max_stored_events": settings.max_stored_events,
         "incident_lookup_scan_limit": settings.incident_lookup_scan_limit,
         "dispatch_timeout": settings.dispatch_timeout,
+        "alert_detail": {
+            "telegram": settings.telegram_detail,
+            "slack": settings.slack_detail,
+            "discord": settings.discord_detail,
+            "webhook": settings.webhook_detail,
+            "smtp": settings.smtp_detail,
+        },
         "channels": channel_names(settings),
         "log_level": settings.log_level,
+        "log_file": settings.log_file,
     }
 
 
@@ -170,21 +216,30 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
         channel: str,
         urls: Sequence[str],
         factory: Callable[..., BaseDispatcher],
+        detail: str,
     ) -> None:
         # One dispatcher per URL, each guarded by its own circuit breaker.
         for url in urls:
-            dispatchers.append(factory(url=url, timeout=timeout, breaker=breaker(channel, url)))
+            dispatchers.append(
+                factory(
+                    url=url,
+                    timeout=timeout,
+                    breaker=breaker(channel, url),
+                    detail=detail,
+                )
+            )
 
-    add_endpoints("webhook", settings.webhook_urls, WebhookDispatcher)
+    add_endpoints("webhook", settings.webhook_urls, WebhookDispatcher, settings.webhook_detail)
     if settings.slack_enabled:
-        add_endpoints("slack", settings.slack_webhooks, SlackDispatcher)
-    add_endpoints("discord", settings.discord_webhooks, DiscordDispatcher)
+        add_endpoints("slack", settings.slack_webhooks, SlackDispatcher, settings.slack_detail)
+    add_endpoints("discord", settings.discord_webhooks, DiscordDispatcher, settings.discord_detail)
     if settings.telegram_token is not None:
         for chat_id in settings.telegram_chat_ids:
             dispatchers.append(
                 TelegramDispatcher(
                     token=settings.telegram_token,
                     chat_id=chat_id,
+                    detail=settings.telegram_detail,
                     timeout=timeout,
                     breaker=breaker("telegram", chat_id),
                 )
@@ -196,6 +251,7 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
                 port=settings.smtp_port,
                 sender=settings.smtp_from,
                 recipients=settings.smtp_to,
+                detail=settings.smtp_detail,
                 username=settings.smtp_username,
                 password=settings.smtp_password,
                 start_tls=settings.smtp_starttls,
@@ -319,6 +375,15 @@ async def run_correlator(
     stop = stop_event or asyncio.Event()
     install_signal_handlers(stop)
     log_handler = RedisLogHandler(store)
+    # The legacy console journal is a log sink too: it keeps its bare-message
+    # format but gets the same flattening and secret redaction as stderr and the
+    # file, so the console and Redis never show what those two mask.
+    secrets = log_secrets(settings)
+    log_handler.addFilter(SingleLineFilter())
+    log_handler.addFilter(SecretRedactionFilter(secrets))
+    log_handler.setFormatter(
+        RedactingFormatter("%(message)s", datefmt=LOG_DATE_FORMAT, secrets=secrets)
+    )
     package_logger = logging.getLogger(__package__)
     package_logger.addHandler(log_handler)
 
@@ -375,7 +440,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"cannot load configuration: {exc}", file=sys.stderr)
         return 2
 
-    logging.basicConfig(level=settings.log_level)
+    try:
+        configure_logging(settings.log_level, settings.log_file, secrets=log_secrets(settings))
+    except LogSetupError as exc:
+        print(f"cannot open the log file: {exc}", file=sys.stderr)
+        return 2
 
     if args.check_config:
         print(json.dumps(describe_settings(settings), indent=2))
@@ -384,10 +453,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         asyncio.run(run_correlator(settings))
     except CorrelatorStartupError as exc:
-        print(f"cannot start: {exc}", file=sys.stderr)
+        # Through the logger, not print(): a startup failure must reach the log
+        # file too, otherwise the file an operator just configured is empty on
+        # the one occasion they need it.
+        _logger.critical("cannot start: %s", exc)
         return 1
     except KeyboardInterrupt:  # pragma: no cover - interactive shutdown
         return 0
+    except Exception:
+        # An unhandled crash would otherwise go to stderr only and leave the
+        # log file with no traceback at all.
+        _logger.exception("correlator stopped on an unhandled error")
+        return 1
     return 0
 
 
