@@ -154,6 +154,12 @@ the audit trail and every alert channel (`redaction.py`, `core/logdata.py`).
   No module holds more than ~300 lines now, apart from the settings schema.
 - The 713-line `test_cli.py` and 685-line `test_incident.py` split along the
   same seams.
+- The suite now guards the paths where a defect would hurt rather than the ones
+  that merely execute: the intake's connection and per-node budgets, the codec's
+  rejection reasons, the renderer's degradation cases (a corrupt timestamp, an
+  empty value, a hostile proxy header), and the read side's dangling hashes and
+  stale enrichment cache. Branch coverage 94.4 % → 96.8 %. `NetworkReceiver`
+  exposes `pending` next to `stats` so a test can assert what reached the queue.
 
 A golden snapshot (`tests/characterization/`) renders 75 alerts, the
 `--check-config` document, the CLI help, stored incident fields and the audit and
