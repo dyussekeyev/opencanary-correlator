@@ -20,7 +20,7 @@ DEDUP_KEY_PREFIX = "dedup:"
 INCIDENT_LOCK_PREFIX = "incident-lock:"
 INCIDENT_LATEST_PREFIX = "incident-latest:"
 ENRICHMENT_PREFIX = "enrichment:"
-VIRUSTOTAL_QUOTA_PREFIX = "virustotal:quota:"
+QUOTA_PREFIX = "quota:"
 
 
 def device_hash(node_id: str) -> str:
@@ -89,11 +89,12 @@ def enrichment_cache_key(source: str, value: str) -> str:
 def quota_key(provider: str, window: str, stamp: str) -> str:
     """Counter for one provider quota window.
 
-    The window stamp is part of the key (`virustotal:quota:day:20261028`), so a
+    The window stamp is part of the key (`quota:virustotal:day:20261028`), so a
     window that has rolled over starts at zero without any reset logic and a
-    stale key simply expires.
+    stale key simply expires. The provider is part of the key, not the prefix,
+    so a second provider needs no new constant.
     """
-    return f"{VIRUSTOTAL_QUOTA_PREFIX}{provider}:{window}:{stamp}"
+    return f"{QUOTA_PREFIX}{provider}:{window}:{stamp}"
 
 
 def console_setting_key(setting: str) -> str:
@@ -106,7 +107,7 @@ __all__ = [
     "ENRICHMENT_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
-    "VIRUSTOTAL_QUOTA_PREFIX",
+    "QUOTA_PREFIX",
     "console_setting_key",
     "dedup_key",
     "device_hash",
