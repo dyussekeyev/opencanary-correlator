@@ -24,6 +24,17 @@ from opencanary_correlator.storage.scripts import (
     SAVE_INCIDENT_LUA,
 )
 
+#: Per-command read/write timeout. Without it a Redis that accepts the
+#: connection but stops answering makes every `await` hang forever, and the
+#: whole process - ingest, health probe and dispatch share one event loop -
+#: stalls behind it with nothing in the log to say why. A command costs a few
+#: milliseconds at most, so 5 s only trips on a real stall.
+DEFAULT_SOCKET_TIMEOUT_SECONDS: float = 5.0
+DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS: float = 5.0
+#: Ping interval on an idle pooled connection, so a half-open socket (a NAT
+#: timeout, a restarted server) is detected instead of failing the next command.
+DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS: int = 30
+
 
 @dataclass(frozen=True, slots=True)
 class IncidentLookup:
@@ -56,7 +67,14 @@ class _StoreBase:
         self._reserve_quota_script = cast(Script, client.register_script(RESERVE_QUOTA_LUA))
 
     @classmethod
-    def from_url(cls, url: str) -> Self:
+    def from_url(
+        cls,
+        url: str,
+        *,
+        socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+        socket_connect_timeout: float = DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS,
+        health_check_interval: int = DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS,
+    ) -> Self:
         """Create a store for one logical server from a supported Redis URL.
 
         ``redis://``, ``rediss://`` and ``unix://`` select a regular
@@ -64,8 +82,19 @@ class _StoreBase:
         one incident write script touches an incident hash, the ``incidents``
         index and the host pointer, which live in different slots; see the
         module docstring of :mod:`opencanary_correlator.storage.redis_store`.
+
+        The three timeouts are always set; see the constants above for why an
+        unanswered command must fail instead of waiting forever.
         """
-        return cls(Redis.from_url(url, decode_responses=True))
+        return cls(
+            Redis.from_url(
+                url,
+                decode_responses=True,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
+                health_check_interval=health_check_interval,
+            )
+        )
 
     @property
     def client(self) -> Redis:
@@ -172,4 +201,10 @@ class _StoreBase:
         return await pending
 
 
-__all__ = ["IncidentLookup", "_StoreBase"]
+__all__ = [
+    "DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS",
+    "DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS",
+    "DEFAULT_SOCKET_TIMEOUT_SECONDS",
+    "IncidentLookup",
+    "_StoreBase",
+]

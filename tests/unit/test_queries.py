@@ -291,3 +291,17 @@ async def test_the_device_block_is_shared_by_incidents_of_one_node(
 
     assert {payload["key"] for payload in payloads} == {first.key, second.key}
     assert all(payload["host"]["name"] == "canary" for payload in payloads)
+
+
+async def test_get_incident_returns_none_for_an_unreadable_record(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """One corrupt hash must not break the single-incident read.
+
+    The listing path already skips and logs such a record; the detail view used
+    to raise, so the same bad data behaved differently through two endpoints.
+    """
+    incident = await create_incident(store, settings_factory, audit, clock, event_factory)
+    await store.client.hset(incident.key, "created", "yesterday")
+
+    assert await get_incident(store, incident.key) is None

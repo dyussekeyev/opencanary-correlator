@@ -33,6 +33,9 @@ DISCORD_URL = "https://discord.com/api/webhooks/1/DISCORD-SECRET"
 WEBHOOK_URL = "https://siem.example/hook/ARBITRARY-SECRET"
 SMTP_PASSWORD = "SMTP-SECRET"
 CAPTURED_PASSWORD = "CAPTURED-SECRET"
+#: Sent as a header, so `httpx` never logs the URL with it — the filter covers
+#: the paths that are not visible from here (an exception carrying the request).
+VIRUSTOTAL_KEY = "VT-API-SECRET-KEY"
 
 SECRETS = (
     TELEGRAM_TOKEN,
@@ -42,6 +45,7 @@ SECRETS = (
     "ARBITRARY-SECRET",
     SMTP_PASSWORD,
     CAPTURED_PASSWORD,
+    VIRUSTOTAL_KEY,
 )
 
 
@@ -73,6 +77,7 @@ async def test_no_secret_reaches_a_log_or_an_outbound_body(
         discord_webhooks=[DISCORD_URL],
         webhook_urls=[WEBHOOK_URL],
         smtp_password=SMTP_PASSWORD,
+        virustotal_api_key=VIRUSTOTAL_KEY,
     )
     target = tmp_path / "correlator.log"
     # Same wiring as `main()`: the configured endpoints are passed to the log
@@ -126,6 +131,7 @@ def test_no_secret_reaches_repr_or_check_config(settings_factory: Any) -> None:
         discord_webhooks=[DISCORD_URL],
         webhook_urls=[WEBHOOK_URL],
         smtp_password=SMTP_PASSWORD,
+        virustotal_api_key=VIRUSTOTAL_KEY,
     )
 
     rendered = repr(settings) + json.dumps(describe_settings(settings))
@@ -135,3 +141,29 @@ def test_no_secret_reaches_repr_or_check_config(settings_factory: Any) -> None:
     # The channel names stay visible: the summary must remain useful.
     assert "telegram" in rendered
     assert "slack" in rendered
+
+
+def test_a_logged_virustotal_key_is_masked(
+    settings_factory: Any, tmp_path: Any, capsys: Any
+) -> None:
+    """The key reaches no sink even when a library echoes it.
+
+    `httpx` logs the request line, not the headers, so today nothing prints the
+    key on its own. This drives the same log pipeline a future one would, which
+    is the only way to prove the value is in the filter's list.
+    """
+    import logging
+
+    settings = settings_factory(virustotal_api_key=VIRUSTOTAL_KEY)
+    target = tmp_path / "correlator.log"
+    configure_logging(settings.log_level, target, secrets=log_secrets(settings))
+
+    logging.getLogger("opencanary_correlator.enrichment.virustotal").warning(
+        "request headers: {'x-apikey': '%s'}", VIRUSTOTAL_KEY
+    )
+
+    log_text = target.read_text(encoding="utf-8")
+    stderr = capsys.readouterr().err
+    assert VIRUSTOTAL_KEY not in log_text
+    assert VIRUSTOTAL_KEY not in stderr
+    assert "x-apikey" in log_text

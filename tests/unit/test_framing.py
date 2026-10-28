@@ -79,3 +79,18 @@ def test_an_unterminated_line_over_the_limit_is_overflow() -> None:
 def test_the_first_delimiter_wins() -> None:
     assert next_delimiter(bytearray(b"a\x00b\nc")) == 1
     assert next_delimiter(bytearray(b"abc")) == -1
+
+
+def test_frames_extracted_before_an_oversized_one_are_kept() -> None:
+    """One hostile line must not discard the events batched before it.
+
+    A sender that packs several frames into one segment and then exceeds the
+    limit used to lose every earlier frame in that segment: they were parsed,
+    removed from the buffer, and then dropped by the empty return value.
+    """
+    buffer = bytearray(b"first\nsecond\n" + b"x" * 200)
+
+    payloads, overflow = split_delimited(buffer, max_bytes=64)
+
+    assert payloads == [b"first", b"second"]
+    assert overflow is True
