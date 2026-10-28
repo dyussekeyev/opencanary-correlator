@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.storage._base import IncidentLookup, _StoreBase
+from opencanary_correlator.storage.keys import OUTBOX_ENTRY_PREFIX, OUTBOX_INDEX
 
 
 class _IncidentsMixin(_StoreBase):
@@ -81,6 +82,39 @@ class _IncidentsMixin(_StoreBase):
             self._save_incident_script,
             keys,
             [str(score), key, *pairs],
+        )
+
+    async def save_new_incident(
+        self,
+        key: str,
+        fields: Mapping[str, str],
+        *,
+        score: float,
+        pointer_key: str | None = None,
+        alert_channels: Sequence[str] = (),
+    ) -> None:
+        """Persist a new incident and its pending deliveries in one script.
+
+        Enqueueing after the write would leave a window in which the incident
+        exists and its alert never will: a crash there used to lose the delivery
+        silently, because nothing recorded that one was owed. A merge keeps
+        using :meth:`save_incident` - it notifies nobody on purpose.
+        """
+        keys = [key, KEY_INCIDENTS, pointer_key or "", OUTBOX_INDEX]
+        pairs: list[str] = []
+        for field, value in fields.items():
+            pairs.append(field)
+            pairs.append(value)
+        await self._run_script(
+            self._save_incident_alerts_script,
+            keys,
+            [
+                str(score),
+                key,
+                OUTBOX_ENTRY_PREFIX,
+                ",".join(alert_channels),
+                *pairs,
+            ],
         )
 
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Final
 
 from opencanary_correlator.audit import AuditLogger
@@ -83,11 +83,15 @@ class IncidentRepository:
         audit: AuditLogger,
         *,
         clock: Callable[[], float] = time.time,
+        alert_channels: Sequence[str] = (),
     ) -> None:
         self._store = store
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        # Channels a new incident owes a delivery to. Empty means no outbox:
+        # the engine still delivers inline, but nothing records the debt.
+        self._alert_channels = tuple(alert_channels)
 
     async def record(
         self,
@@ -226,8 +230,15 @@ class IncidentRepository:
                 logdata=initial_logdata,
                 description=incident_cls.DESCRIPTION,
             )
-            await self._store.save_incident(
-                key, incident.to_fields(), score=now, pointer_key=pointer_key
+            # The incident and its pending deliveries are one script: an incident
+            # that exists without a record of what it owes is an alert that was
+            # decided on and lost.
+            await self._store.save_new_incident(
+                key,
+                incident.to_fields(),
+                score=now,
+                pointer_key=pointer_key,
+                alert_channels=self._alert_channels,
             )
             self._audit.emit(
                 "incident_created",

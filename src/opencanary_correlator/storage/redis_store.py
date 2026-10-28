@@ -21,6 +21,7 @@ searching 400 lines:
 :mod:`_cache`        string values (the enrichment cache)
 :mod:`_console`      the bounded legacy console journal
 :mod:`_incidents`    incident hash, index pointer and bounded lookup scan
+:mod:`_outbox`       pending alert deliveries, retries and the dead letter list
 :mod:`_locks`        the short-lived distributed lock
 ===================  ==========================================================
 
@@ -44,6 +45,7 @@ from opencanary_correlator.storage._locks import (
     LOCK_RETRY_INTERVAL_SECONDS,
     _LockMixin,
 )
+from opencanary_correlator.storage._outbox import _OutboxMixin
 from opencanary_correlator.storage._quota import _QuotaMixin
 from opencanary_correlator.storage._windows import _WindowsMixin
 
@@ -55,6 +57,7 @@ class RedisStore(
     _CacheMixin,
     _ConsoleMixin,
     _IncidentsMixin,
+    _OutboxMixin,
     _LockMixin,
     _StoreBase,
 ):

@@ -166,10 +166,24 @@ therefore never touches correlation logic.
    would return the stored value unchanged (see `docs/validation.md`). Scan
    incidents are exempt: their `logdata` is a deduplicated set that must stay
    exact.
-8. **Deliver** — incidents fan out to every dispatcher concurrently, each
-   bounded by `OCC_DISPATCH_TIMEOUT`. A timeout, exception or non-success
-   result is audited as `alert_dispatch` with status `error`; other channels
-   are unaffected and ingestion continues immediately.
+8. **Deliver** — an incident is created together with one outbox entry per
+   channel in the same Lua script, so the decision to notify cannot exist
+   without a record of it. The engine then fans out inline, each attempt bounded
+   by `OCC_DISPATCH_TIMEOUT`; a timeout, exception or non-success result is
+   audited as `alert_dispatch` with status `error`, other channels are
+   unaffected, and ingestion continues immediately.
+9. **Retry** — the entry of a failed attempt stays in `outbox:alerts` (a ZSET
+   scored by its next attempt). Every replica runs one worker: it claims what is
+   due (the claim pushes the score forward by `OCC_OUTBOX_LEASE`, so two
+   replicas never take the same entry and a dying worker leaves it to become due
+   again), reloads the incident, delivers, and either settles the entry — a
+   `outbox:delivered:<id>` marker plus a delete, in one script — reschedules it
+   with backoff (`1 s, 5 s, 30 s, 5 min, 30 min`, audited as `alert_retry`) or
+   buries it in `outbox:dead` after `OCC_OUTBOX_MAX_ATTEMPTS` (audited as
+   `alert_dead_letter`). Delivery is therefore **at-least-once**: a duplicate is
+   possible only when a channel accepted a message and the process died before
+   settling it. `OCC_OUTBOX_ENABLED=false` restores best-effort delivery, where a
+   failure is logged and forgotten.
 
 ## Correlation rules
 
@@ -263,6 +277,10 @@ dispatcher name.
 | `opencanary_connection_rejections_total` | counter | `receiver`, `reason` | rejected connections before payload processing |
 | `opencanary_rule_failures_total` | counter | `rule` | isolated rule exceptions |
 | `opencanary_alerts_total` | counter | `dispatcher`, `status` | alert delivery attempts by outcome |
+| `opencanary_outbox_pending` | gauge | — | deliveries waiting for a retry |
+| `opencanary_outbox_delivered_total` | counter | `channel` | deliveries settled as accepted |
+| `opencanary_outbox_retried_total` | counter | `channel` | deliveries rescheduled for another attempt |
+| `opencanary_outbox_dead_total` | counter | `channel` | deliveries buried in the dead letter list |
 | `opencanary_build_info` | info | `version`, `python` | static build information |
 
 The endpoint never pings Redis, so it remains scrapeable during a Redis failure;

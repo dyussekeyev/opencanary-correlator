@@ -19,10 +19,13 @@ from redis.commands.core import Script
 from redis.exceptions import RedisError
 
 from opencanary_correlator.storage.scripts import (
+    CLAIM_DUE_ALERTS_LUA,
     CONFIRM_DEDUP_LUA,
     RELEASE_LOCK_LUA,
     RESERVE_QUOTA_LUA,
     SAVE_INCIDENT_LUA,
+    SAVE_INCIDENT_WITH_ALERTS_LUA,
+    SETTLE_ALERT_LUA,
 )
 
 #: Per-command read/write timeout. Without it a Redis that accepts the
@@ -61,6 +64,9 @@ class _StoreBase:
     _save_incident_script: Script
     _reserve_quota_script: Script
     _confirm_dedup_script: Script
+    _save_incident_alerts_script: Script
+    _claim_alerts_script: Script
+    _settle_alert_script: Script
 
     def __init__(self, client: Redis) -> None:
         self._client = client
@@ -68,6 +74,11 @@ class _StoreBase:
         self._save_incident_script = cast(Script, client.register_script(SAVE_INCIDENT_LUA))
         self._reserve_quota_script = cast(Script, client.register_script(RESERVE_QUOTA_LUA))
         self._confirm_dedup_script = cast(Script, client.register_script(CONFIRM_DEDUP_LUA))
+        self._save_incident_alerts_script = cast(
+            Script, client.register_script(SAVE_INCIDENT_WITH_ALERTS_LUA)
+        )
+        self._claim_alerts_script = cast(Script, client.register_script(CLAIM_DUE_ALERTS_LUA))
+        self._settle_alert_script = cast(Script, client.register_script(SETTLE_ALERT_LUA))
 
     @classmethod
     def from_url(

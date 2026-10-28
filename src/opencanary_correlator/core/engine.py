@@ -17,7 +17,9 @@ from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
 from opencanary_correlator.constants import IGNORED_LOGTYPES
+from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import Incident
+from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import Rule
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
 from opencanary_correlator.enrichment.service import IncidentEnricher
@@ -37,6 +39,7 @@ class CorrelationEngine:
         audit: AuditLogger,
         clock: Callable[[], float] = time.time,
         enricher: IncidentEnricher | None = None,
+        outbox: AlertOutbox | None = None,
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -45,6 +48,8 @@ class CorrelationEngine:
         self._audit = audit
         self._clock = clock
         self._enricher = enricher
+        # Without an outbox the inline attempt is the whole story, as before.
+        self._outbox = outbox
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -168,50 +173,27 @@ class CorrelationEngine:
             await asyncio.gather(*tasks)
 
     async def _deliver(self, dispatcher: BaseDispatcher, incident: Incident) -> None:
-        started = time.perf_counter()
-        try:
-            result = await asyncio.wait_for(
-                dispatcher.dispatch(incident),
-                timeout=float(self._settings.dispatch_timeout),
-            )
-        except TimeoutError:
-            metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status="timeout").inc()
-            self._audit.emit(
-                "alert_dispatch",
-                "error",
-                {
-                    "dispatcher": dispatcher.name,
-                    "incident": incident.key,
-                    "reason": "timeout",
-                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-                },
-            )
-            return
-        except Exception as exc:
-            metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status="exception").inc()
-            self._audit.emit(
-                "alert_dispatch",
-                "error",
-                {
-                    "dispatcher": dispatcher.name,
-                    "incident": incident.key,
-                    "error_type": type(exc).__name__,
-                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-                },
-            )
-            return
+        """Try one channel now, then tell the outbox what happened.
 
-        metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status=result.status).inc()
-        self._audit.emit(
-            "alert_dispatch",
-            "success" if result.status == "success" else "error",
-            {
-                "dispatcher": dispatcher.name,
-                "incident": incident.key,
-                "status": result.status,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-            },
+        The attempt stays inline so a healthy deployment notifies immediately;
+        the outbox only matters when it fails, which is when the entry it already
+        holds is rescheduled instead of the alert being dropped on the floor.
+        """
+        result = await deliver(
+            dispatcher,
+            incident,
+            audit=self._audit,
+            deadline=float(self._settings.dispatch_timeout),
         )
+        if self._outbox is None:
+            return
+        if result is None:
+            error = "timeout"
+        elif result.status != "success":
+            error = result.status
+        else:
+            error = None
+        await self._outbox.settle(incident.key, dispatcher.name, error=error)
 
 
 __all__ = ["CorrelationEngine"]

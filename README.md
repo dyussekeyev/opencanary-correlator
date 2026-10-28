@@ -197,6 +197,30 @@ not hammered by every replica while the other URLs of the same channel keep
 receiving alerts. `OCC_DISPATCH_TIMEOUT` bounds a single delivery. One failing
 endpoint never blocks the others and never blocks ingestion.
 
+### Alerts survive a restart
+
+A new incident and one pending delivery per channel are written in the same
+Redis script, and a worker on every replica retries whatever a channel did not
+accept (backoff `1 s, 5 s, 30 s, 5 min, 30 min`). A crash between "incident
+written" and "message sent" therefore costs a delay, not the alert. Delivery is
+**at-least-once**: a duplicate is possible only when a channel accepted a message
+and the process died before recording it, and a second delivery of the same
+event merges rather than notifying twice.
+
+After `OCC_OUTBOX_MAX_ATTEMPTS` the entry moves to the `outbox:dead` ZSET and the
+audit trail gets `alert_dead_letter` with the reason, so a channel that has been
+broken for hours is visible instead of silent:
+
+```bash
+redis-cli ZRANGE outbox:dead 0 -1          # what was never delivered
+redis-cli HGETALL outbox:alert:<id>        # attempts and the last error
+```
+
+`OCC_OUTBOX_ENABLED=false` restores the old best-effort behaviour, where a failed
+delivery is logged and forgotten. `OCC_OUTBOX_POLL_INTERVAL`,
+`OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH` and `OCC_OUTBOX_DELIVERY_RETENTION` tune
+the worker; none of them has to be set to use it.
+
 ## Attacker enrichment (optional)
 
 The attacker block can carry where the address comes from and how VirusTotal

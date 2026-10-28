@@ -25,6 +25,7 @@ from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher, BaseReceiver
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
+from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.health import HealthServer
@@ -77,9 +78,19 @@ async def run_correlator(
             await store.aclose()
         raise CorrelatorStartupError("Redis is not reachable")
 
-    repository = IncidentRepository(store, settings, audit)
     active_dispatchers = (
         list(dispatchers) if dispatchers is not None else build_dispatchers(settings, store)
+    )
+    # Built before the repository: a new incident owes a delivery to every channel
+    # the outbox knows, and the incident and those debts are written together.
+    outbox = (
+        AlertOutbox(store, active_dispatchers, settings, audit) if settings.outbox_enabled else None
+    )
+    repository = IncidentRepository(
+        store,
+        settings,
+        audit,
+        alert_channels=outbox.channels if outbox is not None else (),
     )
     enricher = build_enricher(settings, store, audit)
     engine = CorrelationEngine(
@@ -89,6 +100,7 @@ async def run_correlator(
         settings=settings,
         audit=audit,
         enricher=enricher,
+        outbox=outbox,
     )
     rate_limiter = build_rate_limiter(settings, store)
     receivers = build_receivers(settings, engine, audit, rate_limiter)
@@ -118,6 +130,8 @@ async def run_correlator(
             started.append(receiver)
         if health is not None:
             await health.start()
+        if outbox is not None:
+            await outbox.start()
         audit.emit(
             "startup",
             "info",
@@ -136,6 +150,8 @@ async def run_correlator(
             await receiver.stop()
         if health is not None:
             await health.stop()
+        if outbox is not None:
+            await outbox.stop()
         await asyncio.gather(
             *(dispatcher.aclose() for dispatcher in active_dispatchers),
             return_exceptions=True,

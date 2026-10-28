@@ -51,6 +51,9 @@ a compatibility risk, because consumers only rely on these five keys.
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
+| `alert_retry` | `warning` | an attempt failed and the outbox scheduled another | `dispatcher`, `incident`, `attempts`, `reason`, `next_attempt_in` |
+| `alert_dead_letter` | `error` | the outbox gave up; the entry is in `outbox:dead` | `dispatcher`, `incident`, `attempts`, `reason` (`timeout`, `error`, `unknown_channel`, `incident_gone`) |
+| `outbox_failed` | `error` | one worker iteration raised and was skipped | `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
 | `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
