@@ -5,6 +5,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An event still queued when the drain before shutdown ran out of time was
+  cancelled with the consumer tasks and left no record at all, so a restart with
+  a backlog looked like events that were never sent. The backlog is counted and
+  audited (`event_dropped`, `reason: shutdown`, `count`) before the consumers are
+  cancelled.
+- A frame that held only framing — a keep-alive newline, or the NUL that
+  `SysLogHandler` appends — was counted as `rejected`, which made the rejection
+  counter useless for its one job: answering whether a canary sent something the
+  correlator could not parse. Such frames are `ignored` now and audited as
+  `event_ignored` with `reason: empty_payload`.
+
+### Added
+
+- `opencanary_events_dropped_total{reason}` (`queue_full`, `dispatch_failed`,
+  `shutdown`), so lost events are visible per cause in a scrape instead of only
+  by grepping the audit log.
+- Tests that pin what `record()` does when it returns `None`: a merge emits
+  `incident_updated` (a merge suppresses the notification, not the trace), and an
+  RDP event plus a MySQL event from one host in the same second produce two
+  incidents with two `incident_created` records rather than collapsing.
+
 ## [0.4.1] - 2026-10-28
 
 ### Changed — docs

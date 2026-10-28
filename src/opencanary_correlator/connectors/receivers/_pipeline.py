@@ -17,7 +17,6 @@ replicas do not fight over the same lock.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import zlib
 from dataclasses import dataclass
 
@@ -98,14 +97,34 @@ class EventPipeline:
         ]
 
     async def stop(self, *, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT) -> None:
-        """Drain what fits in `drain_timeout`, then stop every consumer."""
+        """Drain what fits in `drain_timeout`, then stop every consumer.
+
+        A backlog that does not fit is cancelled with the consumers, so it is
+        counted and audited first: an event dropped at shutdown leaves no other
+        trace, and a restart's backlog used to disappear without a record.
+        """
         if not self._tasks:
             return
-        with contextlib.suppress(TimeoutError):
+        try:
             await asyncio.wait_for(
                 asyncio.gather(*(queue.join() for queue in self._queues)),
                 timeout=drain_timeout,
             )
+        except TimeoutError:
+            lost = self.pending
+            if lost:
+                self.stats.dropped += lost
+                metrics.EVENTS_TOTAL.labels(result="dropped").inc(lost)
+                metrics.EVENTS_DROPPED.labels(reason="shutdown").inc(lost)
+                self._audit.emit(
+                    "event_dropped",
+                    "warning",
+                    {"reason": "shutdown", "count": lost},
+                )
+            for queue in self._queues:
+                while not queue.empty():
+                    queue.get_nowait()
+            metrics.EVENT_QUEUE_DEPTH.set(self.pending)
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -116,6 +135,16 @@ class EventPipeline:
         self.stats.rejected += 1
         metrics.EVENTS_TOTAL.labels(result="rejected").inc()
 
+    def record_ignored(self, reason: str) -> None:
+        """Count a payload that was read but carried nothing to correlate.
+
+        A frame of framing alone (a keep-alive newline, or `SysLogHandler`'s NUL)
+        is not a rejection: counting it as one hides a genuine rejection in a
+        metric an operator reads to spot a canary that stopped being understood.
+        """
+        metrics.EVENTS_TOTAL.labels(result="ignored").inc()
+        self._audit.emit("event_ignored", "info", {"reason": reason})
+
     def submit(self, event: CanaryEvent) -> bool:
         """Queue an event, dropping it (and auditing) when its lane is full."""
         queue = self._queue_for(event)
@@ -124,6 +153,7 @@ class EventPipeline:
         except asyncio.QueueFull:
             self.stats.dropped += 1
             metrics.EVENTS_TOTAL.labels(result="dropped").inc()
+            metrics.EVENTS_DROPPED.labels(reason="queue_full").inc()
             metrics.EVENT_QUEUE_DEPTH.set(self.pending)
             self._audit.emit(
                 "event_dropped",
@@ -168,6 +198,7 @@ class EventPipeline:
             except Exception as exc:
                 self.stats.dropped += 1
                 metrics.EVENTS_TOTAL.labels(result="dropped").inc()
+                metrics.EVENTS_DROPPED.labels(reason="dispatch_failed").inc()
                 self._audit.emit(
                     "event_dispatch_failed",
                     "error",

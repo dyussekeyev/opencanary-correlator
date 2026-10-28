@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Any
 
+from opencanary_correlator import metrics
 from opencanary_correlator.connectors.receivers._pipeline import EventPipeline
+from opencanary_correlator.connectors.receivers.tcp_json import TCPJSONReceiver
 from opencanary_correlator.schemas import CanaryEvent
+
+
+def drops(reason: str) -> float:
+    """Current value of a drop counter; the registry is process-global."""
+    return metrics.EVENTS_DROPPED.labels(reason=reason)._value.get()
 
 
 class RecordingSink:
@@ -96,6 +105,7 @@ async def test_lanes_overlap_slow_hosts(audit: Any) -> None:
 async def test_a_full_lane_drops_and_audits(audit: Any, audit_stream: Any) -> None:
     sink = RecordingSink()
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=1, concurrency=1)
+    before = drops("queue_full")
     await pipeline.start()
     try:
         assert pipeline.submit(make_event("10.0.0.5", 1))
@@ -112,6 +122,56 @@ async def test_a_full_lane_drops_and_audits(audit: Any, audit_stream: Any) -> No
 
     assert pipeline.stats.dropped >= 1
     assert "event_dropped" in audit_stream.getvalue()
+    # The reason has to be visible in a scrape, not only in the audit line.
+    assert drops("queue_full") > before
+
+
+async def test_a_backlog_cancelled_at_shutdown_is_counted_and_audited(
+    audit: Any, audit_stream: Any
+) -> None:
+    """A restart must not swallow queued events without a record.
+
+    `stop()` cancels the consumer tasks when the drain budget runs out, and every
+    event still in a queue dies with them. That was the one drop path with no
+    audit record and no counter, so a busy restart looked like events that were
+    never sent.
+    """
+    sink = RecordingSink(delay=0.5)
+    pipeline = EventPipeline(sink=sink, audit=audit, queue_size=50, concurrency=1)
+    before = drops("shutdown")
+    await pipeline.start()
+    for port in range(5):
+        assert pipeline.submit(make_event("10.0.0.5", port))
+
+    await pipeline.stop(drain_timeout=0.01)
+
+    records = [
+        json.loads(line) for line in audit_stream.getvalue().splitlines() if "event_dropped" in line
+    ]
+    assert len(records) == 1
+    assert records[0]["details"]["reason"] == "shutdown"
+    assert records[0]["details"]["count"] >= 1
+    assert pipeline.stats.dropped == records[0]["details"]["count"]
+    assert drops("shutdown") - before == records[0]["details"]["count"]
+    assert pipeline.pending == 0
+
+
+async def test_a_blank_frame_is_ignored_instead_of_rejected(audit: Any, audit_stream: Any) -> None:
+    """Framing-only payloads must not inflate the rejection counter.
+
+    `SocketJSONHandler` and `SysLogHandler` leave stray newlines and NULs, and a
+    rejection counter that counts them cannot answer "did the canary send
+    something we failed to parse?".
+    """
+    receiver = TCPJSONReceiver(sink=RecordingSink(), audit=audit)
+    protocol = SimpleNamespace(peer_ip="10.0.0.9")
+
+    receiver.payload_received(protocol, b"\n")
+    receiver.payload_received(protocol, b"  \r\n")
+
+    assert receiver.stats.rejected == 0
+    assert receiver.pending == 0
+    assert audit_stream.getvalue().count("empty_payload") == 2
 
 
 async def test_queue_budget_is_shared_between_lanes(audit: Any) -> None:

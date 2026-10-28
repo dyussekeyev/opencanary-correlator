@@ -212,6 +212,12 @@ class TCPStreamReceiver(NetworkReceiver):
 
     def payload_received(self, protocol: StreamProtocol, payload: bytes) -> None:
         """Parse one complete payload and queue the resulting event."""
+        if not payload.strip():
+            # Framing only: a keep-alive newline or a stray NUL frame. Nothing was
+            # sent, so this is not a rejection — counting it as one would hide a
+            # real rejection in the metric that shows an unparseable canary.
+            self._pipeline.record_ignored("empty_payload")
+            return
         event = self.parse_payload(payload, protocol.peer_ip)
         if event is None:
             self._pipeline.record_rejection()
