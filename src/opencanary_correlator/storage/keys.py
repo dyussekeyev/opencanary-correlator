@@ -22,6 +22,13 @@ INCIDENT_LATEST_PREFIX = "incident-latest:"
 ENRICHMENT_PREFIX = "enrichment:"
 QUOTA_PREFIX = "quota:"
 
+#: ZSET of pending alert deliveries, scored by their next attempt.
+OUTBOX_INDEX = "outbox:alerts"
+OUTBOX_ENTRY_PREFIX = "outbox:alert:"
+#: Deliveries that exhausted their attempts, kept for an operator to inspect.
+OUTBOX_DEAD = "outbox:dead"
+DELIVERED_PREFIX = "outbox:delivered:"
+
 
 def device_hash(node_id: str) -> str:
     """Return the legacy device hash: a truncated SHA-256 of the node id.
@@ -97,6 +104,25 @@ def quota_key(provider: str, window: str, stamp: str) -> str:
     return f"{QUOTA_PREFIX}{provider}:{window}:{stamp}"
 
 
+def outbox_entry_id(incident_key: str, channel: str) -> str:
+    """Deterministic id of one delivery.
+
+    A retry is the same entry, not a new one, which is what makes the outbox
+    at-least-once instead of at-least-once-plus-duplicates.
+    """
+    return f"{incident_key}#{channel}"
+
+
+def outbox_alert_key(entry_id: str) -> str:
+    """Hash holding one pending delivery."""
+    return f"{OUTBOX_ENTRY_PREFIX}{entry_id}"
+
+
+def delivered_key(entry_id: str) -> str:
+    """Marker proving one delivery already reached its channel."""
+    return f"{DELIVERED_PREFIX}{entry_id}"
+
+
 def console_setting_key(setting: str) -> str:
     """Key of one console setting, as the legacy console reads it."""
     return f"{KEY_CONSOLE_SETTING_PREFIX}{setting}"
@@ -104,12 +130,17 @@ def console_setting_key(setting: str) -> str:
 
 __all__ = [
     "DEDUP_KEY_PREFIX",
+    "DELIVERED_PREFIX",
     "ENRICHMENT_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
+    "OUTBOX_DEAD",
+    "OUTBOX_ENTRY_PREFIX",
+    "OUTBOX_INDEX",
     "QUOTA_PREFIX",
     "console_setting_key",
     "dedup_key",
+    "delivered_key",
     "device_hash",
     "device_key",
     "enrichment_cache_key",
@@ -119,5 +150,7 @@ __all__ = [
     "incident_lock_key",
     "incident_prefix",
     "network_scan_key",
+    "outbox_alert_key",
+    "outbox_entry_id",
     "quota_key",
 ]

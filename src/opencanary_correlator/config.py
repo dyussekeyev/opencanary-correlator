@@ -124,6 +124,19 @@ class Settings(BaseSettings):
     syslog_port: int = Field(default=15141, ge=1, le=65535)
     syslog_udp_enabled: bool = False
 
+    # --- Alert outbox -------------------------------------------------------
+    # An incident and one pending delivery per channel are written together, and
+    # a worker retries whatever a channel did not accept. Turning it off restores
+    # the pre-0.5.0 behaviour: a failed delivery is logged and forgotten.
+    outbox_enabled: bool = True
+    outbox_poll_interval: float = Field(default=5.0, gt=0.0, le=3600.0)
+    # How long a worker owns an entry before another replica may take it.
+    outbox_lease: float = Field(default=60.0, gt=0.0, le=3600.0)
+    outbox_batch: int = Field(default=20, ge=1, le=1000)
+    outbox_max_attempts: int = Field(default=8, ge=1, le=100)
+    # How long the delivered marker and a pending entry are kept.
+    outbox_delivery_retention: float = Field(default=7 * 24 * 3600.0, ge=60.0)
+
     # --- Hardening ----------------------------------------------------------
     max_line_bytes: int = Field(default=65536, ge=1024, le=10 * 1024 * 1024)
     partial_line_timeout: float = Field(default=30.0, gt=0.0, le=3600.0)

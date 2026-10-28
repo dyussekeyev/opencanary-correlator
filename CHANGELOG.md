@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Durable alert delivery (outbox).** An incident and one pending delivery per
+  channel are written in a single Lua script, so a crash, a deploy or a
+  `SIGKILL` between "incident stored" and "message sent" no longer loses the
+  alert. The engine still delivers inline — a healthy deployment notifies at
+  once — and a worker on every replica retries what failed: backoff `1 s, 5 s,
+  30 s, 5 min, 30 min`, `OCC_OUTBOX_MAX_ATTEMPTS` attempts, then the entry moves
+  to `outbox:dead` with `alert_dead_letter` in the audit trail. Claims are leased
+  (`OCC_OUTBOX_LEASE`), so replicas never deliver the same entry twice and a
+  dying worker leaves it to become due again; settlement writes
+  `outbox:delivered:<id>` and drops the entry in one script. Delivery is
+  **at-least-once**, and the duplicate window is exactly "channel accepted, then
+  the process died", which the delivered marker keeps from reopening. New
+  metrics: `opencanary_outbox_pending`, `..._delivered_total`, `..._retried_total`,
+  `..._dead_total`; `OCC_OUTBOX_ENABLED=false` restores the previous behaviour.
+
 ### Fixed
 
 - The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,

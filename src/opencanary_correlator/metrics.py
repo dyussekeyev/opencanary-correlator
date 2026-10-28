@@ -48,6 +48,25 @@ RULE_FAILURES = Counter(
     "Rule evaluation failures isolated by the engine",
     ["rule"],
 )
+OUTBOX_PENDING = Gauge(
+    "opencanary_outbox_pending",
+    "Alert deliveries waiting for a retry",
+)
+OUTBOX_DELIVERED = Counter(
+    "opencanary_outbox_delivered_total",
+    "Alert deliveries settled as accepted",
+    ["channel"],
+)
+OUTBOX_RETRIED = Counter(
+    "opencanary_outbox_retried_total",
+    "Alert deliveries rescheduled for another attempt",
+    ["channel"],
+)
+OUTBOX_DEAD = Counter(
+    "opencanary_outbox_dead_total",
+    "Alert deliveries buried in the dead letter list",
+    ["channel"],
+)
 ALERTS_TOTAL = Counter(
     "opencanary_alerts_total",
     "Alert delivery attempts, by dispatcher and outcome",
