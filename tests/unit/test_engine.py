@@ -120,6 +120,63 @@ async def test_login_event_creates_incident_and_notifies(
     assert "alert_dispatch" in audit_actions(audit_stream)
 
 
+async def test_two_logtypes_from_one_host_in_one_second_both_leave_a_trace(
+    store: Any,
+    settings_factory: Any,
+    audit: Any,
+    audit_stream: Any,
+    clock: Any,
+    event_factory: Any,
+) -> None:
+    """A field report of a silently lost MySQL event next to an RDP one.
+
+    Same source host and same second must not collapse into one another: the
+    dedup fingerprint carries the log type, destination port and log data, and
+    the incident key carries the incident type, so both events have to produce
+    their own incident and their own audit record.
+    """
+    dispatcher = RecordingDispatcher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
+    rdp = CanaryEvent.model_validate(
+        event_factory(logtype=14001, dst_port=3389, logdata={"USERNAME": "Administrator"})
+    )
+    mysql = CanaryEvent.model_validate(
+        event_factory(logtype=8001, dst_port=3306, logdata={"USERNAME": "root"})
+    )
+
+    await engine.handle_event(rdp)
+    await engine.handle_event(mysql)
+
+    assert sorted(incident.INCIDENT_NAME for incident in dispatcher.incidents) == [
+        "mysql.login_attempt",
+        "rdp.login_attempt",
+    ]
+    actions = audit_actions(audit_stream)
+    assert actions.count("incident_created") == 2
+    assert "event_deduplicated" not in actions
+    assert "event_unrouted" not in actions
+
+
+async def test_a_merged_event_is_audited_even_though_it_does_not_notify(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
+) -> None:
+    """`record()` returns None for a merge, which must not mean "no trace".
+
+    A merge suppresses the notification on purpose; without its own audit record
+    the event looks lost to whoever greps the trail after a missing alert.
+    """
+    dispatcher = RecordingDispatcher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
+
+    await engine.handle_event(CanaryEvent.model_validate(event_factory(src_port=40000)))
+    await engine.handle_event(CanaryEvent.model_validate(event_factory(src_port=40001)))
+
+    assert len(dispatcher.incidents) == 1
+    actions = audit_actions(audit_stream)
+    assert actions.count("incident_created") == 1
+    assert actions.count("incident_updated") == 1
+
+
 async def test_enrichment_is_attached_before_dispatch(
     store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:

@@ -24,6 +24,11 @@ EVENTS_TOTAL = Counter(
     "Events handled by the correlator, by result",
     ["result"],
 )
+EVENTS_DROPPED = Counter(
+    "opencanary_events_dropped_total",
+    "Events discarded before correlation, by reason",
+    ["reason"],
+)
 EVENT_QUEUE_DEPTH = Gauge(
     "opencanary_event_queue_depth",
     "Events waiting in the bounded receiver queue",

@@ -252,6 +252,7 @@ dispatcher name.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `opencanary_events_total` | counter | `result` (`accepted`, `rejected`, `dropped`, `rate_limited`, `deduplicated`, `unrouted`) | event outcomes across ingestion and correlation |
+| `opencanary_events_dropped_total` | counter | `reason` (`queue_full`, `dispatch_failed`, `shutdown`) | events lost before correlation, split by cause |
 | `opencanary_event_queue_depth` | gauge | — | events waiting across the pipeline lanes |
 | `opencanary_active_connections` | gauge | `receiver` | currently open receiver connections |
 | `opencanary_connection_rejections_total` | counter | `receiver`, `reason` | rejected connections before payload processing |
