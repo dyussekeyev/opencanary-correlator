@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.0] - 2026-10-29
+## [0.4.0] - 2026-10-28
 
 This release changes defaults: the intake listens on loopback and the default
 ports differ. Read [Changed — breaking](#changed--breaking) before upgrading, or
