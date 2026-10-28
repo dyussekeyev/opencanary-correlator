@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-28
+
 ### Changed — docs
 
 - `docs/validation.md` is refreshed against the 0.4.0 release run (`e7337fd`,
