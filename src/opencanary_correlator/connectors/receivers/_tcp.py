@@ -26,6 +26,7 @@ from opencanary_correlator.connectors.receivers._allowlist import (
     is_peer_allowed,
 )
 from opencanary_correlator.connectors.receivers._base import NetworkReceiver
+from opencanary_correlator.connectors.receivers._framing import split_delimited
 from opencanary_correlator.connectors.receivers._pipeline import DEFAULT_CONCURRENCY
 from opencanary_correlator.schemas import CanaryEvent
 
@@ -93,37 +94,10 @@ class StreamProtocol(asyncio.Protocol):
         """Split the buffer into complete payloads.
 
         Returns the payloads plus an ``overflow`` flag that tells the caller the
-        peer exceeded the configured line limit.
+        peer exceeded the configured line limit. The framing itself lives in
+        :mod:`._framing`, so a test can drive it without a socket.
         """
-        max_bytes = self._receiver.max_line_bytes
-        payloads: list[bytes] = []
-        while True:
-            index = self._next_delimiter()
-            if index < 0:
-                break
-            line = bytes(self._buffer[:index]).rstrip(b"\r")
-            del self._buffer[: index + 1]
-            if len(line) > max_bytes:
-                return [], True
-            payloads.append(line)
-        if len(self._buffer) > max_bytes:
-            return [], True
-        return payloads, False
-
-    def _next_delimiter(self) -> int:
-        """Return the offset of the first frame delimiter, or -1.
-
-        Newline-separated frames are the OpenCanary ``SocketJSONHandler``
-        format. NUL is also accepted because Python's ``SysLogHandler``
-        terminates TCP messages with ``\\x00`` instead of a newline.
-        """
-        newline = self._buffer.find(b"\n")
-        nul = self._buffer.find(b"\x00")
-        if newline < 0:
-            return nul
-        if nul < 0:
-            return newline
-        return min(newline, nul)
+        return split_delimited(self._buffer, max_bytes=self._receiver.max_line_bytes)
 
     # --- Lifecycle ----------------------------------------------------------
 
