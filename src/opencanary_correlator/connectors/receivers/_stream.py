@@ -3,8 +3,9 @@
 It enforces the hardening rules the receivers rely on:
 
 * a hard per-line byte limit (default 64 KiB);
-* a timeout that only applies to a *stalled partial line*, so a silent
-  keep-alive connection from `SocketJSONHandler` is never reaped;
+* a deadline for an incomplete line, measured from its first byte, so a slow
+  trickle cannot hold the connection; a silent keep-alive connection from
+  `SocketJSONHandler` buffers nothing and is never reaped;
 * framing delegated to :mod:`._framing`, so the byte handling is testable
   without a socket.
 
@@ -66,6 +67,11 @@ class StreamProtocol(asyncio.Protocol):
         if overflow:
             self.close(CLOSE_REASON_LINE_TOO_LARGE)
             return
+        if not self._buffer:
+            # A complete line ended the partial-line deadline; leaving the timer
+            # armed would later close a connection that is holding nothing.
+            self._cancel_timeout()
+            return
         self._arm_timeout()
 
     def connection_lost(self, exc: Exception | None) -> None:
@@ -105,8 +111,16 @@ class StreamProtocol(asyncio.Protocol):
             self._transport.close()
 
     def _arm_timeout(self) -> None:
-        self._cancel_timeout()
-        if not self._buffer or self._closed:
+        """Start the deadline of the partial line that is now buffered.
+
+        The timer is armed once per partial line, not once per chunk: re-arming
+        it on every arrival turns ``partial_line_timeout`` into an idle timeout,
+        so a peer that trickles one byte just before each expiry holds a
+        connection slot forever and, with every slot taken, starves the intake.
+        The deadline therefore runs from the first byte of the line; a silent
+        keep-alive socket holds an empty buffer and is never reaped.
+        """
+        if self._timeout_handle is not None or not self._buffer or self._closed:
             return
         loop = asyncio.get_running_loop()
         self._timeout_handle = loop.call_later(

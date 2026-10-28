@@ -54,7 +54,8 @@ class CorrelationEngine:
     async def handle_event(self, event: CanaryEvent) -> None:
         """Correlate one validated event."""
         now = float(self._clock())
-        if not await self._dedup.first_seen(event_fingerprint(event)):
+        fingerprint = event_fingerprint(event)
+        if not await self._dedup.first_seen(fingerprint):
             metrics.EVENTS_TOTAL.labels(result="deduplicated").inc()
             self._audit.emit(
                 "event_deduplicated",
@@ -65,6 +66,7 @@ class CorrelationEngine:
 
         incidents: list[Incident] = []
         matched = False
+        failed = False
         for rule in self._rules:
             if not rule.matches(event):
                 continue
@@ -72,6 +74,7 @@ class CorrelationEngine:
             try:
                 incidents.extend(await rule.apply(event, now=now))
             except Exception as exc:
+                failed = True
                 metrics.RULE_FAILURES.labels(rule=rule.name).inc()
                 self._audit.emit(
                     "rule_failed",
@@ -82,6 +85,12 @@ class CorrelationEngine:
                         "error_type": type(exc).__name__,
                     },
                 )
+
+        if failed:
+            # The claim was taken before the rules ran, so keeping it after a
+            # failure would discard a redelivery of an event that never reached
+            # the store: a second syslog relay, or a canary that reconnects.
+            await self._dedup.release(fingerprint)
 
         if not matched:
             logtype = int(event.logtype)

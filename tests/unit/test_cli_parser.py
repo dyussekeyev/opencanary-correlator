@@ -19,6 +19,22 @@ def test_the_parser_accepts_the_documented_flags() -> None:
     assert args.health_port == 0
 
 
+def test_the_legacy_short_flags_still_work(monkeypatch: Any) -> None:
+    """The Python 2 executable took `-c` and `-i`, and unit files still pass them."""
+    from opencanary_correlator.app.parser import load_settings
+
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://127.0.0.1:6390/0")
+    args = build_parser().parse_args(["-i", "10.1.2.3", "-c", "missing.conf"])
+
+    assert args.intake_host == "10.1.2.3"
+    assert args.config == "missing.conf"
+
+    # `-i` is the intake interface: it lands on both receivers, not on a new axis.
+    args = build_parser().parse_args(["--ip", "10.1.2.3"])
+    settings = load_settings(args)
+    assert (settings.tcp_host, settings.syslog_host) == ("10.1.2.3", "10.1.2.3")
+
+
 def test_the_cli_facade_still_exports_the_public_names() -> None:
     """`opencanary_correlator.cli` is the documented import path."""
     from opencanary_correlator import cli

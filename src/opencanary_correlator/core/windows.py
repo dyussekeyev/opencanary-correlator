@@ -91,5 +91,16 @@ class DedupCache:
             return True
         return await self._store.acquire_dedup(fingerprint, ttl=self._ttl)
 
+    async def release(self, fingerprint: str) -> None:
+        """Withdraw a claim whose correlation produced nothing.
+
+        Without this, an event whose rules failed is suppressed for the whole
+        TTL: a redelivery from a second relay, or from a canary that reconnects,
+        is discarded as a duplicate of work that never happened.
+        """
+        if self._ttl <= 0:
+            return
+        await self._store.release_dedup(fingerprint)
+
 
 __all__ = ["DedupCache", "DistinctSetWindow", "SlidingWindow", "event_fingerprint"]

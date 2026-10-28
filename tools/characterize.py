@@ -2,7 +2,7 @@
 
 A structural refactor is only safe if "nothing changed" can be *checked*, not
 argued. This tool renders the artefacts a user or a SIEM actually sees — alert
-text per channel and detail level, the `--check-config` document, CLI help,
+text per channel and detail level, the `--check-config` document, the CLI flags,
 stored incident fields, the audit action stream and the Redis keys of one
 scripted run — into one JSON file.
 
@@ -276,12 +276,25 @@ async def _run_stream() -> dict[str, Any]:
     }
 
 
+def _cli_surface() -> list[str]:
+    """Every flag the parser accepts, sorted.
+
+    The rendered `--help` cannot be pinned across the versions CI runs: 3.11 and
+    3.12 print `-c PATH, --config PATH` with an indented description, while 3.13
+    and later print `-c, --config PATH` inline. Those are cosmetic, and an oracle
+    that holds on one interpreter only is worse than none, so the snapshot records
+    the flags themselves — the part that must not change by accident.
+    """
+    parser = build_parser()
+    return sorted(option for action in parser._actions for option in action.option_strings)
+
+
 def snapshot() -> dict[str, Any]:
     """Everything the golden file records."""
     return {
         "alerts": render_all(),
         "describe_settings": describe(),
-        "cli_help": build_parser().format_help(),
+        "cli_options": _cli_surface(),
         "incident_fields": {name: incident.to_fields() for name, incident in incidents().items()},
         "engine": asyncio.run(_run_stream()),
     }

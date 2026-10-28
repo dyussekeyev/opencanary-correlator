@@ -40,7 +40,11 @@ class TCPStreamReceiver(NetworkReceiver):
         *,
         sink: EventSink,
         audit: AuditLogger,
-        host: str = "0.0.0.0",  # noqa: S104 - receiver listens on every interface by default
+        # Loopback, matching `DEFAULT_INTAKE_HOST`: the intake is unauthenticated,
+        # so binding every interface must be an explicit choice. `wiring` always
+        # passes the configured host; this default only stops a caller that
+        # forgets it from opening a write path into the incident store.
+        host: str = "127.0.0.1",
         port: int = 0,
         max_line_bytes: int = 65536,
         partial_line_timeout: float = 30.0,

@@ -390,7 +390,20 @@ class Settings(BaseSettings):
         # The Python 2 notifier treated a missing enable key as disabled, even
         # when addresses/webhooks were present. Preserve that default when the
         # legacy file is imported; explicit overrides still win below.
-        mapped: dict[str, Any] = {"smtp_enabled": False, "slack_enabled": False}
+        #
+        # The relay settings are the same kind of default: the old `emailer`
+        # opened `smtplib.SMTP(server, port)` with no STARTTLS and `port=25`.
+        # A migrated file must reach the same relay, so the legacy import starts
+        # from plain SMTP on 25 instead of the modern 587 + STARTTLS, which a
+        # plain relay answers with an error and the alert is lost. A file that
+        # names `console.email_port` still wins, and the env/CLI surface keeps
+        # the modern defaults.
+        mapped: dict[str, Any] = {
+            "smtp_enabled": False,
+            "slack_enabled": False,
+            "smtp_port": 25,
+            "smtp_starttls": False,
+        }
         dropped: list[str] = []
         horizon_overrides = {
             incident_name: raw[key]

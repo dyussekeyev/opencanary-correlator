@@ -105,7 +105,9 @@ class SyslogUDPReceiver(NetworkReceiver):
         *,
         sink: EventSink,
         audit: AuditLogger,
-        host: str = "0.0.0.0",  # noqa: S104 - receiver listens on every interface by default
+        # Loopback, like the TCP receivers: UDP has no connection to admit, so an
+        # exposed datagram port accepts forged events from any peer.
+        host: str = "127.0.0.1",
         port: int = 0,
         max_line_bytes: int = 65536,
         queue_size: int = 10_000,

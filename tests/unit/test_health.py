@@ -314,6 +314,32 @@ async def test_a_silent_probe_is_audited_as_a_timeout(
     assert "timeout" in audit_stream.getvalue()
 
 
+async def test_connections_over_the_cap_are_refused(
+    audit: Any, audit_stream: Any, fake_redis: Any
+) -> None:
+    """A peer that opens sockets it never finishes must not hold a task each.
+
+    The listener binds every interface by default, so without a cap one peer can
+    exhaust the process's descriptors and stall the probe it is supposed to
+    answer.
+    """
+    server = HealthServer(
+        fake_redis, host="127.0.0.1", port=0, audit=audit, max_concurrent_requests=1
+    )
+    await server.start()
+    try:
+        _idle_reader, idle_writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        await asyncio.sleep(0.1)  # the idle connection now holds the only slot
+        response = await http_get(server.bound_port, "/healthz")
+        idle_writer.close()
+        await idle_writer.wait_closed()
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 503")
+    assert "too_many_requests" in audit_stream.getvalue()
+
+
 async def test_a_header_block_beyond_the_byte_budget_is_still_answered(fake_redis: Any) -> None:
     """The drain loop stops at the budget instead of reading forever."""
     server = await start_server(fake_redis)

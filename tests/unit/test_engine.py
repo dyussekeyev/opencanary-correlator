@@ -269,6 +269,33 @@ async def test_broken_rule_does_not_prevent_other_rules(
     assert "rule_failed" in audit_actions(audit_stream)
 
 
+async def test_a_failed_rule_releases_the_dedup_claim(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
+) -> None:
+    """A claim taken before the rules must not outlive a failure they hit.
+
+    Nothing was stored, so the redelivery of the same event (a second syslog
+    relay, a canary that reconnects) has to be correlated again instead of being
+    answered `event_deduplicated` for `OCC_DEDUP_TTL`.
+    """
+    engine = make_engine(
+        store,
+        settings_factory(),
+        audit,
+        clock,
+        [RecordingDispatcher()],
+        rules=[BrokenRule()],
+    )
+    event = login_event(event_factory)
+
+    await engine.handle_event(event)
+    await engine.handle_event(event)
+
+    actions = audit_actions(audit_stream)
+    assert actions.count("rule_failed") == 2
+    assert "event_deduplicated" not in actions
+
+
 async def test_incident_is_persisted_without_dispatchers(
     store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:

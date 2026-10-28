@@ -23,9 +23,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
     parser.add_argument(
+        "-c",
         "--config",
         metavar="PATH",
         help="legacy JSON configuration file (migrated on startup)",
+    )
+    # The Python 2 executable took `-c` and `-i` (`twistd` options), so an
+    # existing unit file or wrapper keeps working with the same command line.
+    # `-i` is the interface the event intake listens on, which was the only
+    # listener the old correlator had.
+    parser.add_argument(
+        "-i",
+        "--ip",
+        metavar="ADDRESS",
+        dest="intake_host",
+        help="override OCC_TCP_HOST and OCC_SYSLOG_HOST",
     )
     parser.add_argument("--redis-url", help="override OCC_REDIS_URL")
     parser.add_argument(
@@ -61,6 +73,9 @@ def load_settings(args: argparse.Namespace) -> Settings:
     "redis_url: Field required" unless the variable was also exported.
     """
     overrides: dict[str, Any] = {}
+    if args.intake_host:
+        overrides["tcp_host"] = args.intake_host
+        overrides["syslog_host"] = args.intake_host
     if args.redis_url:
         overrides["redis_url"] = args.redis_url
     if args.log_level:

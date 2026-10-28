@@ -232,7 +232,20 @@
       "title": "Shared File Opened by 10.0.0.7 on canary-1 (10.0.0.2)"
     }
   },
-  "cli_help": "usage: opencanary-correlator [-h] [--version] [--config PATH]\n                             [--redis-url REDIS_URL]\n                             [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]\n                             [--log-file PATH] [--health-port HEALTH_PORT]\n                             [--check-config]\n\nStateless OpenCanary event correlator\n\noptions:\n  -h, --help            show this help message and exit\n  --version             show program's version number and exit\n  --config PATH         legacy JSON configuration file (migrated on startup)\n  --redis-url REDIS_URL\n                        override OCC_REDIS_URL\n  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}\n                        override OCC_LOG_LEVEL\n  --log-file PATH       override OCC_LOG_FILE (adds a rotated log file next to\n                        stderr)\n  --health-port HEALTH_PORT\n                        override OCC_HEALTH_PORT (0 disables the endpoint)\n  --check-config        validate configuration and exit\n",
+  "cli_options": [
+    "--check-config",
+    "--config",
+    "--health-port",
+    "--help",
+    "--ip",
+    "--log-file",
+    "--log-level",
+    "--redis-url",
+    "--version",
+    "-c",
+    "-h",
+    "-i"
+  ],
   "describe_settings": {
     "alert_detail": {
       "discord": "standard",

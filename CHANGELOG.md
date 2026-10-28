@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.0] - 2026-10-28
+## [0.4.0] - 2026-10-29
 
 This release changes defaults: the intake listens on loopback and the default
 ports differ. Read [Changed — breaking](#changed--breaking) before upgrading, or
@@ -98,9 +98,44 @@ set the old values explicitly to keep the previous layout.
 - `OCC_VIRUSTOTAL_API_KEY` is part of the log redaction list. It travels in a
   header, which `httpx` does not log, but an exception carrying the request
   would have printed it.
+- A legacy `.conf` import now reaches the same mail relay as the Python 2
+  notifier did. The old code opened `smtplib.SMTP(server, 25)` with no STARTTLS,
+  while an import inherited the modern `587` + STARTTLS defaults: a plain relay
+  answered with an error and the alert was lost. `from_legacy_json` starts from
+  plain SMTP on port 25, a `console.email_port` in the file still wins, and the
+  environment/CLI surface keeps the modern defaults.
+- The CLI accepts `-c` and `-i` again, the flags the Python 2 executable took
+  (`twistd` options). `-i/--ip` sets the intake interface for both receivers, so
+  an existing unit file or wrapper runs unchanged instead of failing on an
+  unrecognised argument.
+- The partial-line deadline now runs from the first byte of an incomplete line
+  instead of restarting on every chunk. Re-arming it per chunk made it an idle
+  timeout, so a peer sending one byte just before each expiry held a connection
+  slot indefinitely; with `OCC_MAX_CONNECTIONS` slots taken, the intake stopped
+  accepting canaries. A silent `SocketJSONHandler` keep-alive buffers nothing and
+  is still never reaped, and a line that really is stalled is closed exactly as
+  before.
+- An event whose correlation raised no longer stays deduplicated for the whole
+  window. The claim is taken before the rules run, so one `rule_failed` (a Redis
+  hiccup inside a rule, a persistence error) used to answer the redelivery of the
+  very same event — a second syslog relay, a canary that reconnects — with
+  `event_deduplicated` while nothing had been stored. The claim is now withdrawn
+  when any rule failed, so the retry can correlate.
+- The health listener serves at most 128 requests at a time and answers `503`
+  beyond that. It binds every interface by default and is unauthenticated, and
+  each accepted socket held a task until its request completed, so one peer
+  opening sockets it never finished could exhaust the process file descriptors —
+  stalling the very probe that is meant to report an unhealthy process. A
+  refused peer that does send a well-formed request still receives the `503`,
+  and the refusal is audited as `health_request_rejected` with reason
+  `too_many_requests`.
 
 ### Fixed — internal
 
+- `TCPStreamReceiver` and `SyslogUDPReceiver` default to `127.0.0.1` instead of
+  `0.0.0.0`. `app.wiring` always passes the configured host, so no deployment
+  changes; the wildcard default was a footgun for any other caller, because both
+  listeners accept unauthenticated writes.
 - `RedisStore` now normalises every reply, so a client built with
   `decode_responses=False` reads the same values as the production client.
   Before, `get_value` answered `None` for such a client (the enrichment cache

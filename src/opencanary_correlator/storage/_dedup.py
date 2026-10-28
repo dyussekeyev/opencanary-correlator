@@ -20,5 +20,14 @@ class _DedupMixin(_StoreBase):
             )
         )
 
+    async def release_dedup(self, fingerprint: str) -> None:
+        """Withdraw a claim that produced no correlation.
+
+        The claim is taken before the rules run, so a failure there would
+        otherwise swallow a redelivery of the same event for the whole TTL even
+        though nothing was correlated from it.
+        """
+        await self._client.delete(dedup_key(fingerprint))
+
 
 __all__ = ["_DedupMixin"]

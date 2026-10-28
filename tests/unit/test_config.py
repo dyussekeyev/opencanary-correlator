@@ -438,6 +438,35 @@ def test_legacy_json_is_imported(tmp_path: Path) -> None:
     assert not hasattr(settings, "twilio_sid")
 
 
+def test_legacy_import_keeps_plain_smtp_on_port_25(tmp_path: Path, settings_factory: Any) -> None:
+    """The old notifier used `smtplib.SMTP(server, 25)`, with no STARTTLS.
+
+    A migrated file that names only `console.email_host` has to reach the same
+    relay; the modern 587 + STARTTLS default would make that relay answer with an
+    error and the alert would be lost.
+    """
+    path = tmp_path / "legacy.conf"
+    path.write_text(
+        json.dumps(
+            {
+                "console.email_notification_enable": True,
+                "console.email_notification_address": ["soc@example.com"],
+                "console.email_host": "smtp.example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_legacy_json(path, overrides={"redis_url": TEST_REDIS_URL})
+
+    assert settings.smtp_enabled is True
+    assert (settings.smtp_host, settings.smtp_port) == ("smtp.example.com", 25)
+    assert settings.smtp_starttls is False
+    # The modern defaults are unchanged for the env/CLI surface.
+    modern = settings_factory()
+    assert (modern.smtp_port, modern.smtp_starttls) == (587, True)
+
+
 def test_legacy_importer_logs_dropped_keys(tmp_path: Path, caplog: Any) -> None:
     path = tmp_path / "legacy.conf"
     path.write_text(json.dumps({"twilio.sid": "AC123", "unknown.key": 1}), encoding="utf-8")

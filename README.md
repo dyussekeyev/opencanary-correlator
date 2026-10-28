@@ -22,8 +22,8 @@ Nothing has to change on the honeypot side.
 | Syslog | RFC 6587 octet-counting or newline framing over TCP, one message per UDP datagram; JSON bodies become events, plain text becomes a synthetic `LOG_BASE_MSG` event |
 | Event fields | `src_host`, `src_port`, `dst_host`, `dst_port`, `logtype`, `node_id`, `local_time`, `utc_time`, `logdata` and any extra fields are preserved |
 | Lenient parsing | empty `src_host`, `-1` ports, hostnames, unknown `logtype` integers and unparsable timestamps are accepted, never rejected |
-| Lifecycle | `SocketJSONHandler` keeps sockets open indefinitely; an idle keep-alive connection is never closed, only a stalled partial line is |
-| Redis | legacy keys and incident hash fields are preserved (`incident:ftplogin:<src_host>:<ts>`, `incidents`, `device:<hash>`, …), so existing dashboards keep working |
+| Lifecycle | `SocketJSONHandler` keeps sockets open indefinitely; an idle keep-alive connection is never closed, an incomplete line is closed after `OCC_PARTIAL_LINE_TIMEOUT` |
+| Redis | legacy keys are preserved (`incident:ftplogin:<src_host>:<ts>`, `incidents`, `device:<hash>`, `scan:host:`, `scan:network:`, `logs`, `console-setting:`), with the hash fields the legacy queries read: `node_id`, `src_host`, `src_port`, `dst_host`, `dst_port`, `logtype`, `created`, `events_list`, `events_count`, `acknowledged`, `notified`, `updated`, `description`, `logdata`. The old code additionally copied the whole event into the hash, so `local_time`, `utc_time`, `local_time_adjusted` and `reported_dst_host` are **not** re-stored; no query in `common/queries.py` reads them |
 
 Malformed input is rejected per line with an audit record: oversized lines,
 invalid UTF-8, non-JSON, `[ERR] '…'` lines written by `PyLogger.error()`, NaN or
@@ -71,8 +71,9 @@ OCC_REDIS_URL=redis://localhost:6379/0
 OCC_SLACK_WEBHOOKS=https://hooks.slack.com/services/...
 ```
 
-CLI flags: `--config PATH` (import a legacy JSON `.conf`), `--redis-url URL`,
+CLI flags: `-c/--config PATH` (import a legacy JSON `.conf`), `--redis-url URL`,
 `--log-level LEVEL`, `--log-file PATH`, `--health-port PORT` (`0` disables),
+`-i/--ip ADDRESS` (the intake interface, as the Python 2 executable took it),
 `--check-config`, `--version`.
 
 While it runs, the service also appends its own log lines to the legacy `logs`
