@@ -290,3 +290,105 @@ def test_a_credential_nested_in_a_log_entry_is_masked_too(incident_factory: Any)
         # the login rules add does not reach the alert.
         assert "USERNAME=administrator" in text
         assert "raw=" not in text
+
+
+def test_a_corrupt_timestamp_renders_unknown_instead_of_crashing(incident_factory: Any) -> None:
+    """`created` comes from an event field, so it can be out of the calendar range.
+
+    Rendering must degrade to "unknown": an exception here would drop the whole
+    alert for every channel at once.
+    """
+    text = render_alert(incident_factory(created=99999999999999), detail="standard", flavor="plain")
+
+    assert "Time: unknown" in text
+
+
+def test_an_incident_without_a_destination_host_shows_unknown(incident_factory: Any) -> None:
+    text = render_alert(incident_factory(dst_host=""), detail="standard", flavor="plain")
+
+    assert "IP: unknown:21" in text
+
+
+def test_a_geo_guess_without_a_country_name_falls_back_to_the_code(incident_factory: Any) -> None:
+    """MaxMind sometimes has the code but not the display name."""
+    enrichment = Enrichment(geo=GeoInfo(country_code="NL"))
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
+
+    assert "Location: NL" in text
+
+
+def test_a_report_without_a_reputation_or_a_date_still_renders_the_ratio(
+    incident_factory: Any,
+) -> None:
+    enrichment = Enrichment(
+        virus_total=VirusTotalReport(malicious=0, suspicious=0, harmless=70, undetected=24),
+        virus_total_status="ok",
+    )
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="detailed", flavor="plain")
+
+    assert "VT: 0/94 malicious" in text
+    # No "reputation None" or "None" leaking into the row.
+    assert "None" not in text
+
+
+def test_a_log_entry_shows_at_most_six_fields(incident_factory: Any) -> None:
+    """The row has to stay one line on a phone; the cap is what keeps it there."""
+    logdata = json.dumps([{f"KEY{index}": index for index in range(8)}])
+
+    text = render_alert(incident_factory(logdata=logdata), detail="detailed", flavor="plain")
+
+    assert "KEY5=5" in text
+    assert "KEY6=6" not in text
+
+
+def test_a_list_inside_log_data_is_rendered_as_text_not_dropped() -> None:
+    """A scan stores its evidence as a list; a mixed payload must not lose entries."""
+    summary = log_summary(json.dumps([[21, 22], {"USERNAME": "admin"}]))
+
+    assert summary == "[21, 22] | USERNAME=admin"
+
+
+def test_a_nested_log_value_is_rendered_as_json(incident_factory: Any) -> None:
+    """A log field can hold a structure; it must be shown, not dropped or crashed on."""
+    logdata = json.dumps([{"details": {"PORT": 22, "PROTO": "tcp"}}])
+
+    text = render_alert(incident_factory(logdata=logdata), detail="detailed", flavor="plain")
+
+    assert 'details={"PORT": 22, "PROTO": "tcp"}' in text
+
+
+def test_a_raw_mapping_without_a_list_wrapper_is_unwrapped(incident_factory: Any) -> None:
+    """Older events store `raw` as a bare object instead of a one-element list."""
+    logdata = json.dumps([{"raw": {"USERNAME": "admin"}}])
+
+    text = render_alert(incident_factory(logdata=logdata), detail="standard", flavor="plain")
+
+    assert "Log: USERNAME=admin" in text
+    assert "raw=" not in text
+
+
+def test_an_empty_raw_wrapper_renders_no_log_row(incident_factory: Any) -> None:
+    logdata = json.dumps([{"raw": {}}])
+
+    text = render_alert(incident_factory(logdata=logdata), detail="standard", flavor="plain")
+
+    assert "📝" not in text
+
+
+def test_an_incident_without_log_data_has_no_log_row(incident_factory: Any) -> None:
+    """Not every rule captures evidence; an empty row would look like a parsing failure."""
+    text = render_alert(incident_factory(logdata=None), detail="standard", flavor="plain")
+
+    assert "📝" not in text
+
+
+def test_an_empty_geo_object_adds_no_location_row(incident_factory: Any) -> None:
+    """A cached geo entry with no usable fields must not print an empty value."""
+    text = render_alert(
+        incident_factory(enrichment=Enrichment(geo=GeoInfo())), detail="standard", flavor="plain"
+    )
+
+    assert "Location" not in text
+    assert "📍" not in text
