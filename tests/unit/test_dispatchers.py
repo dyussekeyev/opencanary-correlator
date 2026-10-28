@@ -23,6 +23,30 @@ from opencanary_correlator.connectors.dispatchers.discord import (
     DISCORD_MAX_CONTENT,
     DISCORD_MAX_EMBED_DESCRIPTION,
 )
+from opencanary_correlator.enrichment.models import (
+    Enrichment,
+    GeoInfo,
+    VirusTotalReport,
+)
+
+ATTACKER_CONTEXT = Enrichment(
+    geo=GeoInfo(
+        country_code="KZ",
+        country="Kazakhstan",
+        city="Almaty",
+        asn=202958,
+        as_org='LLP "Kompaniya Hoster.KZ"',
+    ),
+    virus_total=VirusTotalReport(
+        malicious=0,
+        suspicious=1,
+        harmless=70,
+        undetected=23,
+        reputation=0,
+        checked="2026-10-26",
+    ),
+    virus_total_status="ok",
+)
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -80,6 +104,58 @@ async def test_webhook_posts_incident_and_reports_success(incident_factory: Any)
     assert "FTP Login Attempt" in payload["text"]
     assert payload["key"] == "incident:ftplogin:10.0.0.5:1418997029"
     assert "PASSWORD" not in json.dumps(payload)
+    # Without enrichment the document stays exactly the legacy three keys.
+    assert set(payload) == {"title", "text", "key"}
+
+
+async def test_webhook_carries_the_attacker_context_as_structured_json(
+    incident_factory: Any,
+) -> None:
+    """A SIEM consumer gets the geo/VT values without parsing the message."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client)
+    try:
+        await dispatcher.dispatch(incident_factory(enrichment=ATTACKER_CONTEXT))
+    finally:
+        await dispatcher.aclose()
+
+    payload = json.loads(calls[0].content)
+    assert payload["enrichment"] == {
+        "geo": {
+            "country_code": "KZ",
+            "country": "Kazakhstan",
+            "city": "Almaty",
+            "asn": 202958,
+            "as_org": 'LLP "Kompaniya Hoster.KZ"',
+        },
+        "virustotal": {
+            "malicious": 0,
+            "suspicious": 1,
+            "detections": 1,
+            "total": 94,
+            "reputation": 0,
+            "checked": "2026-10-26",
+        },
+    }
+    # The legacy `text` field is untouched at the minimal level, so parsers
+    # keyed on it keep working while they migrate to the structured object.
+    assert "Location" not in payload["text"]
+
+
+async def test_webhook_reports_a_spent_quota_without_a_verdict(incident_factory: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client)
+    enrichment = Enrichment(geo=GeoInfo(country="Kazakhstan"), virus_total_status="quota")
+    try:
+        await dispatcher.dispatch(incident_factory(enrichment=enrichment))
+    finally:
+        await dispatcher.aclose()
+
+    payload = json.loads(calls[0].content)
+    assert payload["enrichment"]["geo"]["country"] == "Kazakhstan"
+    assert payload["enrichment"]["virustotal_status"] == "quota"
 
 
 async def test_webhook_retries_server_errors(incident_factory: Any) -> None:
@@ -327,6 +403,31 @@ async def test_smtp_sends_email(incident_factory: Any) -> None:
     assert kwargs["hostname"] == "smtp.test"
     assert kwargs["start_tls"] is True
     assert kwargs["use_tls"] is False
+
+
+async def test_smtp_default_layout_shows_the_attacker_context(incident_factory: Any) -> None:
+    """Email is read by a human, so the readable layout is the default."""
+    sent: list[Any] = []
+
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
+        sent.append(message)
+        return ({}, "ok")
+
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=587,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        send=fake_send,
+    )
+
+    result = await dispatcher.dispatch(incident_factory(enrichment=ATTACKER_CONTEXT))
+
+    assert result.status == "success"
+    body = sent[0].get_content()
+    assert "Instance: canary-1" in body
+    assert "Location: Kazakhstan" in body
+    assert "VT: 0/94 malicious (+1 suspicious)" in body
 
 
 async def test_smtp_subject_cannot_be_split_by_a_payload(incident_factory: Any) -> None:

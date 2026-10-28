@@ -214,14 +214,15 @@ class Settings(BaseSettings):
     # --- Alert detail per channel -------------------------------------------
     # `minimal` keeps the legacy message byte-for-byte; `standard` sends the
     # multiline instance/attacker layout; `detailed` adds destination, counters
-    # and a redacted log summary. Chat channels default to the readable layout,
-    # while webhook and SMTP stay on the legacy text so existing SIEM parsers and
-    # mail filters keep working until the level is raised explicitly.
+    # and a redacted log summary. Every channel a human reads defaults to the
+    # readable layout, e-mail included. The webhook stays on `minimal` because a
+    # parser may depend on its `text` field: it gets the attacker context as a
+    # separate `enrichment` object instead, at every detail level.
     telegram_detail: AlertDetail = "standard"
     slack_detail: AlertDetail = "standard"
     discord_detail: AlertDetail = "standard"
     webhook_detail: AlertDetail = "minimal"
-    smtp_detail: AlertDetail = "minimal"
+    smtp_detail: AlertDetail = "standard"
 
     # --- Attacker enrichment ------------------------------------------------
     # Off unless configured. The geo databases are local files (DB-IP Lite or

@@ -28,6 +28,12 @@ set the old values explicitly to keep the previous layout.
 - `minimal` alerts are unchanged; `standard` adds country and the detection
   ratio, `detailed` adds city, network and VirusTotal's reputation and analysis
   date. `docker-compose.yml` mounts an optional read-only `./geoip` directory.
+- The JSON webhook carries the same context as an `enrichment` object at every
+  detail level: country, city, ASN and AS organisation plus the VirusTotal verdict
+  with derived `detections` and `total`, or `virustotal_status` when a provider was
+  asked but returned no verdict. `text` is untouched at the default `minimal`
+  level and an unconfigured deployment POSTs the same three keys as before, so a
+  SIEM pipeline gets indexable fields without a parser change.
 
 - `http.request` incidents. OpenCanary logs a plain `GET` as `3000`, an
   unsupported method as `3002` and a redirect as `3003`; all three were audited
@@ -64,6 +70,10 @@ set the old values explicitly to keep the previous layout.
 
 ### Changed
 
+- `OCC_SMTP_DETAIL` defaults to `standard`, like the chat channels: a person
+  reads the mail, and the legacy body showed none of the attacker context. Set
+  `OCC_SMTP_DETAIL=minimal` to restore the old body for a mail filter that parses
+  it.
 - The alert layout no longer repeats the destination host. The instance address
   now carries its port (`🌐 IP: 203.0.113.7:3389`) and the separate
   `Destination` row is gone; `detailed` adds the event counter and more log

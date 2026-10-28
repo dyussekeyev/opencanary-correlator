@@ -168,9 +168,11 @@ mean `detailed`):
 The instance address carries its own port, so no second row repeats the same
 host. Lines are separated with CRLF, and chat channels use their native markup:
 MarkdownV2 for Telegram (with every field escaped, so no payload can break the
-message), mrkdwn for Slack and markdown for Discord. Chat channels default to
-`standard`; webhook and SMTP default to `minimal`, so existing SIEM parsers and
-mail filters keep receiving exactly the legacy text until you raise the level.
+message), mrkdwn for Slack and markdown for Discord. Every channel a person reads
+— Telegram, Slack, Discord and **SMTP** — defaults to `standard`, so the readable
+layout and the attacker context arrive without any configuration. The **webhook**
+stays on `minimal` because a SIEM parser may depend on its `text` field; it gets
+the attacker context as a separate `enrichment` object instead (see below).
 Log values whose key looks like a credential (`PASSWORD`, `SECRET`, `TOKEN`,
 `AUTH`, ...) are masked as `***` at every level that shows log data.
 
@@ -247,6 +249,41 @@ window renders `🦠 VT: quota exhausted`, a timeout or HTTP error renders
 never delay it by more than `OCC_ENRICHMENT_TIMEOUT` (6 s). The key travels in
 the `x-apikey` header, so it cannot appear in a request-URL log line, and it is
 hidden from `repr()` and `--check-config`.
+
+**The JSON webhook carries it as fields, not as text.** A webhook consumer does
+not have to read a message: the document gains an `enrichment` object whenever
+context exists, at every detail level, while `text` stays exactly the legacy
+report at the default `minimal` level. An unconfigured deployment POSTs the same
+three keys as before.
+
+```json
+{
+  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy (2.126.2.164)",
+  "text": "... legacy report ...",
+  "key": "incident:rdplogin:89.126.202.164:1793207641",
+  "enrichment": {
+    "geo": {
+      "country_code": "KZ",
+      "country": "Kazakhstan",
+      "city": "Almaty",
+      "asn": 202958,
+      "as_org": "LLP \"Kompaniya Hoster.KZ\""
+    },
+    "virustotal": {
+      "malicious": 0,
+      "suspicious": 1,
+      "detections": 1,
+      "total": 94,
+      "reputation": 0,
+      "checked": "2026-10-26"
+    }
+  }
+}
+```
+
+A provider that was asked but produced no verdict says so instead of disappearing:
+`"virustotal_status": "quota"` or `"unavailable"`. `detections` and `total` are
+provided so a downstream rule does not have to recompute the ratio.
 
 **Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

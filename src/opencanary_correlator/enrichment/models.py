@@ -8,7 +8,7 @@ shape never migrates stored incidents.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -91,6 +91,40 @@ class Enrichment(BaseModel):
         if self.geo is not None and not self.geo.is_empty:
             return False
         return self.virus_total is None and self.virus_total_status is None
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the machine-readable form used by the JSON webhook.
+
+        Chat channels render a message a human reads; a SIEM consumer needs
+        fields it can index, so the derived values (``total`` and ``detections``)
+        are included instead of leaving the ratio to be recomputed downstream. An
+        empty provider is omitted rather than sent as nulls, and a provider that
+        was asked but produced no verdict says so explicitly — "quota" and
+        "unavailable" are answers, not missing data.
+        """
+        payload: dict[str, Any] = {}
+        geo = self.geo
+        if geo is not None and not geo.is_empty:
+            payload["geo"] = {
+                "country_code": geo.country_code,
+                "country": geo.country,
+                "city": geo.city,
+                "asn": geo.asn,
+                "as_org": geo.as_org,
+            }
+        report = self.virus_total
+        if report is not None:
+            payload["virustotal"] = {
+                "malicious": report.malicious,
+                "suspicious": report.suspicious,
+                "detections": report.detections,
+                "total": report.total,
+                "reputation": report.reputation,
+                "checked": report.checked,
+            }
+        elif self.virus_total_status is not None:
+            payload["virustotal_status"] = self.virus_total_status
+        return payload
 
 
 __all__ = ["Enrichment", "GeoInfo", "VirusTotalReport", "VirusTotalStatus"]

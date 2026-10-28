@@ -29,9 +29,11 @@ def test_alert_detail_defaults_favour_readable_chat_messages(settings_factory: A
     assert settings.telegram_detail == "standard"
     assert settings.slack_detail == "standard"
     assert settings.discord_detail == "standard"
-    # Legacy text stays the default where a parser or mail filter may depend on it.
+    # A human reads the mail, so it gets the same readable layout as chat. The
+    # webhook keeps the legacy `text` because a parser may depend on it; its
+    # payload carries the attacker context as structured JSON at every level.
     assert settings.webhook_detail == "minimal"
-    assert settings.smtp_detail == "minimal"
+    assert settings.smtp_detail == "standard"
 
 
 @pytest.mark.parametrize(
