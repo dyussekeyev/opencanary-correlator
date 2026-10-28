@@ -292,7 +292,7 @@ async def run_pipeline(redis_url: str, events: int, hosts: int = 0) -> dict[str,
     )
     audit = AuditLogger("profile", stream=io.StringIO())
     repository = IncidentRepository(store, settings, audit)
-    dedup = DedupCache(store, ttl=settings.dedup_ttl)
+    dedup = DedupCache(store, ttl=settings.dedup_ttl, lease=settings.dedup_lease)
     rules = build_rules(store, repository, settings)
     engine = CorrelationEngine(
         rules=rules,
@@ -317,7 +317,12 @@ async def run_pipeline(redis_url: str, events: int, hosts: int = 0) -> dict[str,
     dedup_samples: list[float] = []
     for index in range(events):
         started = time.perf_counter()
-        await dedup.first_seen(f"profile-dedup-{index}")
+        # The real path is both halves: the lease before the rules run, the
+        # compare-and-expire that turns it into a window after they finish.
+        token = await dedup.claim(f"profile-dedup-{index}")
+        if token is None:  # pragma: no cover - one fresh fingerprint per iteration
+            raise RuntimeError("dedup refused a fresh fingerprint")
+        await dedup.confirm(f"profile-dedup-{index}", token)
         dedup_samples.append(time.perf_counter() - started)
     dedup_calls = sum(diff_counts(before, await counter.snapshot()).values())
     await store.client.delete(*(f"dedup:profile-dedup-{index}" for index in range(events)))
@@ -609,7 +614,9 @@ async def measure_client(store: RedisStore, iterations: int) -> dict[str, dict[s
             ),
             iterations,
         ),
-        "dedup": await _sample(lambda: store.acquire_dedup(next_dedup(), ttl=5.0), iterations),
+        "dedup": await _sample(
+            lambda: store.acquire_dedup(next_dedup(), ttl=5.0, token=next_dedup()), iterations
+        ),
     }
 
 

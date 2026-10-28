@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     scan_network_threshold: int = Field(default=2, ge=1)
     scan_network_horizon: float = Field(default=3600.0, gt=0.0)
     dedup_ttl: float = Field(default=60.0, ge=0.0)
+    # How long a claim is held before the event is correlated. A claim taken for
+    # the whole window cannot be released by a process that dies mid-correlation,
+    # so the canary's redelivery would be swallowed as a duplicate; a short lease
+    # expires on its own and only a correlated event extends it to `dedup_ttl`.
+    dedup_lease: float = Field(default=10.0, gt=0.0, le=3600.0)
     incident_lookup_scan_limit: int = Field(
         default=100,
         ge=1,

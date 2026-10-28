@@ -40,6 +40,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `event_dropped` | `warning` | the drain before shutdown ran out of time, so a backlog was cancelled | `reason: shutdown`, `count` |
 | `event_rate_limited` | `warning` | the node exceeded its event budget | `node_id`, `logtype` |
 | `event_deduplicated` | `info` | an identical event was seen inside the dedup TTL | `node_id`, `logtype` |
+| `event_dedup_lease_lost` | `info` | the dedup claim expired before the event was correlated (a rule slower than `OCC_DEDUP_LEASE`); the incident exists, a redelivery would merge | `node_id`, `logtype` |
 | `event_ignored` | `info` | the `logtype` is node lifecycle (boot, base message, debug, ping, config save), which nothing correlates | `node_id`, `logtype` |
 | `event_ignored` | `info` | the payload held only framing (a keep-alive newline or NUL), so there was nothing to parse | `reason: empty_payload` |
 | `event_unrouted` | `warning` | no rule handles this `logtype`, and it is not a known lifecycle type | `node_id`, `logtype` |

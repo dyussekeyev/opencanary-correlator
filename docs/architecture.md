@@ -129,8 +129,13 @@ therefore never touches correlation logic.
    Over-budget events are audited as `event_rate_limited`.
 5. **Dedup** — `event_fingerprint` hashes
    `node_id|src_host|src_port|dst_host|dst_port|logtype|logdata` with SHA-256;
-   `SET NX PX` on `dedup:<fingerprint>` (`OCC_DEDUP_TTL`) rejects retransmits,
-   audited as `event_deduplicated`.
+   `SET NX PX` on `dedup:<fingerprint>` rejects retransmits, audited as
+   `event_deduplicated`. The claim is a **lease** (`OCC_DEDUP_LEASE`, 10 s) while
+   the rules run, and is extended to the full window (`OCC_DEDUP_TTL`) only by a
+   Lua compare-and-expire once the event is stored, so a process that dies
+   mid-correlation cannot suppress the canary's redelivery. A rule failure
+   releases the claim; a lease that expired before the confirm is recorded as
+   `event_dedup_lease_lost`.
 6. **Route** — every rule is asked `matches(event)`, then `apply(event, now)`.
    A rule raising is audited as `rule_failed` and does not stop the others. If
    no rule matched, a node-lifecycle `logtype` (boot, base message, ping, …) is

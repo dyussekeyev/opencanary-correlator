@@ -16,16 +16,18 @@ from opencanary_correlator.schemas import CanaryEvent
 async def test_dedup_accepts_a_fingerprint_once(store: Any) -> None:
     cache = DedupCache(store, ttl=60)
 
-    assert await cache.first_seen("fingerprint") is True
-    assert await cache.first_seen("fingerprint") is False
-    assert await cache.first_seen("other") is True
+    token = await cache.claim("fingerprint")
+    assert token is not None
+    assert await cache.confirm("fingerprint", token)
+    assert await cache.claim("fingerprint") is None
+    assert await cache.claim("other") is not None
 
 
 async def test_dedup_is_disabled_by_zero_ttl(store: Any) -> None:
     cache = DedupCache(store, ttl=0)
 
-    assert await cache.first_seen("fingerprint") is True
-    assert await cache.first_seen("fingerprint") is True
+    assert await cache.claim("fingerprint") is not None
+    assert await cache.claim("fingerprint") is not None
 
 
 async def test_distinct_window_counts_unique_members(store: Any) -> None:

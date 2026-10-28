@@ -55,7 +55,8 @@ class CorrelationEngine:
         """Correlate one validated event."""
         now = float(self._clock())
         fingerprint = event_fingerprint(event)
-        if not await self._dedup.first_seen(fingerprint):
+        token = await self._dedup.claim(fingerprint)
+        if token is None:
             metrics.EVENTS_TOTAL.labels(result="deduplicated").inc()
             self._audit.emit(
                 "event_deduplicated",
@@ -90,7 +91,9 @@ class CorrelationEngine:
             # The claim was taken before the rules ran, so keeping it after a
             # failure would discard a redelivery of an event that never reached
             # the store: a second syslog relay, or a canary that reconnects.
-            await self._dedup.release(fingerprint)
+            await self._dedup.release(fingerprint, token)
+        else:
+            await self._confirm_claim(fingerprint, token, event)
 
         if not matched:
             logtype = int(event.logtype)
@@ -116,6 +119,24 @@ class CorrelationEngine:
         if incidents:
             await self._enrich(incidents)
             await self._dispatch(incidents)
+
+    async def _confirm_claim(self, fingerprint: str, token: str, event: CanaryEvent) -> None:
+        """Extend the dedup claim now that the event has been correlated.
+
+        The claim was only a lease until this point, so a process that died in
+        the middle suppressed nothing and the canary's redelivery still
+        correlates. Losing the lease first means a rule ran longer than
+        `OCC_DEDUP_LEASE`; the event is already stored, so a redelivery merges
+        instead of notifying twice - but a rule that persistently outlives its
+        lease is worth seeing.
+        """
+        if await self._dedup.confirm(fingerprint, token):
+            return
+        self._audit.emit(
+            "event_dedup_lease_lost",
+            "info",
+            {"node_id": event.node_id, "logtype": int(event.logtype)},
+        )
 
     async def _enrich(self, incidents: Sequence[Incident]) -> None:
         """Attach attacker context to the incidents that are about to be sent.

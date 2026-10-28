@@ -72,7 +72,7 @@ def make_engine(
     return CorrelationEngine(
         rules=build_rules(store, repository, settings),
         dispatchers=[dispatcher],
-        dedup=DedupCache(store, ttl=settings.dedup_ttl),
+        dedup=DedupCache(store, ttl=settings.dedup_ttl, lease=settings.dedup_lease),
         settings=settings,
         audit=audit,
     )
