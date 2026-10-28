@@ -162,10 +162,11 @@ mean `detailed`):
 | Level | Message |
 |---|---|
 | `minimal` | The legacy alert, byte-identical for messages that fit the channel limit |
-| `standard` | Instance name and IP, then attacker IP and source port, the detection time and a one-entry log summary |
-| `detailed` | `standard` plus destination address, event count and up to three log entries |
+| `standard` | Instance name and address (`IP:port`), then attacker IP and source port, the detection time and a one-entry log summary |
+| `detailed` | `standard` plus the event count and up to three log entries |
 
-Lines are separated with CRLF, and chat channels use their native markup:
+The instance address carries its own port, so no second row repeats the same
+host. Lines are separated with CRLF, and chat channels use their native markup:
 MarkdownV2 for Telegram (with every field escaped, so no payload can break the
 message), mrkdwn for Slack and markdown for Discord. Chat channels default to
 `standard`; webhook and SMTP default to `minimal`, so existing SIEM parsers and
@@ -177,7 +178,7 @@ Log values whose key looks like a credential (`PASSWORD`, `SECRET`, `TOKEN`,
 🛡 OpenCanary: *RDP Login Attempt*
 
 🖥 *Instance:* opencanary-embassy
-🌐 *IP:* 89.126.202.164
+🌐 *IP:* 89.126.202.164:3389
 
 🎯 *Attacker:* 66.132.159.132:52344
 🕒 *Time:* 2026-10-26 07:01:15 UTC

@@ -38,8 +38,6 @@ _MAX_LOG_PAIRS: Final[int] = 6
 _MAX_LOG_VALUE: Final[int] = 120
 _MAX_LOG_KEY: Final[int] = 40
 _REDACTED: Final[str] = "***"
-#: Sentinel for "this address has no port", matching the event schema default.
-_NO_PORT: Final[int] = -1
 
 #: Keys whose value must never leave the correlator.
 _SECRET_MARKERS: Final[tuple[str, ...]] = (
@@ -245,7 +243,9 @@ def render_alert(
         _header(incident.display_description, flavor),
         "",
         _line("🖥", "Instance", incident.node_id, flavor),
-        _line("🌐", "IP", _address(incident.dst_host, _NO_PORT), flavor),
+        # The destination port belongs to the instance address, not to a separate
+        # row: printing `IP` and `Destination` repeated the host on every alert.
+        _line("🌐", "IP", _address(incident.dst_host, incident.dst_port), flavor),
         "",
         _line("🎯", "Attacker", _address(incident.src_host, incident.src_port), flavor),
         _line("🕒", "Time", _format_time(incident.created), flavor),
@@ -253,13 +253,7 @@ def render_alert(
 
     detailed = detail == "detailed"
     if detailed:
-        lines.extend(
-            [
-                "",
-                _line("🔌", "Destination", _address(incident.dst_host, incident.dst_port), flavor),
-                _line("📊", "Events", incident.events_count, flavor),
-            ]
-        )
+        lines.append(_line("📊", "Events", incident.events_count, flavor))
     summary = log_summary(
         incident.logdata,
         max_entries=_MAX_LOG_ENTRIES if detailed else 1,

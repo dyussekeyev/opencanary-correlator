@@ -31,7 +31,9 @@ def test_standard_level_puts_the_instance_before_the_attacker(incident_factory: 
 
     assert lines[0] == "OpenCanary: FTP Login Attempt"
     assert "Instance: opencanary-embassy" in lines[2]
-    assert "IP: 89.126.202.164" in lines[3]
+    # The instance address carries its port, so no second destination row repeats it.
+    assert "IP: 89.126.202.164:21" in lines[3]
+    assert "Destination" not in text
     assert "Attacker: 10.0.0.5:40000" in lines[5]
     assert "Time: 2014-12-19 13:50:29 UTC" in lines[6]
     assert lines[8] == "📝 Log: USERNAME=admin"
@@ -39,18 +41,30 @@ def test_standard_level_puts_the_instance_before_the_attacker(incident_factory: 
     assert text.index("opencanary-embassy") < text.index("10.0.0.5")
 
 
-def test_detailed_level_adds_destination_events_and_log(incident_factory: Any) -> None:
+def test_detailed_level_adds_events_and_more_log_data(incident_factory: Any) -> None:
     incident = incident_factory(
         events_count=4,
         logdata=json.dumps([{"USERNAME": "admin", "PASSWORD": "hunter2"}]),
     )
 
     text = render_alert(incident, detail="detailed", flavor="plain")
+    lines = text.split(CRLF)
 
-    assert "Destination: 10.0.0.2:21" in text
+    assert "IP: 10.0.0.2:21" in text
+    assert "Destination" not in text
     assert "Events: 4" in text
     assert "Log: USERNAME=admin, PASSWORD=***" in text
     assert "hunter2" not in text
+    # Events and Log follow the attacker block directly, as in the requested layout.
+    assert lines[-2].endswith("Events: 4")
+    assert lines[-1].startswith("📝 Log:")
+
+
+def test_a_destination_without_a_port_is_not_rendered_as_minus_one(incident_factory: Any) -> None:
+    text = render_alert(incident_factory(dst_port=-1), detail="standard", flavor="plain")
+
+    assert "IP: 10.0.0.2" in text
+    assert "10.0.0.2:-1" not in text
 
 
 def test_credentials_are_masked_for_every_incident_shape(incident_factory: Any) -> None:

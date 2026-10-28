@@ -42,6 +42,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The alert layout no longer repeats the destination host. The instance address
+  now carries its port (`🌐 IP: 203.0.113.7:3389`) and the separate
+  `Destination` row is gone; `detailed` adds the event counter and more log
+  entries under the attacker block. Applies to every channel and to `webhook` /
+  `smtp` as soon as they use `standard` or `detailed`; `minimal` is unchanged.
 - `OCC_SLACK_ENABLED` defaults to `false`. The old default was `true`, which
   meant `OCC_SLACK_ENABLED=true` with no `OCC_SLACK_WEBHOOKS` silently created
   no channel at all. Enabling Slack without a webhook is now a startup error,
