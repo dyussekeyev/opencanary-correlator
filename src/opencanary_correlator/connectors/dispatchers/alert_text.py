@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from opencanary_correlator.core.logdata import decode_logdata
 from opencanary_correlator.enrichment.models import Enrichment
 from opencanary_correlator.redaction import (
     REDACTION_MARKER,
     is_sensitive_key,
+    redact,
     sanitize_text,
 )
 
@@ -113,14 +115,39 @@ def _header(description: str, flavor: AlertFlavor) -> str:
 
 
 def _log_value(key: str, value: object) -> str:
-    """Render one log field, masking anything that looks like a credential."""
+    """Render one log field, masking anything that looks like a credential.
+
+    A nested value is redacted before it is serialised, not just the outer key:
+    the login rules store an event as ``{"raw": [{"PASSWORD": ...}]}``, so
+    deciding by the outer key alone printed the captured password of every RDP,
+    SSH or Telnet attempt in the alert.
+    """
     if is_sensitive_key(key):
         return REDACTION_MARKER
     if isinstance(value, str):
         return _clean(value, _MAX_LOG_VALUE)
     if isinstance(value, (int, float, bool)) or value is None:
         return _clean(value, _MAX_LOG_VALUE)
-    return _clean(json.dumps(value, ensure_ascii=False, default=str), _MAX_LOG_VALUE)
+    safe = redact(value)
+    return _clean(json.dumps(safe, ensure_ascii=False, default=str), _MAX_LOG_VALUE)
+
+
+def _unwrap_raw(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the captured event that the login rules wrapped under `raw`.
+
+    Those rules store ``{"raw": [{"USERNAME": ..., "PASSWORD": ...}]}``, so
+    rendering the outer key printed ``raw=[{...}]`` next to every RDP, SSH and
+    Telnet alert. The wrapper carries no information of its own, so it is dropped
+    when it is the entry's only key.
+    """
+    if len(entry) != 1:
+        return entry
+    inner = entry.get("raw")
+    if isinstance(inner, list) and len(inner) == 1 and isinstance(inner[0], Mapping):
+        return inner[0]
+    if isinstance(inner, Mapping):
+        return inner
+    return entry
 
 
 def log_summary(
@@ -150,7 +177,7 @@ def log_summary(
         if isinstance(entry, dict):
             pairs = [
                 f"{_clean(key, _MAX_LOG_KEY)}={_log_value(str(key), value)}"
-                for key, value in list(entry.items())[:_MAX_LOG_PAIRS]
+                for key, value in list(_unwrap_raw(entry).items())[:_MAX_LOG_PAIRS]
             ]
             if pairs:
                 rendered.append(", ".join(pairs))

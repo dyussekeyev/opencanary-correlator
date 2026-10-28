@@ -271,3 +271,22 @@ def test_a_credential_field_is_masked_by_the_same_rule_the_audit_trail_uses(
         assert "abc123" not in text
         assert "PASSWORD=***" in text
         assert "CREDENTIAL=***" in text
+
+
+def test_a_credential_nested_in_a_log_entry_is_masked_too(incident_factory: Any) -> None:
+    """The login rules store the event one level down, under `raw`.
+
+    Deciding by the outer key alone printed `raw=[{"PASSWORD": "hunter2"}]` in
+    every RDP, SSH and Telnet alert: the key was `raw`, the secret was inside it.
+    """
+    logdata = json.dumps([{"raw": [{"USERNAME": "administrator", "PASSWORD": "hunter2"}]}])
+
+    for detail in ("standard", "detailed"):
+        text = render_alert(incident_factory(logdata=logdata), detail=detail, flavor="plain")
+
+        assert "hunter2" not in text
+        assert "PASSWORD=***" in text
+        # The non-secret part of the same entry is still shown, and the wrapper
+        # the login rules add does not reach the alert.
+        assert "USERNAME=administrator" in text
+        assert "raw=" not in text

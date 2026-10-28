@@ -61,6 +61,12 @@ set the old values explicitly to keep the previous layout.
   `credential`, so `CREDENTIAL=...` appeared in every chat channel, the e-mail
   body and the webhook while the audit record for the same event hid it. One
   list, one sanitiser and one `logdata` decoder now serve both paths.
+- A credential captured one level down in `logdata` is masked too. The login
+  rules store the captured event as `{"raw": [{"PASSWORD": ...}]}`, and the
+  renderer decided by the outer key alone, so every RDP, SSH and Telnet alert
+  printed the password the honeypot recorded. Nested values now go through the
+  same redaction, and the `raw` wrapper is unwrapped, so the line reads
+  `USERNAME=administrator, PASSWORD=***` instead of a JSON blob.
 - `OCC_LOG_LEVEL=DEBUG` no longer opens `httpx`, `httpcore`, `h11` and `hpack`.
   `httpx` logs every request URL at INFO — the Telegram Bot API keeps its token
   in the URL path — and the other three log connection and frame details at
