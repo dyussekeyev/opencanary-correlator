@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # `release/**` is included so a direct push to a release branch is checked
+    # too, not only the pull request into it.
+    branches: [master, "release/**"]
   pull_request:
   workflow_dispatch:
 
@@ -55,6 +57,12 @@ jobs:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The coverage comment needs to write to the pull request; everything else
+    # in this job stays read-only. Pull requests from forks get a read-only
+    # token regardless, so that step is skipped for them (see `if:` below).
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +96,105 @@ jobs:
       # so they get their own floor. Reads the .coverage data written by the run above.
       - name: Critical-module coverage floor (core, storage, receivers)
         run: uv run coverage report --include="*/core/*,*/storage/*,*/connectors/receivers/*" --fail-under=90
+      # One matrix entry publishes the report: four identical XML files would
+      # only clutter the artifacts and race on the same pull-request comment.
+      - name: Write the coverage report
+        if: matrix.python-version == '3.13'
+        run: uv run coverage xml -o coverage.xml
+      - name: Keep the coverage report
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 30
+      - name: Summarise coverage in the pull request
+        # Fork pull requests run with a read-only token, so a comment would fail
+        # there; the artifact above is still uploaded.
+        if: matrix.python-version == '3.13' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- opencanary-coverage -->';
+            const xml = fs.readFileSync('coverage.xml', 'utf8');
+            // The first `>` closes the `<?xml ...?>` declaration, so the root
+            // element has to be located explicitly.
+            const start = xml.indexOf('<coverage');
+            const root = xml.slice(start, xml.indexOf('>', start));
+            const attr = (name) => Number(root.match(new RegExp(name + '="([0-9.]+)"'))[1]);
+            const percent = (covered, total) => (total ? (covered / total) * 100 : 0).toFixed(2);
+
+            const linesCovered = attr('lines-covered');
+            const linesValid = attr('lines-valid');
+            const branchesCovered = attr('branches-covered');
+            const branchesValid = attr('branches-valid');
+            const combined = percent(
+              linesCovered + branchesCovered,
+              linesValid + branchesValid,
+            );
+
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              '### Coverage',
+              '',
+              '| Metric | Covered | Total | % |',
+              '|---|---|---|---|',
+              `| Lines | ${linesCovered} | ${linesValid} | ${percent(linesCovered, linesValid)} |`,
+              `| Branches | ${branchesCovered} | ${branchesValid} | ${percent(branchesCovered, branchesValid)} |`,
+              `| **Combined** | | | **${combined}** |`,
+              '',
+              'Gates in this run: 85 % overall, 90 % for `core`, `storage` and `connectors/receivers`.',
+              `[Download the XML report](${runUrl}) — the artifact is kept for 30 days.`,
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # The Linux matrix cannot exercise the Windows code paths the package ships:
+  # CRLF in alerts and logs, the pidfile handling, and the Windows datagram
+  # transport. Service containers are not available on Windows runners, so the
+  # opt-in real-Redis tests skip here and stay covered by the Ubuntu matrix.
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install the locked environment
+        shell: bash
+        run: uv sync --extra dev --python "$(command -v python)"
+      - name: Pytest
+        shell: bash
+        run: uv run pytest
 
   # Records numbers, never gates on them: two invocations of one commit
   # measured 5.145 s and 12.040 s for the same workload, because a shared
