@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict
@@ -21,37 +20,21 @@ from opencanary_correlator.core.incident_report import (
     render_scan_report,
     render_title,
 )
+from opencanary_correlator.core.logdata import decode_logdata
 from opencanary_correlator.enrichment.models import Enrichment
+from opencanary_correlator.redaction import sanitize_text
 
 logger = logging.getLogger("opencanary_correlator.core.incident")
 
 
-#: Control characters would break the line layout of a plain-text report, and a
-#: value echoed from a request can be arbitrarily long or contain newlines.
-_REPORT_CONTROL: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
+#: A value echoed from a request can be arbitrarily long or contain newlines,
+#: which would break the line layout of a plain-text report.
 _MAX_REPORT_FIELD: Final[int] = 200
 
 
 def _safe_field(value: Any) -> str:
     """Render one log value as a single clipped printable line."""
-    text = _REPORT_CONTROL.sub(" ", str(value))
-    text = " ".join(text.split())
-    if len(text) > _MAX_REPORT_FIELD:
-        return text[: _MAX_REPORT_FIELD - 1] + "…"
-    return text
-
-
-def _entries(existing: str | None) -> list[Any]:
-    """Decode the stored `logdata` list, tolerating legacy shapes."""
-    if not existing:
-        return []
-    try:
-        parsed = json.loads(existing)
-    except json.JSONDecodeError:
-        return []
-    if isinstance(parsed, list):
-        return parsed
-    return [parsed]
+    return sanitize_text(value, limit=_MAX_REPORT_FIELD, collapse=True)
 
 
 class Incident(BaseModel):
@@ -181,7 +164,7 @@ class Incident(BaseModel):
     @classmethod
     def trim_logdata(cls, value: str, *, limit: int) -> str:
         """Keep at most `limit` stored entries."""
-        entries = _entries(value)
+        entries = decode_logdata(value)
         if len(entries) <= limit:
             return value
         return json.dumps(entries[:limit])
@@ -193,7 +176,7 @@ class Incident(BaseModel):
         The stored list is frozen once the cap is reached, so a large incident
         stops rewriting (and replicating) its whole history on every event.
         """
-        entries = _entries(existing)
+        entries = decode_logdata(existing)
         if len(entries) < limit:
             entries.append(new)
             return json.dumps(entries)
@@ -229,7 +212,7 @@ class IncidentHTTPRequest(Incident):
     def _http_details(self) -> tuple[str, str, str, str] | None:
         """Return `(method, path, host, user agent)` from the first log entry."""
         try:
-            entry = _entries(self.logdata)[0]
+            entry = decode_logdata(self.logdata)[0]
         except (IndexError, TypeError):
             logger.error("Could not extract HTTP request details from incident %s", self.key)
             return None
@@ -335,7 +318,7 @@ class IncidentSMBFileOpen(Incident):
 
     def _smb_details(self) -> tuple[str, str] | None:
         try:
-            entry = _entries(self.logdata)[0]
+            entry = decode_logdata(self.logdata)[0]
             if not isinstance(entry, dict):
                 return None
             return str(entry.get("FILENAME", "")), str(entry.get("USER", ""))
@@ -386,7 +369,7 @@ class IncidentHostPortScan(Incident):
         bounded by the port universe rather than by event volume; dropping
         members would destroy the evidence the incident exists to record.
         """
-        values = {int(value) for value in _entries(existing)}
+        values = {int(value) for value in decode_logdata(existing)}
         incoming = new if isinstance(new, (list, tuple)) else [new]
         values.update(int(value) for value in incoming)
         return json.dumps(sorted(values))
@@ -405,7 +388,7 @@ class IncidentNetworkPortScan(Incident):
     @classmethod
     def merge_logdata(cls, existing: str | None, new: Any, *, limit: int) -> str:
         """Merge distinct targets; like the host scan this list stays exact."""
-        values = {str(value) for value in _entries(existing)}
+        values = {str(value) for value in decode_logdata(existing)}
         incoming = new if isinstance(new, (list, tuple)) else [new]
         values.update(str(value) for value in incoming)
         return json.dumps(sorted(values))
@@ -418,7 +401,7 @@ class IncidentNetworkPortScan(Incident):
     def format_report(self) -> str:
         """Formatting used by the legacy alert for distributed scans."""
         try:
-            targets = ", ".join(str(host) for host in _entries(self.logdata))
+            targets = ", ".join(str(host) for host in decode_logdata(self.logdata))
         except TypeError:
             targets = "Target data absent"
         return render_scan_report(

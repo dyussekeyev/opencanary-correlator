@@ -174,7 +174,8 @@ layout and the attacker context arrive without any configuration. The **webhook*
 stays on `minimal` because a SIEM parser may depend on its `text` field; it gets
 the attacker context as a separate `enrichment` object instead (see below).
 Log values whose key looks like a credential (`PASSWORD`, `SECRET`, `TOKEN`,
-`AUTH`, ...) are masked as `***` at every level that shows log data.
+`AUTH`, `CREDENTIAL`, ...) are masked as `***` at every level that shows log
+data, by the same rule that redacts the audit trail.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*

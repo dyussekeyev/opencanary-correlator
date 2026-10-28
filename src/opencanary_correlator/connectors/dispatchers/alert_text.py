@@ -22,7 +22,13 @@ import re
 from datetime import UTC, datetime
 from typing import Final, Literal, Protocol
 
+from opencanary_correlator.core.logdata import decode_logdata
 from opencanary_correlator.enrichment.models import Enrichment
+from opencanary_correlator.redaction import (
+    REDACTION_MARKER,
+    is_sensitive_key,
+    sanitize_text,
+)
 
 AlertDetail = Literal["minimal", "standard", "detailed"]
 AlertFlavor = Literal["telegram", "slack", "discord", "plain"]
@@ -39,21 +45,6 @@ _MAX_LOG_ITEMS: Final[int] = 10
 _MAX_LOG_PAIRS: Final[int] = 6
 _MAX_LOG_VALUE: Final[int] = 120
 _MAX_LOG_KEY: Final[int] = 40
-_REDACTED: Final[str] = "***"
-
-#: Keys whose value must never leave the correlator.
-_SECRET_MARKERS: Final[tuple[str, ...]] = (
-    "PASSWORD",
-    "PASSWD",
-    "PASS",
-    "SECRET",
-    "TOKEN",
-    "APIKEY",
-    "API_KEY",
-    "AUTH",
-    "PRIVATE",
-)
-
 _CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
 #: MarkdownV2 reserved characters; an unescaped one makes Telegram reject the message.
 _TELEGRAM_RESERVED: Final[re.Pattern[str]] = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
@@ -85,12 +76,8 @@ class AlertIncident(Protocol):
 
 
 def _clean(value: object, limit: int = _MAX_FIELD) -> str:
-    """Strip control characters, collapse whitespace and clip a field."""
-    text = _CONTROL_CHARS.sub(" ", str(value))
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[: limit - 1] + "…"
-    return text
+    """Flatten a value to one clipped line (see `redaction.sanitize_text`)."""
+    return sanitize_text(value, limit=limit, collapse=True)
 
 
 def _escape(text: str, flavor: AlertFlavor) -> str:
@@ -125,28 +112,10 @@ def _header(description: str, flavor: AlertFlavor) -> str:
     return f"🛡 OpenCanary: {markers}{_escape(title, flavor)}{markers}"
 
 
-def _decode_logdata(logdata: str | None) -> list[object]:
-    """Decode the stored `logdata` JSON, tolerating legacy shapes."""
-    if not logdata:
-        return []
-    try:
-        parsed = json.loads(logdata)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if isinstance(parsed, list):
-        return parsed
-    return [parsed]
-
-
-def _is_secret_key(key: str) -> bool:
-    upper = key.upper()
-    return any(marker in upper for marker in _SECRET_MARKERS)
-
-
 def _log_value(key: str, value: object) -> str:
     """Render one log field, masking anything that looks like a credential."""
-    if _is_secret_key(key):
-        return _REDACTED
+    if is_sensitive_key(key):
+        return REDACTION_MARKER
     if isinstance(value, str):
         return _clean(value, _MAX_LOG_VALUE)
     if isinstance(value, (int, float, bool)) or value is None:
@@ -167,7 +136,7 @@ def log_summary(
     a comma-separated list of the first entries. The two limits let the detail
     level decide how much evidence the channel shows.
     """
-    entries = _decode_logdata(logdata)
+    entries = decode_logdata(logdata)
     if not entries:
         return ""
     if all(not isinstance(entry, (dict, list)) for entry in entries):

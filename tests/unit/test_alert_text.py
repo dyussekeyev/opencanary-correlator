@@ -253,3 +253,21 @@ def test_max_length_is_honoured(incident_factory: Any) -> None:
 
     assert len(text) == 20
     assert text.endswith("…")
+
+
+def test_a_credential_field_is_masked_by_the_same_rule_the_audit_trail_uses(
+    incident_factory: Any,
+) -> None:
+    """One credential list, so a field cannot be hidden in one place and shown in another.
+
+    `redaction.SENSITIVE_KEY_PATTERN` masks anything matching `credential`, and the
+    audit trail therefore hides it; the renderer used to keep its own list without
+    that word and printed the value to every chat channel.
+    """
+    logdata = json.dumps([{"USERNAME": "admin", "PASSWORD": "hunter2", "CREDENTIAL": "abc123"}])
+    for detail in ("standard", "detailed"):
+        text = render_alert(incident_factory(logdata=logdata), detail=detail, flavor="plain")
+        assert "hunter2" not in text
+        assert "abc123" not in text
+        assert "PASSWORD=***" in text
+        assert "CREDENTIAL=***" in text
