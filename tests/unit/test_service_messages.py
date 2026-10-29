@@ -74,7 +74,8 @@ def service_settings(settings_factory: Any, **overrides: Any) -> Any:
         "service_enabled": True,
         "service_categories": ["enrichment", "channels", "lifecycle"],
         "service_cooldown": 3600,
-        "service_min_severity": "warning",
+        # `lifecycle` is `info`, so the floor has to allow it (see the config test).
+        "service_min_severity": "info",
     }
     params.update(overrides)
     return settings_factory(**params)
@@ -118,7 +119,11 @@ async def test_a_message_quieter_than_the_floor_is_dropped(
     store: Any, settings_factory: Any, audit: Any
 ) -> None:
     dispatcher = RecordingDispatcher()
-    settings = service_settings(settings_factory, service_min_severity="critical")
+    settings = service_settings(
+        settings_factory,
+        service_categories=["enrichment", "channels"],
+        service_min_severity="critical",
+    )
     notifier = make_notifier(store, settings, audit, [dispatcher])
 
     assert await notifier.notify(ServiceKind.GEO_UNAVAILABLE, title="GeoIP failed") is False
@@ -519,11 +524,24 @@ def test_severity_aliases_are_normalised_and_nonsense_is_rejected(
 
 def test_the_csv_lists_are_split(settings_factory: Any) -> None:
     settings = settings_factory(
-        service_channels="telegram, slack", service_categories="channels,lifecycle"
+        service_channels="telegram, slack",
+        service_categories="channels,lifecycle",
+        service_min_severity="info",
     )
 
     assert settings.service_channels == ["telegram", "slack"]
     assert settings.service_categories == ["channels", "lifecycle"]
+
+
+def test_a_lifecycle_category_with_a_warning_floor_is_rejected(
+    settings_factory: Any,
+) -> None:
+    """Opting into `lifecycle` and filtering out `info` would be silent."""
+    with pytest.raises(ValidationError, match="OCC_SERVICE_MIN_SEVERITY=info"):
+        settings_factory(service_categories=["lifecycle"], service_min_severity="warning")
+
+    settings = settings_factory(service_categories=["lifecycle"], service_min_severity="info")
+    assert settings.service_min_severity == "info"
 
 
 def test_the_known_channel_names_match_the_built_channels() -> None:

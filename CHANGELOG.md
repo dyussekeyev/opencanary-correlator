@@ -39,6 +39,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that cannot carry a service message is audited as `service_message_failed`
   rather than silently swallowing it. New audit actions:
   `service_message_sent`, `service_message_suppressed`, `service_message_failed`.
+  `OCC_SERVICE_CATEGORIES` including `lifecycle` with a severity floor above
+  `info` is a startup error: that pairing would have delivered nothing while
+  looking configured.
 
 ### Fixed
 

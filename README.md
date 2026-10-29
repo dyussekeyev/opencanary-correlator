@@ -236,6 +236,11 @@ OCC_SERVICE_COOLDOWN=3600            # one message per (kind, subject) per hour
 OCC_SERVICE_MIN_SEVERITY=warning     # info, warning or critical
 ```
 
+`lifecycle` messages are `info`, so asking for that category with a `warning`
+floor would filter every start and stop out. The contradiction is a startup error
+(`set OCC_SERVICE_MIN_SEVERITY=info or drop the category`) rather than a silent
+no-op.
+
 A degraded dependency fails on *every* alert, so each `(kind, subject)` speaks
 once per cooldown and the message that gets through says how often it repeated
 meanwhile — a hundred failed lookups become one message, not a hundred:
