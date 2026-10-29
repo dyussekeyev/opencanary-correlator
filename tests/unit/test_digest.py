@@ -205,6 +205,24 @@ async def test_one_digest_per_day(
     assert await store.exists(keys.digest_sent_key(day))
 
 
+async def test_two_replicas_electing_at_the_same_second_send_one_message(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    """The plan's acceptance case: both elect, only one message leaves."""
+    import asyncio
+
+    dispatcher = RecordingDispatcher()
+    settings = digest_settings(settings_factory, digest_channels=["slack"])
+    notifier = make_notifier(store, settings, audit, [dispatcher])
+    first = DigestScheduler(store, notifier, settings, audit, clock=lambda: NOW)
+    second = DigestScheduler(store, notifier, settings, audit, clock=lambda: NOW)
+
+    results = await asyncio.gather(first.run_once(), second.run_once())
+
+    assert sorted(results) == [False, True]
+    assert len(dispatcher.messages) == 1
+
+
 async def test_a_replica_that_lost_the_lock_sends_nothing(
     store: Any, settings_factory: Any, audit: Any
 ) -> None:
