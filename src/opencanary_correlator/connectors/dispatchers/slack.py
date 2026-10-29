@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
     render_alert,
+    render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 
 class SlackDispatcher(HTTPDispatcher):
@@ -29,6 +33,10 @@ class SlackDispatcher(HTTPDispatcher):
     def build_payload(self, incident: IncidentLike) -> dict[str, Any]:
         """Slack accepts a simple `text` field for plain-message webhooks."""
         return {"text": render_alert(incident, detail=self._detail, flavor="slack")}
+
+    def build_service_payload(self, message: ServiceMessage) -> dict[str, Any]:
+        """A service message is a human-readable line, so Slack carries it as-is."""
+        return {"text": render_service_message(message, flavor="slack")}
 
 
 __all__ = ["SlackDispatcher"]

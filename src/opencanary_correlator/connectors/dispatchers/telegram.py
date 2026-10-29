@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import SecretStr
 
@@ -10,8 +10,12 @@ from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
     render_alert,
+    render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 TELEGRAM_MAX_TEXT = 4096
 
@@ -59,6 +63,17 @@ class TelegramDispatcher(HTTPDispatcher):
             # line is sent unparsed, exactly as before.
             payload["parse_mode"] = "MarkdownV2"
         return payload
+
+    def build_service_payload(self, message: ServiceMessage) -> dict[str, Any]:
+        """Service messages use the same MarkdownV2 escape and 4096-char limit."""
+        return {
+            "chat_id": self._chat_id,
+            "text": render_service_message(
+                message, flavor="telegram", max_length=TELEGRAM_MAX_TEXT
+            ),
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": True,
+        }
 
 
 __all__ = ["TELEGRAM_MAX_TEXT", "TelegramDispatcher"]

@@ -25,6 +25,7 @@ from opencanary_correlator.storage.scripts import (
     RESERVE_QUOTA_LUA,
     SAVE_INCIDENT_LUA,
     SAVE_INCIDENT_WITH_ALERTS_LUA,
+    SERVICE_MESSAGE_SLOT_LUA,
     SETTLE_ALERT_LUA,
 )
 
@@ -67,6 +68,7 @@ class _StoreBase:
     _save_incident_alerts_script: Script
     _claim_alerts_script: Script
     _settle_alert_script: Script
+    _service_message_script: Script
 
     def __init__(self, client: Redis) -> None:
         self._client = client
@@ -79,6 +81,9 @@ class _StoreBase:
         )
         self._claim_alerts_script = cast(Script, client.register_script(CLAIM_DUE_ALERTS_LUA))
         self._settle_alert_script = cast(Script, client.register_script(SETTLE_ALERT_LUA))
+        self._service_message_script = cast(
+            Script, client.register_script(SERVICE_MESSAGE_SLOT_LUA)
+        )
 
     @classmethod
     def from_url(

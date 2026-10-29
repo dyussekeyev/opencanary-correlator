@@ -279,6 +279,16 @@
     "log_level": "INFO",
     "max_stored_events": 100,
     "redis_url": "redis://:***@redis.example.test:6379/3",
+    "service_messages": {
+      "categories": [
+        "enrichment",
+        "channels"
+      ],
+      "channels": [],
+      "cooldown": 3600.0,
+      "enabled": false,
+      "min_severity": "warning"
+    },
     "syslog": {
       "enabled": false,
       "host": "127.0.0.1",

@@ -185,6 +185,35 @@ therefore never touches correlation logic.
    settling it. `OCC_OUTBOX_ENABLED=false` restores best-effort delivery, where a
    failure is logged and forgotten.
 
+## Service messages
+
+A second, much smaller path runs beside delivery: the correlator's report about
+itself. It is off by default (`OCC_SERVICE_ENABLED`) and never touches the event
+hot path — the call sites are the failure branches that already write an audit
+record, the dispatch result, and process start/stop.
+
+| Source | Kinds | Where it is noticed |
+|---|---|---|
+| Enrichment | `enrichment.virustotal.key_rejected`, `…quota`, `…unavailable`, `enrichment.geo.unavailable` | `enrichment/service.py`, on the branches that already emit `enrichment_failed` / `enrichment_skipped` |
+| Channels | `channel.circuit_open`, `channel.all_failing` | `core/engine.py`, from the dispatch result (a skipped `circuit_open` attempt, or `ALL_CHANNELS_FAILING_THRESHOLD` consecutive alerts nobody accepted) |
+| Lifecycle | `lifecycle.started`, `lifecycle.stopped` | `app/runner.py`, around the supervised task set |
+
+`ServiceNotifier` applies three gates before anything is sent: the category
+(`OCC_SERVICE_CATEGORIES`), the severity floor (`OCC_SERVICE_MIN_SEVERITY`) and a
+suppression slot per `(kind, subject)`. The slot is one Lua script
+(`SERVICE_MESSAGE_SLOT_LUA`): `SET NX EX <cooldown>` admits the first occurrence,
+and every refusal increments a counter that the next admitted message reports as
+its repeat count. Two replicas therefore cannot both announce the same
+degradation, and a broken dependency that fails on every alert becomes one
+message per `OCC_SERVICE_COOLDOWN` rather than a storm.
+
+Delivery reuses the configured dispatchers, each with its own `notify()` method
+(the default raises, so a new channel cannot silently swallow these). Routing is
+by name (`OCC_SERVICE_CHANNELS`, empty means all), and a name that matches no
+configured channel is a startup error. The payload carries no incident key and no
+attacker data: the generic webhook sends `{kind, severity, title, text, count}`,
+which a SIEM can route without matching an alert rule.
+
 ## Correlation rules
 
 | Rule | Trigger | Horizon |

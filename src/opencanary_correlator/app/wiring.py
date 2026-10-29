@@ -19,6 +19,7 @@ from opencanary_correlator.connectors.receivers import (
 )
 from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
 from opencanary_correlator.core.engine import CorrelationEngine
+from opencanary_correlator.core.service_messages import ServiceNotifier
 from opencanary_correlator.enrichment import (
     GeoLookup,
     GeoLookupError,
@@ -32,7 +33,10 @@ from opencanary_correlator.storage.redis_store import RedisStore
 
 
 def build_enricher(
-    settings: Settings, store: RedisStore, audit: AuditLogger
+    settings: Settings,
+    store: RedisStore,
+    audit: AuditLogger,
+    notifier: ServiceNotifier | None = None,
 ) -> IncidentEnricher | None:
     """Build the attacker-IP enricher, or None when nothing is configured.
 
@@ -64,7 +68,11 @@ def build_enricher(
     if geo is None and virustotal is None:
         return None
     return IncidentEnricher(
-        geo=geo, virustotal=virustotal, audit=audit, timeout=settings.enrichment_timeout
+        geo=geo,
+        virustotal=virustotal,
+        audit=audit,
+        timeout=settings.enrichment_timeout,
+        notifier=notifier,
     )
 
 

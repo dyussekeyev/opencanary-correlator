@@ -128,6 +128,23 @@ def console_setting_key(setting: str) -> str:
     return f"{KEY_CONSOLE_SETTING_PREFIX}{setting}"
 
 
+def service_subject_hash(subject: str) -> str:
+    """Stable, short id of a service-message subject.
+
+    The subject can be a node id taken from the wire or a filesystem path, so it
+    is hashed rather than embedded: a key built from arbitrary input would let a
+    canary create keys of any length, and a path in a Redis key is one more place
+    it leaks.
+    """
+    return hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+
+
+def service_message_keys(kind: str, subject: str) -> tuple[str, str]:
+    """Suppression slot and repeat counter for one `(kind, subject)` pair."""
+    suffix = f"{kind}:{service_subject_hash(subject)}"
+    return f"service:mute:{suffix}", f"service:repeat:{suffix}"
+
+
 __all__ = [
     "DEDUP_KEY_PREFIX",
     "DELIVERED_PREFIX",
@@ -153,4 +170,6 @@ __all__ = [
     "outbox_alert_key",
     "outbox_entry_id",
     "quota_key",
+    "service_message_keys",
+    "service_subject_hash",
 ]

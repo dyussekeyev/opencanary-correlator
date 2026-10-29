@@ -29,6 +29,7 @@ from opencanary_correlator.config_validation import (
     normalise_health_host,
     normalise_log_file,
     normalise_log_level,
+    normalise_service_severity,
     require_email_address,
     require_http_urls,
     require_redis_scheme,
@@ -36,6 +37,8 @@ from opencanary_correlator.config_validation import (
     split_comma_separated,
     validate_allowed_ips,
     validate_incident_horizons,
+    validate_service_categories,
+    validate_service_channels,
     validate_telegram_token,
 )
 from opencanary_correlator.connectors.receivers._allowlist import parse_allowed_networks
@@ -48,6 +51,9 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 #: How much of an incident a channel puts in the message. ``minimal`` is the
 #: legacy single-line alert; see ``connectors.dispatchers.alert_text``.
 AlertDetail = Literal["minimal", "standard", "detailed"]
+
+#: How loudly a service message speaks; see `core.service_messages`.
+ServiceSeverity = Literal["info", "warning", "critical"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
 
@@ -262,6 +268,29 @@ class Settings(BaseSettings):
     #: Budget for one enrichment pass, below `dispatch_timeout` on purpose.
     enrichment_timeout: float = Field(default=6.0, gt=0.0, le=120.0)
 
+    # --- Service messages ---------------------------------------------------
+    # The correlator talking about itself: a rejected VirusTotal key, a spent
+    # quota, a broken GeoIP database, a channel whose breaker opened, no channel
+    # delivering, the process starting and stopping. Off by default, because an
+    # existing deployment must behave exactly as it did until somebody opts in.
+    service_enabled: bool = False
+    # Empty means every enabled channel. Names are checked against the channels
+    # that were actually built at startup, so a typo is an error, not a silence.
+    service_channels: CommaSeparated = Field(
+        default_factory=list,
+        description=("Comma-separated channel names for service messages; empty means all"),
+    )
+    service_categories: CommaSeparated = Field(
+        default_factory=lambda: ["enrichment", "channels"],
+        description=(
+            "Comma-separated groups of service messages to allow: enrichment, channels, lifecycle"
+        ),
+    )
+    # One message per (kind, subject) per cooldown; the message that gets through
+    # says how often the same thing happened while it was muted.
+    service_cooldown: float = Field(default=3600.0, gt=0.0, le=7 * 24 * 3600.0)
+    service_min_severity: ServiceSeverity = "warning"
+
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
     # Operational log file. Empty means "stderr only", which is what containers
@@ -292,11 +321,28 @@ class Settings(BaseSettings):
         "smtp_to",
         "receiver_allowed_ips",
         "health_allowed_ips",
+        "service_channels",
+        "service_categories",
         mode="before",
     )
     @classmethod
     def _split_comma_separated(cls, value: Any) -> Any:
         return split_comma_separated(value)
+
+    @field_validator("service_channels")
+    @classmethod
+    def _validate_service_channels(cls, value: list[str]) -> list[str]:
+        return validate_service_channels(value)
+
+    @field_validator("service_categories")
+    @classmethod
+    def _validate_service_categories(cls, value: list[str]) -> list[str]:
+        return validate_service_categories(value)
+
+    @field_validator("service_min_severity", mode="before")
+    @classmethod
+    def _normalise_service_severity(cls, value: Any) -> Any:
+        return normalise_service_severity(value)
 
     @field_validator("webhook_urls", "slack_webhooks", "discord_webhooks")
     @classmethod

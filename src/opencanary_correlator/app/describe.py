@@ -87,6 +87,13 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),
             "virustotal": settings.virustotal_api_key is not None,
         },
+        "service_messages": {
+            "enabled": settings.service_enabled,
+            "channels": list(settings.service_channels),
+            "categories": list(settings.service_categories),
+            "cooldown": settings.service_cooldown,
+            "min_severity": settings.service_min_severity,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }

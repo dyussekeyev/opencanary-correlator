@@ -221,6 +221,43 @@ delivery is logged and forgotten. `OCC_OUTBOX_POLL_INTERVAL`,
 `OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH` and `OCC_OUTBOX_DELIVERY_RETENTION` tune
 the worker; none of them has to be set to use it.
 
+### Service messages (off by default)
+
+The correlator can tell you about itself through the same channels: a rejected
+VirusTotal key, an exhausted quota, a GeoIP database that stopped answering, a
+channel whose circuit breaker opened, no channel delivering at all, and the
+process starting or stopping.
+
+```bash
+OCC_SERVICE_ENABLED=true
+OCC_SERVICE_CHANNELS=telegram,slack   # empty = every enabled channel
+OCC_SERVICE_CATEGORIES=enrichment,channels,lifecycle
+OCC_SERVICE_COOLDOWN=3600            # one message per (kind, subject) per hour
+OCC_SERVICE_MIN_SEVERITY=warning     # info, warning or critical
+```
+
+A degraded dependency fails on *every* alert, so each `(kind, subject)` speaks
+once per cooldown and the message that gets through says how often it repeated
+meanwhile — a hundred failed lookups become one message, not a hundred:
+
+```text
+🛑 OpenCanary service: VirusTotal rejected the API key
+
+• The API answered 401 or 403 for every lookup
+• Check OCC_VIRUSTOTAL_API_KEY and that the key is still enabled
+
+🔁 Repeated 99 times since the last message
+```
+
+Messages are built from fixed templates, counts and status codes: provider URLs,
+API keys and webhook paths never enter them, and the subject used for the
+suppression key is hashed. A channel that cannot carry a service message (a
+plugin's own dispatcher) is audited as `service_message_failed` with
+`reason: not_supported` instead of being silently skipped. Routing is checked at
+startup: a name in `OCC_SERVICE_CHANNELS` that matches no configured channel
+stops the process, because a silently dropped service message is the blind spot
+the feature exists to remove.
+
 ## Attacker enrichment (optional)
 
 The attacker block can carry where the address comes from and how VirusTotal

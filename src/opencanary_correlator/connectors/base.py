@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from opencanary_correlator.schemas import CanaryEvent
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
     from opencanary_correlator.enrichment.models import Enrichment
 
 
@@ -129,6 +130,18 @@ class BaseDispatcher(ABC):
     @abstractmethod
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """Deliver an incident, returning the outcome instead of raising."""
+
+    async def notify(self, message: ServiceMessage) -> DispatchResult:
+        """Deliver one service message about the correlator itself.
+
+        A service message is not an incident: it has no source address and no
+        incident key, so it takes its own small payload per channel. The default
+        raises instead of silently returning "skipped": a new channel that cannot
+        carry a service message must say so once, not swallow every degradation
+        report. ``ServiceNotifier`` turns the raise into an audit record and keeps
+        the other channels working.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot carry service messages")
 
     async def aclose(self) -> None:  # noqa: B027 - optional hook, not every channel owns resources
         """Release network resources. Dispatchers without state need not override."""

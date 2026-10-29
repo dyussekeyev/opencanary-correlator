@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any, Final, Literal, Protocol
 
 from opencanary_correlator.core.logdata import decode_logdata
+from opencanary_correlator.core.service_messages import ServiceMessage, Severity
 from opencanary_correlator.enrichment.models import Enrichment
 from opencanary_correlator.redaction import (
     REDACTION_MARKER,
@@ -50,6 +51,13 @@ _MAX_LOG_KEY: Final[int] = 40
 _CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
 #: MarkdownV2 reserved characters; an unescaped one makes Telegram reject the message.
 _TELEGRAM_RESERVED: Final[re.Pattern[str]] = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+#: How loudly a service message speaks, as a symbol an operator recognises.
+_SEVERITY_EMOJI: Final[dict[Severity, str]] = {
+    Severity.INFO: "ℹ️",
+    Severity.WARNING: "⚠️",
+    Severity.CRITICAL: "🛑",
+}
 
 
 class AlertIncident(Protocol):
@@ -310,6 +318,38 @@ def render_alert(
     return clip(CRLF.join(lines), max_length)
 
 
+def render_service_message(
+    message: ServiceMessage,
+    *,
+    flavor: AlertFlavor = "plain",
+    max_length: int | None = None,
+) -> str:
+    """Render a message about the correlator itself for one channel.
+
+    Same line discipline as an alert (CRLF between rows, markup per dialect), but
+    the content is a fixed template, a severity symbol and counts: nothing here
+    comes from a provider response, so no key, URL or webhook path can leak
+    through it. The repeat count is shown only when the cooldown hid something,
+    so a single occurrence reads as a single sentence.
+    """
+    title = _clean(message.title)
+    emoji = _SEVERITY_EMOJI[message.severity]
+    if flavor == "plain":
+        header = f"{emoji} OpenCanary service: {title}"
+    else:
+        markers = "**" if flavor == "discord" else "*"
+        header = f"{emoji} OpenCanary service: {markers}{_escape(title, flavor)}{markers}"
+
+    lines: list[str] = [header]
+    if message.lines:
+        lines.append("")
+        lines.extend(f"• {_escape(_clean(line), flavor)}" for line in message.lines)
+    if message.count > 1:
+        repeat = f"🔁 Repeated {message.count} times since the last message"
+        lines.extend(["", _escape(repeat, flavor)])
+    return clip(CRLF.join(lines), max_length)
+
+
 __all__ = [
     "ALERT_DETAIL_LEVELS",
     "CRLF",
@@ -319,4 +359,5 @@ __all__ = [
     "clip",
     "log_summary",
     "render_alert",
+    "render_service_message",
 ]

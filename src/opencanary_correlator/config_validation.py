@@ -40,6 +40,20 @@ DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 #: Upper bound for a per-incident horizon, in seconds (one week).
 MAX_INCIDENT_HORIZON_SECONDS: Final[float] = 7 * 24 * 3600.0
 
+#: Delivery channels a service message can be routed to. Kept here rather than
+#: imported from `app.channels`, which imports this module's owner: a test asserts
+#: the two lists agree, so a new channel cannot be forgotten in one of them.
+KNOWN_CHANNEL_NAMES: Final[tuple[str, ...]] = (
+    "webhook",
+    "slack",
+    "discord",
+    "telegram",
+    "smtp",
+)
+
+#: Groups of service messages an operator can switch on independently.
+SERVICE_CATEGORIES: Final[tuple[str, ...]] = ("enrichment", "channels", "lifecycle")
+
 
 def split_comma_separated(value: Any) -> Any:
     """Split a comma-separated string, or decode a JSON array, into a list."""
@@ -200,6 +214,45 @@ def slack_configured_but_disabled(enabled: bool, webhooks: list[str]) -> bool:
     return bool(webhooks) and not enabled
 
 
+def validate_service_channels(value: list[str]) -> list[str]:
+    """Reject a service-message channel name the correlator does not know.
+
+    A misspelled name would otherwise mean "send to nobody": the setting would
+    look configured and the deployment would silently report nothing, which is
+    the exact blind spot service messages exist to remove.
+    """
+    normalised = [name.strip().lower() for name in value if name.strip()]
+    unknown = sorted(set(normalised) - set(KNOWN_CHANNEL_NAMES))
+    if unknown:
+        raise ValueError(
+            "unknown service_channels entries: "
+            + ", ".join(unknown)
+            + f" (expected any of {', '.join(KNOWN_CHANNEL_NAMES)})"
+        )
+    return normalised
+
+
+def validate_service_categories(value: list[str]) -> list[str]:
+    """Reject a service-message category that nothing would ever match."""
+    normalised = [name.strip().lower() for name in value if name.strip()]
+    unknown = sorted(set(normalised) - set(SERVICE_CATEGORIES))
+    if unknown:
+        raise ValueError(
+            "unknown service_categories entries: "
+            + ", ".join(unknown)
+            + f" (expected any of {', '.join(SERVICE_CATEGORIES)})"
+        )
+    return normalised
+
+
+def normalise_service_severity(value: Any) -> Any:
+    """Severity levels are case-insensitive and accept the usual short aliases."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip().lower()
+    return {"warn": "warning", "crit": "critical", "fatal": "critical"}.get(text, text)
+
+
 def require_email_address(value: str) -> str:
     """Minimal structural check: an address with a local part and a domain."""
     if "@" not in value or value.startswith("@") or value.endswith("@"):
@@ -235,8 +288,10 @@ __all__ = [
     "DEFAULT_HEALTH_HOST",
     "DEFAULT_HEALTH_PORT",
     "DEFAULT_INTAKE_HOST",
+    "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
+    "SERVICE_CATEGORIES",
     "TELEGRAM_TOKEN_RE",
     "decode_incident_horizons",
     "disable_health_port",
@@ -245,6 +300,7 @@ __all__ = [
     "normalise_health_host",
     "normalise_log_file",
     "normalise_log_level",
+    "normalise_service_severity",
     "require_email_address",
     "require_http_urls",
     "require_redis_scheme",
@@ -253,5 +309,7 @@ __all__ = [
     "split_comma_separated",
     "validate_allowed_ips",
     "validate_incident_horizons",
+    "validate_service_categories",
+    "validate_service_channels",
     "validate_telegram_token",
 ]

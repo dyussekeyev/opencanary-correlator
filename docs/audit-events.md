@@ -54,6 +54,9 @@ a compatibility risk, because consumers only rely on these five keys.
 | `alert_retry` | `warning` | an attempt failed and the outbox scheduled another | `dispatcher`, `incident`, `attempts`, `reason`, `next_attempt_in` |
 | `alert_dead_letter` | `error` | the outbox gave up; the entry is in `outbox:dead` | `dispatcher`, `incident`, `attempts`, `reason` (`timeout`, `error`, `unknown_channel`, `incident_gone`) |
 | `outbox_failed` | `error` | one worker iteration raised and was skipped | `error_type` |
+| `service_message_sent` | `success` / `error` | a service message about the correlator reached (or failed on) one channel | `kind`, `dispatcher`, `status`, `count` |
+| `service_message_suppressed` | `info` | the cooldown muted a repeat of the same `(kind, subject)` | `kind`, `subject`, `count` |
+| `service_message_failed` | `error` | a channel could not carry the service message | `kind`, `dispatcher`, `reason: timeout` / `not_supported`, or `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
 | `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |

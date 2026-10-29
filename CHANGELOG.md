@@ -22,6 +22,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   metrics: `opencanary_outbox_pending`, `..._delivered_total`, `..._retried_total`,
   `..._dead_total`; `OCC_OUTBOX_ENABLED=false` restores the previous behaviour.
 
+### Added
+
+- **Service messages (optional, off by default).** The correlator can now report
+  its own degradation through the channels it already has: a rejected or
+  revoked VirusTotal key (HTTP 401/403, which used to look like "no
+  detections"), an exhausted free-tier quota (naming the minute, day or month
+  window), an unreachable VirusTotal, a GeoIP database that raises, a channel
+  whose circuit breaker opened, no channel accepting an alert for three
+  consecutive incidents, and process start/stop with version, receivers and
+  channels. `OCC_SERVICE_ENABLED` gates the feature; `OCC_SERVICE_CHANNELS`
+  routes it (empty = every enabled channel), `OCC_SERVICE_CATEGORIES` and
+  `OCC_SERVICE_MIN_SEVERITY` filter it, and `OCC_SERVICE_COOLDOWN` allows one
+  message per `(kind, subject)` with a repeat count for what it muted. Each
+  dispatcher gained a `notify()` method; the base contract raises, so a channel
+  that cannot carry a service message is audited as `service_message_failed`
+  rather than silently swallowing it. New audit actions:
+  `service_message_sent`, `service_message_suppressed`, `service_message_failed`.
+
 ### Fixed
 
 - The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,

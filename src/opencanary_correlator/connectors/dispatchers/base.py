@@ -14,13 +14,16 @@ import random
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from redis.exceptions import RedisError
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.storage.redis_store import RedisStore
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 _MAX_RETRY_AFTER_SECONDS = 60.0
 
@@ -158,12 +161,31 @@ class HTTPDispatcher(BaseDispatcher):
         except RedisError:
             logger.warning("circuit breaker %s state could not be updated", self._breaker)
 
+    def build_service_payload(self, message: ServiceMessage) -> dict[str, Any] | None:
+        """Render the JSON body for a service message, or None when unsupported.
+
+        A service message is not an incident, so a channel that can only carry an
+        incident document says so instead of inventing one a downstream parser
+        might index as an alert.
+        """
+        return None
+
+    async def notify(self, message: ServiceMessage) -> DispatchResult:
+        """POST a service message, with the same retries and breaker as an alert."""
+        payload = self.build_service_payload(message)
+        if payload is None:
+            raise NotImplementedError(f"{type(self).__name__} cannot carry service messages")
+        return await self._post(payload)
+
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
-        """POST the payload with retries, never raising."""
+        """POST the incident payload with retries, never raising."""
+        return await self._post(self.build_payload(incident))
+
+    async def _post(self, payload: Mapping[str, Any]) -> DispatchResult:
+        """Deliver one rendered body with retries, never raising."""
         if not await self._breaker_allows():
             return DispatchResult(dispatcher=self.name, status="skipped", detail="circuit_open")
 
-        payload = self.build_payload(incident)
         detail = "no_attempt"
         for attempt in range(1, self._retry.attempts + 1):
             retry_after: float | None = None

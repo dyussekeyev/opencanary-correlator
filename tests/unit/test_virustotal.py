@@ -137,7 +137,10 @@ async def test_a_new_minute_starts_with_a_fresh_window(store: Any) -> None:
     ("answer", "expected"),
     [
         (httpx.Response(429), "quota"),
-        (httpx.Response(401), "unavailable"),
+        # A refused key is its own outcome: nothing is known about the attacker,
+        # but "your key is wrong" is not the same problem as "the API is down".
+        (httpx.Response(401), "unauthorized"),
+        (httpx.Response(403), "unauthorized"),
         (httpx.Response(500), "unavailable"),
         (httpx.ConnectError("boom"), "unavailable"),
         (httpx.Response(200, json={"data": {}}), "ok"),
@@ -152,6 +155,25 @@ async def test_failures_never_raise(store: Any, answer: Any, expected: str) -> N
 
     assert status == expected
     assert report is None
+
+
+async def test_the_spent_window_is_named(store: Any) -> None:
+    """ "Wait a minute" and "the daily budget is gone" are different answers."""
+    now = 1_793_200_000.0
+    limits = QuotaLimits(per_minute=1, per_day=2, per_month=10)
+    client, _seen = make_client(store, [], limits=limits, clock=lambda: now)
+    try:
+        assert (await client.report("74.22.4.1"))[1] == "ok"
+        assert (await client.report("74.22.4.2"))[1] == "quota"
+        assert await client.exhausted_window() == "minute"
+        client._clock = lambda: now + 61
+        assert (await client.report("74.22.4.3"))[1] == "ok"
+        # A fresh minute, but the day's two slots are gone.
+        client._clock = lambda: now + 122
+        assert (await client.report("74.22.4.4"))[1] == "quota"
+        assert await client.exhausted_window() == "day"
+    finally:
+        await client.aclose()
 
 
 async def test_a_quota_refusal_still_shows_a_status(store: Any) -> None:
