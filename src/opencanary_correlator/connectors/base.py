@@ -130,6 +130,16 @@ class BaseDispatcher(ABC):
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """Deliver an incident, returning the outcome instead of raising."""
 
+    async def announce(self, message: str) -> DispatchResult:
+        """Send an operator notice, which is not about any incident.
+
+        The alert budget reports what it withheld through this hook. A channel
+        that can only carry an incident document says so instead of inventing a
+        payload a downstream parser might index as an alert; the default is that
+        refusal, so every existing dispatcher keeps working unchanged.
+        """
+        return DispatchResult(dispatcher=self.name, status="skipped", detail="not_supported")
+
     async def aclose(self) -> None:  # noqa: B027 - optional hook, not every channel owns resources
         """Release network resources. Dispatchers without state need not override."""
 

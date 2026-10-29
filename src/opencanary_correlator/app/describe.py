@@ -87,6 +87,12 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),
             "virustotal": settings.virustotal_api_key is not None,
         },
+        "alert_budget": {
+            "enabled": settings.alert_budget_enabled,
+            "per_node": settings.alert_budget_per_node,
+            "global": settings.alert_budget_global,
+            "window": settings.alert_budget_window,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }

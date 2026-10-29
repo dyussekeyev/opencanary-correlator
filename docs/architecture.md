@@ -184,6 +184,20 @@ therefore never touches correlation logic.
    possible only when a channel accepted a message and the process died before
    settling it. `OCC_OUTBOX_ENABLED=false` restores best-effort delivery, where a
    failure is logged and forgotten.
+10. **Ration (optional)** — with `OCC_ALERT_BUDGET_ENABLED=true`, step 8 asks the
+    budget before the first attempt. `budget:node:<window>:<node>` and
+    `budget:global:<window>` are fixed-window counters reserved by one Lua
+    script, so replicas share a single budget and scaling out does not multiply
+    it. Over the limit, the notification is withheld — the incident stays stored
+    and visible — its outbox entries are withdrawn in one script so nothing
+    retries them later, and `alert_suppressed` records the refusal. The refusal
+    is counted in `budget:suppressed:<window>` in the same reservation, and the
+    summary worker every replica runs sends it once, to whoever removes the
+    member from `budget:summaries` first, as a plain-text `alert_summary` through
+    each channel's notice path (Telegram, Slack, Discord, SMTP; the generic
+    webhook declines, because a SIEM would index the summary as an alert). A
+    budget that cannot count fails open: the alert is sent and
+    `alert_budget_failed` is audited.
 
 ## Correlation rules
 
@@ -281,6 +295,7 @@ dispatcher name.
 | `opencanary_outbox_delivered_total` | counter | `channel` | deliveries settled as accepted |
 | `opencanary_outbox_retried_total` | counter | `channel` | deliveries rescheduled for another attempt |
 | `opencanary_outbox_dead_total` | counter | `channel` | deliveries buried in the dead letter list |
+| `opencanary_alerts_budget_total` | counter | `result` (`allowed`, `suppressed`) | notifications the alert budget rationed |
 | `opencanary_build_info` | info | `version`, `python` | static build information |
 
 The endpoint never pings Redis, so it remains scrapeable during a Redis failure;

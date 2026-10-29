@@ -17,6 +17,7 @@ from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
 from opencanary_correlator.constants import IGNORED_LOGTYPES
+from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.outbox import AlertOutbox
@@ -40,6 +41,7 @@ class CorrelationEngine:
         clock: Callable[[], float] = time.time,
         enricher: IncidentEnricher | None = None,
         outbox: AlertOutbox | None = None,
+        budget: AlertBudget | None = None,
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -50,6 +52,8 @@ class CorrelationEngine:
         self._enricher = enricher
         # Without an outbox the inline attempt is the whole story, as before.
         self._outbox = outbox
+        # Without a budget every incident notifies, as before.
+        self._budget = budget
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -164,13 +168,60 @@ class CorrelationEngine:
                 )
 
     async def _dispatch(self, incidents: Sequence[Incident]) -> None:
+        """Notify every channel about the incidents the budget allowed.
+
+        The budget is consulted before the first attempt, so a withheld alert
+        costs nothing but its outbox entries, which are withdrawn here. Incidents
+        themselves are never withheld: they are stored and visible in the console
+        either way, and the window's refusals are summarised when it closes.
+        """
+        allowed: list[Incident] = []
+        for incident in incidents:
+            if await self._notification_allowed(incident):
+                allowed.append(incident)
+            else:
+                await self._suppress(incident)
         tasks = [
             self._deliver(dispatcher, incident)
             for dispatcher in self._dispatchers
-            for incident in incidents
+            for incident in allowed
         ]
         if tasks:
             await asyncio.gather(*tasks)
+
+    async def _notification_allowed(self, incident: Incident) -> bool:
+        """Ask the budget, failing open when it cannot answer.
+
+        A budget that cannot count must not silence an alert: an unreachable
+        Redis is already an outage an operator will see, and dropping every
+        notification on top of it would turn a counting problem into a blind
+        spot. The failure is audited instead.
+        """
+        if self._budget is None:
+            return True
+        try:
+            return await self._budget.allow(incident.node_id)
+        except Exception as exc:
+            self._audit.emit(
+                "alert_budget_failed",
+                "error",
+                {"incident": incident.key, "error_type": type(exc).__name__},
+            )
+            return True
+
+    async def _suppress(self, incident: Incident) -> None:
+        """Drop the notification: withdraw its deliveries and record the refusal."""
+        if self._outbox is not None:
+            await self._outbox.cancel(incident.key)
+        self._audit.emit(
+            "alert_suppressed",
+            "warning",
+            {
+                "incident": incident.key,
+                "node_id": incident.node_id,
+                "src_host": incident.src_host,
+            },
+        )
 
     async def _deliver(self, dispatcher: BaseDispatcher, incident: Incident) -> None:
         """Try one channel now, then tell the outbox what happened.
