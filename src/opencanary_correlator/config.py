@@ -445,6 +445,24 @@ class Settings(BaseSettings):
         require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
         return self
 
+    @model_validator(mode="after")
+    def _validate_service_severity_floor(self) -> Self:
+        """Refuse a floor that would silence a category the operator just enabled.
+
+        `lifecycle` messages are `info`, so pairing the category with a `warning`
+        floor means every start and stop is filtered out: the operator asked for
+        the category and would get silence, with nothing in the log to explain it.
+        """
+        if (
+            "lifecycle" in {value.strip().lower() for value in self.service_categories}
+            and self.service_min_severity != "info"
+        ):
+            raise ValueError(
+                "service_categories includes 'lifecycle', whose messages are 'info': "
+                "set OCC_SERVICE_MIN_SEVERITY=info or drop the category"
+            )
+        return self
+
     @field_validator("health_host", mode="before")
     @classmethod
     def _normalise_health_host(cls, value: Any) -> Any:
