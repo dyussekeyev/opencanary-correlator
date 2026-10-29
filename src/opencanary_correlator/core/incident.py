@@ -57,6 +57,7 @@ __all__ = [
     "IncidentHTTPProxy",
     "IncidentHTTPRequest",
     "IncidentHostPortScan",
+    "IncidentLockTimeoutError",
     "IncidentMSSQLLogin",
     "IncidentMySQLLogin",
     "IncidentNTPMonList",
@@ -71,6 +72,22 @@ __all__ = [
     "IncidentTelnetLogin",
     "IncidentVNCLogin",
 ]
+
+
+class IncidentLockTimeoutError(RuntimeError):
+    """The incident lock was not acquired, so the event was not stored.
+
+    A merge also answers `None`, and on purpose: the incident exists and must not
+    notify twice. A lock timeout is the opposite — there is no incident at all —
+    so it is raised. A caller that treated both the same way would confirm its
+    dedup claim for an event that never reached the store, and the canary's
+    redelivery would be discarded as a duplicate of nothing.
+    """
+
+    def __init__(self, incident: str, src_host: str) -> None:
+        super().__init__(f"incident lock not acquired for {incident} on {src_host}")
+        self.incident = incident
+        self.src_host = src_host
 
 
 class IncidentRepository:
@@ -104,7 +121,9 @@ class IncidentRepository:
         """Persist a new incident, or merge into the live one.
 
         Returns the incident only when it was created: merged events must not
-        trigger another notification.
+        trigger another notification. Raises :class:`IncidentLockTimeoutError` when
+        the per-host lock could not be taken, because then nothing was written
+        and the caller must treat the event as uncorrelated.
         """
         incident_cls = INCIDENT_TYPES[incident_name]
         now = int(self._clock())
@@ -121,12 +140,17 @@ class IncidentRepository:
             keys.incident_lock_key(incident_name, event.src_host)
         ) as acquired:
             if not acquired:
+                # The lock waits `DEFAULT_LOCK_WAIT_SECONDS` and retries every
+                # 10 ms, so this is real contention or an unresponsive Redis, not
+                # a momentary overlap. Nothing was written: say so by raising,
+                # rather than borrowing the merge result the caller reads as
+                # "stored, do not notify".
                 self._audit.emit(
                     "incident_lock_timeout",
                     "error",
                     {"incident": incident_name, "src_host": event.src_host},
                 )
-                return None
+                raise IncidentLockTimeoutError(incident_name, event.src_host)
 
             scan_limit = self._settings.incident_lookup_scan_limit
             lookup = await self._store.find_recent_incident(

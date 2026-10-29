@@ -308,7 +308,8 @@ class Settings(BaseSettings):
     service_categories: CommaSeparated = Field(
         default_factory=lambda: ["enrichment", "channels"],
         description=(
-            "Comma-separated groups of service messages to allow: enrichment, channels, lifecycle"
+            "Comma-separated groups of service messages to allow: "
+            "enrichment, channels, ingestion, canary, lifecycle"
         ),
     )
     # One message per (kind, subject) per cooldown; the message that gets through
@@ -329,6 +330,23 @@ class Settings(BaseSettings):
         ),
     )
     digest_top_sources: int = Field(default=5, ge=0, le=50)
+
+    # --- Window checks ------------------------------------------------------
+    # Two facts a per-event path cannot see: a node that stopped delivering, and
+    # a rate that is spread over many events. `core.watch` samples them on a
+    # timer; nothing is written to Redis per event. `OCC_CANARY_SILENT_AFTER=0`
+    # disables the silence check, which is also the default: an existing
+    # deployment must behave exactly as it did.
+    watch_interval: float = Field(default=300.0, ge=30.0, le=3600.0)
+    canary_silent_after: float = Field(default=0.0, ge=0.0, le=30 * 24 * 3600.0)
+    #: Events dropped (or payloads rejected) in one interval before the
+    #: correlator says so. A single malformed payload belongs in the audit trail,
+    #: not on a phone; a rate above this is the shape of a real problem - a full
+    #: queue, a broken dispatch path, a sender whose format does not match the
+    #: OpenCanary schema. 0 disables that kind, and both default to 0 so an
+    #: existing deployment behaves exactly as it did.
+    service_drops_threshold: int = Field(default=0, ge=0, le=1_000_000)
+    service_rejections_threshold: int = Field(default=0, ge=0, le=1_000_000)
 
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
@@ -490,6 +508,60 @@ class Settings(BaseSettings):
             raise ValueError(
                 "service_categories includes 'lifecycle', whose messages are 'info': "
                 "set OCC_SERVICE_MIN_SEVERITY=info or drop the category"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ingestion_reports(self) -> Self:
+        """Refuse an ingestion threshold that could never reach a channel.
+
+        Same rule as the silence check: the report is a warning-kind service
+        message, so the master switch, the `ingestion` category and a floor that
+        allows warnings all have to be in place. Anything missing would leave a
+        threshold that looks armed and never speaks.
+        """
+        armed = [
+            name
+            for name, value in (
+                ("OCC_SERVICE_DROPS_THRESHOLD", self.service_drops_threshold),
+                ("OCC_SERVICE_REJECTIONS_THRESHOLD", self.service_rejections_threshold),
+            )
+            if value > 0
+        ]
+        if not armed:
+            return self
+        setting = " and ".join(armed)
+        if not self.service_enabled:
+            raise ValueError(f"{setting} needs OCC_SERVICE_ENABLED=true")
+        if "ingestion" not in {value.strip().lower() for value in self.service_categories}:
+            raise ValueError(f"{setting} needs 'ingestion' in OCC_SERVICE_CATEGORIES")
+        if self.service_min_severity == "critical":
+            raise ValueError(
+                f"{setting} reports a 'warning': set OCC_SERVICE_MIN_SEVERITY=warning or lower"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_canary_silence(self) -> Self:
+        """Refuse a silence check that could never reach a channel.
+
+        The check only feeds `canary.silent`, so it needs the master switch and
+        the `canary` category; a warning-kind message also needs a floor that
+        allows warnings. Any of the three missing would leave the operator with a
+        setting that looks enabled and reports nothing, which is the blind spot
+        the category filter exists to prevent.
+        """
+        if self.canary_silent_after <= 0:
+            return self
+        if not self.service_enabled:
+            raise ValueError("OCC_CANARY_SILENT_AFTER needs OCC_SERVICE_ENABLED=true")
+        categories = {value.strip().lower() for value in self.service_categories}
+        if "canary" not in categories:
+            raise ValueError("OCC_CANARY_SILENT_AFTER needs 'canary' in OCC_SERVICE_CATEGORIES")
+        if self.service_min_severity == "critical":
+            raise ValueError(
+                "OCC_CANARY_SILENT_AFTER reports a 'warning': "
+                "set OCC_SERVICE_MIN_SEVERITY=warning or lower"
             )
         return self
 

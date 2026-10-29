@@ -38,6 +38,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `event_rejected` | `warning` | one line/datagram failed parsing or validation | `reason`, `peer`, plus reason-specific fields |
 | `event_dropped` | `error` | the bounded event queue was full | `reason: queue_full`, `node_id`, `logtype` |
 | `event_dropped` | `warning` | the drain before shutdown ran out of time, so a backlog was cancelled | `reason: shutdown`, `count` |
+| `event_dropped` | `warning` | the incident lock timed out, so nothing was written; the dedup claim is withdrawn and a redelivery correlates | `reason: incident_lock_timeout`, `rule`, `incident`, `node_id`, `logtype` |
 | `event_rate_limited` | `warning` | the node exceeded its event budget | `node_id`, `logtype` |
 | `event_deduplicated` | `info` | an identical event was seen inside the dedup TTL | `node_id`, `logtype` |
 | `event_dedup_lease_lost` | `info` | the dedup claim expired before the event was correlated (a rule slower than `OCC_DEDUP_LEASE`); the incident exists, a redelivery would merge | `node_id`, `logtype` |
@@ -50,13 +51,15 @@ a compatibility risk, because consumers only rely on these five keys.
 | `rule_failed` | `error` | a correlation rule raised | `rule`, `node_id`, `error_type` |
 | `incident_created` | `info` | a new incident hash was written | `incident`, `key`, `node_id`, `src_host` |
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
-| `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time | `incident`, `src_host` |
+| `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time; the event was **not** stored (it is not a merge) | `incident`, `src_host` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
 | `alert_retry` | `warning` | an attempt failed and the outbox scheduled another | `dispatcher`, `incident`, `attempts`, `reason`, `next_attempt_in` |
 | `alert_dead_letter` | `error` | the outbox gave up; the entry is in `outbox:dead` | `dispatcher`, `incident`, `attempts`, `reason` (`timeout`, `error`, `unknown_channel`, `incident_gone`) |
 | `outbox_failed` | `error` | one worker iteration raised and was skipped | `error_type` |
 | `service_message_sent` | `success` / `error` | a service message about the correlator reached (or failed on) one channel | `kind`, `dispatcher`, `status`, `count` |
 | `service_message_suppressed` | `info` | the cooldown muted a repeat of the same `(kind, subject)` | `kind`, `subject`, `count` |
+| `canary_silent` | `warning` | a node delivered nothing for longer than `OCC_CANARY_SILENT_AFTER` | `node_id`, `last_seen`, `silent_seconds` |
+| `health_watch_failed` | `error` | one window check raised and was skipped | `error_type` |
 | `service_message_failed` | `error` | a channel could not carry the service message | `kind`, `dispatcher`, `reason: timeout` / `not_supported`, or `error_type` |
 | `digest_sent` | `success` / `error` | the daily digest was produced (or no channel accepted it) | `day`, `incidents`, `replicas`, `events` |
 | `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |

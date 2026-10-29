@@ -106,6 +106,16 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "channels": list(settings.digest_channels),
             "top_sources": settings.digest_top_sources,
         },
+        "canary_silence": {
+            "enabled": settings.canary_silent_after > 0,
+            "after_seconds": settings.canary_silent_after,
+            "check_interval": settings.watch_interval,
+        },
+        "ingestion_reports": {
+            "drops_threshold": settings.service_drops_threshold,
+            "rejections_threshold": settings.service_rejections_threshold,
+            "window": settings.watch_interval,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }

@@ -47,9 +47,13 @@ class FakeProtocol:
     def __init__(self, peer_ip: str = "10.0.0.5") -> None:
         self.peer_ip = peer_ip
         self.closed_with: list[str] = []
+        self.admitted = False
 
     def close(self, reason: str) -> None:
         self.closed_with.append(reason)
+
+    def admit(self) -> None:
+        self.admitted = True
 
 
 class RecordingSink:
@@ -87,6 +91,7 @@ async def test_a_denied_connection_is_closed_and_audited(audit: Any, audit_strea
 
     assert limiter.connection_calls == ["10.0.0.5"]
     assert protocol.closed_with == [CLOSE_REASON_RATE_LIMITED]
+    assert protocol.admitted is False
     rejected = [r for r in records(audit_stream) if r["action"] == "connection_rejected"]
     assert len(rejected) == 1
     assert rejected[0]["details"]["reason"] == CLOSE_REASON_RATE_LIMITED
@@ -102,6 +107,7 @@ async def test_an_allowed_connection_is_left_open(audit: Any, audit_stream: Any)
     await asyncio.gather(*receiver._admission_tasks)
 
     assert protocol.closed_with == []
+    assert protocol.admitted is True
     assert not [r for r in records(audit_stream) if r["action"] == "connection_rejected"]
 
 
@@ -122,6 +128,8 @@ async def test_a_limiter_failure_is_audited_and_keeps_the_connection(
     await asyncio.gather(*receiver._admission_tasks)
 
     assert protocol.closed_with == []
+    # Fail open includes the payloads that waited for the answer.
+    assert protocol.admitted is True
     failures = [r for r in records(audit_stream) if r["action"] == "connection_limiter_error"]
     assert len(failures) == 1
     assert failures[0]["status"] == "error"

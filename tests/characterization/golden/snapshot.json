@@ -263,6 +263,11 @@
       "telegram": "standard",
       "webhook": "minimal"
     },
+    "canary_silence": {
+      "after_seconds": 0.0,
+      "check_interval": 300.0,
+      "enabled": false
+    },
     "channels": [
       "webhook",
       "slack",
@@ -290,6 +295,11 @@
     "incident_horizon": 60.0,
     "incident_horizons": {},
     "incident_lookup_scan_limit": 100,
+    "ingestion_reports": {
+      "drops_threshold": 0,
+      "rejections_threshold": 0,
+      "window": 300.0
+    },
     "log_file": null,
     "log_level": "INFO",
     "max_stored_events": 100,

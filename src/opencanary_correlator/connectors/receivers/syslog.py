@@ -40,6 +40,7 @@ from opencanary_correlator.connectors.receivers._syslog_codec import (
     parse_syslog_frame,
 )
 from opencanary_correlator.connectors.receivers._tcp import StreamProtocol, TCPStreamReceiver
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -114,6 +115,7 @@ class SyslogUDPReceiver(NetworkReceiver):
         rate_limiter: RateLimiter | None = None,
         concurrency: int = DEFAULT_CONCURRENCY,
         allowed_networks: AllowedNetworks = (),
+        nodes: NodeRegistry | None = None,
     ) -> None:
         super().__init__(
             sink=sink,
@@ -125,6 +127,7 @@ class SyslogUDPReceiver(NetworkReceiver):
             rate_limiter=rate_limiter,
             concurrency=concurrency,
             allowed_networks=allowed_networks,
+            nodes=nodes,
         )
         self._transport: asyncio.DatagramTransport | None = None
 

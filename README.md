@@ -259,16 +259,61 @@ the worker; none of them has to be set to use it.
 
 The correlator can tell you about itself through the same channels: a rejected
 VirusTotal key, an exhausted quota, a GeoIP database that stopped answering, a
-channel whose circuit breaker opened, no channel delivering at all, and the
-process starting or stopping.
+channel whose circuit breaker opened, no channel delivering at all, a canary
+that went silent, and the process starting or stopping.
 
 ```bash
 OCC_SERVICE_ENABLED=true
 OCC_SERVICE_CHANNELS=telegram,slack   # empty = every enabled channel
-OCC_SERVICE_CATEGORIES=enrichment,channels,lifecycle
+OCC_SERVICE_CATEGORIES=enrichment,channels,ingestion,canary,lifecycle
 OCC_SERVICE_COOLDOWN=3600            # one message per (kind, subject) per hour
 OCC_SERVICE_MIN_SEVERITY=warning     # info, warning or critical
 ```
+
+### Ingestion reports (off by default)
+
+The queue, the dispatch path and payload validation already count what they lose,
+and every loss has its own audit record — but nobody watching a chat sees it. Two
+thresholds turn that rate into a message:
+
+```bash
+OCC_SERVICE_DROPS_THRESHOLD=50        # events dropped, 0 disables (the default)
+OCC_SERVICE_REJECTIONS_THRESHOLD=50   # payloads that failed validation
+OCC_WATCH_INTERVAL=300                # the window both are measured over
+```
+
+The counts are process-local, so every replica reports its own window and the
+shared cooldown mutes the rest: the first replica to cross the threshold speaks,
+and the others' attempts are counted as repeats. The message names the reasons
+(`queue_full`, `dispatch_failed`, `incident_lock_timeout`, `shutdown`), because
+"events were dropped" alone is not actionable. Both kinds are warnings, so a
+`critical` severity floor is refused at startup — as is a threshold without
+`OCC_SERVICE_ENABLED` or the `ingestion` category, which would look armed and
+never speak.
+
+### Silent canaries (off by default)
+
+Every other report is triggered by something that just failed. A node that stops
+delivering has no such trigger: the signal is the absence of events. The
+correlator therefore remembers when each node last delivered — one dict write on
+the ingest path, no Redis round trip — and publishes that map once a minute in
+the heartbeat the digest already writes. A check runs every
+`OCC_WATCH_INTERVAL` from one elected replica and reports a node whose newest
+evidence is older than `OCC_CANARY_SILENT_AFTER`:
+
+```bash
+OCC_CANARY_SILENT_AFTER=3600         # 0 disables the check (the default)
+OCC_WATCH_INTERVAL=300               # seconds between window checks
+```
+
+It needs `OCC_SERVICE_ENABLED=true` and `canary` in `OCC_SERVICE_CATEGORIES`;
+the combinations that would report nothing (no switch, no category, a `critical`
+severity floor) are startup errors rather than a setting that looks enabled. Each
+node is reported under its own subject (`node:<id>`), so the cooldown mutes the
+repeats per canary, and a mass outage — a partition that silences the whole
+estate — reports the first ten individually and the rest in one summary instead
+of one message per node. After a restart there is no evidence yet, so nothing is
+reported: missing data is not silence.
 
 `lifecycle` messages are `info`, so asking for that category with a `warning`
 floor would filter every start and stop out. The contradiction is a startup error

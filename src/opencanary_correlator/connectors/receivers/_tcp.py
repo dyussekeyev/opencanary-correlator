@@ -29,6 +29,7 @@ from opencanary_correlator.connectors.receivers._stream import (
     CLOSE_REASON_RATE_LIMITED,
     StreamProtocol,
 )
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -53,6 +54,7 @@ class TCPStreamReceiver(NetworkReceiver):
         rate_limiter: RateLimiter | None = None,
         concurrency: int = DEFAULT_CONCURRENCY,
         allowed_networks: AllowedNetworks = (),
+        nodes: NodeRegistry | None = None,
     ) -> None:
         super().__init__(
             sink=sink,
@@ -64,6 +66,7 @@ class TCPStreamReceiver(NetworkReceiver):
             rate_limiter=rate_limiter,
             concurrency=concurrency,
             allowed_networks=allowed_networks,
+            nodes=nodes,
         )
         self.partial_line_timeout = partial_line_timeout
         self.max_connections = max_connections
@@ -77,6 +80,11 @@ class TCPStreamReceiver(NetworkReceiver):
     def is_running(self) -> bool:
         """True while the server socket is bound."""
         return self._server is not None and self._server.is_serving()
+
+    @property
+    def needs_admission(self) -> bool:
+        """True when a connection may not carry a payload until the budget answers."""
+        return self._rate_limiter is not None
 
     async def start(self) -> None:
         """Bind the listening socket and start the event consumer."""
@@ -161,6 +169,9 @@ class TCPStreamReceiver(NetworkReceiver):
                 "error",
                 {"receiver": self.name, "error_type": type(exc).__name__},
             )
+            # Fail open, including the payloads that waited for this answer: a
+            # budget that cannot be read must not turn an outage into data loss.
+            protocol.admit()
             return
         if not allowed:
             metrics.CONNECTION_REJECTIONS.labels(
@@ -176,6 +187,8 @@ class TCPStreamReceiver(NetworkReceiver):
                 },
             )
             protocol.close(CLOSE_REASON_RATE_LIMITED)
+            return
+        protocol.admit()
 
     def connection_lost(self, protocol: StreamProtocol, *, peer_closed: bool = False) -> None:
         """Forget a closed connection, and note who closed it.

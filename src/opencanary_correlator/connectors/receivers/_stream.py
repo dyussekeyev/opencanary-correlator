@@ -6,6 +6,9 @@ It enforces the hardening rules the receivers rely on:
 * a deadline for an incomplete line, measured from its first byte, so a slow
   trickle cannot hold the connection; a silent keep-alive connection from
   `SocketJSONHandler` buffers nothing and is never reaped;
+* admission before the first payload, when the receiver has a per-peer budget: a
+  `SocketJSONHandler` writes its first event immediately, so a payload that was
+  parsed before the limiter answered would be an event the budget never saw;
 * framing delegated to :mod:`._framing`, so the byte handling is testable
   without a socket.
 
@@ -40,6 +43,9 @@ class StreamProtocol(asyncio.Protocol):
         self._transport: asyncio.BaseTransport | None = None
         self._timeout_handle: asyncio.TimerHandle | None = None
         self._closed = False
+        # Without a limiter there is nothing to wait for, so the connection is
+        # usable from its first byte, exactly as before.
+        self._admitted = not receiver.needs_admission
         self.peer_ip: str = ""
 
     # --- asyncio.Protocol ---------------------------------------------------
@@ -61,6 +67,40 @@ class StreamProtocol(asyncio.Protocol):
         if self._closed:
             return
         self._buffer.extend(data)
+        if not self._admitted:
+            # The per-peer budget has not answered yet. Hold the bytes rather
+            # than parsing them: an unadmitted peer must not reach the pipeline,
+            # and a `SocketJSONHandler` that writes on connect must not lose its
+            # first event if the answer is "yes". The buffer stays a single
+            # frame long here, which is what an oversized line would cost anyway.
+            if len(self._buffer) > self._receiver.max_line_bytes:
+                self.close(CLOSE_REASON_LINE_TOO_LARGE)
+                return
+            self._arm_timeout()
+            return
+        self._drain()
+
+    def admit(self) -> None:
+        """Let the connection through, and process what arrived meanwhile.
+
+        Called by the receiver once the limiter allowed it - and when the limiter
+        itself failed, because an unreachable budget must not cost a canary its
+        socket.
+
+        A peer that writes one event and closes immediately (`SocketJSONHandler`
+        opens a connection per record and does exactly that) is *closed* by the
+        time the budget answers. The bytes it sent while the socket was open are
+        still valid, so a closed protocol drains them too: the transport going
+        away does not unframe what already arrived. Only a connection the limiter
+        refused is discarded, and that path never reaches here.
+        """
+        if self._admitted:
+            return
+        self._admitted = True
+        self._drain()
+
+    def _drain(self) -> None:
+        """Extract every complete frame from the buffer and dispatch it."""
         payloads, overflow = self.extract_payloads()
         for payload in payloads:
             self._receiver.payload_received(self, payload)

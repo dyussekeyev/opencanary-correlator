@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
@@ -351,6 +353,60 @@ async def test_a_failed_rule_releases_the_dedup_claim(
     actions = audit_actions(audit_stream)
     assert actions.count("rule_failed") == 2
     assert "event_deduplicated" not in actions
+
+
+async def test_a_lock_timeout_does_not_confirm_the_dedup_claim(
+    store: Any,
+    settings_factory: Any,
+    audit: Any,
+    audit_stream: Any,
+    clock: Any,
+    event_factory: Any,
+    monkeypatch: Any,
+) -> None:
+    """An event that was never stored must not be remembered as seen.
+
+    `record()` raises when the per-host lock times out, and the engine withdraws
+    the claim. Otherwise the same event redelivered - a second syslog relay, a
+    canary that reconnects - would be answered `event_deduplicated` for
+    `OCC_DEDUP_TTL` while no incident existed, which is the silent loss a field
+    report described: an event with no incident, no rejection and no dedup
+    record of its own.
+    """
+    dispatcher = RecordingDispatcher()
+    engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
+    event = login_event(event_factory)
+
+    real_lock = store.lock
+    state = {"timeout": True}
+
+    @contextlib.asynccontextmanager
+    async def flaky_lock(key: str, **kwargs: Any) -> AsyncIterator[bool]:
+        if state["timeout"]:
+            yield False
+            return
+        async with real_lock(key, **kwargs) as acquired:
+            yield acquired
+
+    monkeypatch.setattr(store, "lock", flaky_lock)
+
+    await engine.handle_event(event)
+
+    assert dispatcher.incidents == []
+    assert await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf") == []
+    actions = audit_actions(audit_stream)
+    assert "incident_lock_timeout" in actions
+    assert "event_dropped" in actions
+    # A storage timeout is not a rule failure: blaming the rule would hide the
+    # real cause from whoever reads the audit trail after a missing alert.
+    assert "rule_failed" not in actions
+    assert "event_unrouted" not in actions
+
+    state["timeout"] = False
+    await engine.handle_event(event)
+
+    assert len(dispatcher.incidents) == 1
+    assert "event_deduplicated" not in audit_actions(audit_stream)
 
 
 async def test_incident_is_persisted_without_dispatchers(

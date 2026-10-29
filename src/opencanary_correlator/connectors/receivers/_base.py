@@ -18,6 +18,7 @@ from opencanary_correlator.connectors.receivers._pipeline import (
     EventPipeline,
     ReceiverStats,
 )
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.schemas import CanaryEvent
 
 
@@ -36,6 +37,7 @@ class NetworkReceiver(BaseReceiver):
         rate_limiter: RateLimiter | None,
         concurrency: int,
         allowed_networks: AllowedNetworks,
+        nodes: NodeRegistry | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -49,6 +51,7 @@ class NetworkReceiver(BaseReceiver):
             queue_size=queue_size,
             rate_limiter=rate_limiter,
             concurrency=concurrency,
+            nodes=nodes,
         )
         self._bound_port: int | None = None
 

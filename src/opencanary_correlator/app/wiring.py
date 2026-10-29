@@ -28,6 +28,7 @@ from opencanary_correlator.enrichment import (
     VirusTotalClient,
 )
 from opencanary_correlator.health import HealthServer
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.storage.rate_limit import RedisRateLimiter
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -81,8 +82,13 @@ def build_receivers(
     engine: CorrelationEngine,
     audit: AuditLogger,
     rate_limiter: RedisRateLimiter | None,
+    nodes: NodeRegistry | None = None,
 ) -> list[BaseReceiver]:
-    """Instantiate every receiver enabled by the configuration."""
+    """Instantiate every receiver enabled by the configuration.
+
+    `nodes` is the shared last-seen registry: every listener writes to the same
+    map, so a canary is tracked whichever transport its events arrive on.
+    """
     receivers: list[BaseReceiver] = []
     allowed_networks = parse_allowed_networks(settings.receiver_allowed_ips)
     # Arguments shared by every listener; each receiver adds its own host/port.
@@ -94,6 +100,7 @@ def build_receivers(
         "rate_limiter": rate_limiter,
         "concurrency": settings.event_concurrency,
         "allowed_networks": allowed_networks,
+        "nodes": nodes,
     }
     # Stream receivers additionally take the connection-level limits.
     stream: dict[str, Any] = {

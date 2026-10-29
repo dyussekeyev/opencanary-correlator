@@ -548,3 +548,102 @@ def test_smb_ignore_actions_reject_a_control_character(settings_factory: Any) ->
 def test_smb_ignore_actions_reject_an_oversized_entry(settings_factory: Any) -> None:
     with pytest.raises(ValidationError):
         settings_factory(smb_ignore_actions=["a" * 65])
+
+
+def test_canary_silence_is_off_by_default(settings_factory: Any) -> None:
+    """An existing deployment must behave exactly as it did."""
+    settings = settings_factory()
+
+    assert settings.canary_silent_after == 0
+    assert settings.watch_interval == 300
+
+
+def test_canary_silence_needs_the_service_switch(settings_factory: Any) -> None:
+    """The check only feeds a service message, so a dead switch is a blind spot."""
+    with pytest.raises(ValidationError, match="OCC_SERVICE_ENABLED"):
+        settings_factory(
+            canary_silent_after=900,
+            service_enabled=False,
+            service_categories=["canary"],
+        )
+
+
+def test_canary_silence_needs_its_category(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError, match="OCC_SERVICE_CATEGORIES"):
+        settings_factory(
+            canary_silent_after=900,
+            service_enabled=True,
+            service_categories=["enrichment", "channels"],
+        )
+
+
+def test_canary_silence_needs_a_floor_that_allows_warnings(settings_factory: Any) -> None:
+    """`canary.silent` is a warning: a critical floor would filter it out."""
+    with pytest.raises(ValidationError, match="OCC_SERVICE_MIN_SEVERITY"):
+        settings_factory(
+            canary_silent_after=900,
+            service_enabled=True,
+            service_categories=["canary"],
+            service_min_severity="critical",
+        )
+
+
+def test_a_coherent_canary_silence_configuration_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(
+        canary_silent_after=900,
+        service_enabled=True,
+        service_categories=["canary"],
+    )
+
+    assert settings.canary_silent_after == 900
+    assert "canary" in settings.service_categories
+
+
+def test_ingestion_thresholds_are_off_by_default(settings_factory: Any) -> None:
+    """A default must not turn an existing deployment's logs into messages."""
+    settings = settings_factory()
+
+    assert settings.service_drops_threshold == 0
+    assert settings.service_rejections_threshold == 0
+
+
+def test_a_drops_threshold_needs_the_service_switch(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError, match="OCC_SERVICE_DROPS_THRESHOLD"):
+        settings_factory(
+            service_drops_threshold=10,
+            service_enabled=False,
+            service_categories=["ingestion"],
+        )
+
+
+def test_a_rejections_threshold_needs_its_category(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError, match="ingestion"):
+        settings_factory(
+            service_rejections_threshold=10,
+            service_enabled=True,
+            service_categories=["enrichment"],
+        )
+
+
+def test_an_ingestion_threshold_needs_a_floor_that_allows_warnings(
+    settings_factory: Any,
+) -> None:
+    with pytest.raises(ValidationError, match="OCC_SERVICE_MIN_SEVERITY"):
+        settings_factory(
+            service_drops_threshold=10,
+            service_enabled=True,
+            service_categories=["ingestion"],
+            service_min_severity="critical",
+        )
+
+
+def test_a_coherent_ingestion_configuration_is_accepted(settings_factory: Any) -> None:
+    settings = settings_factory(
+        service_drops_threshold=10,
+        service_rejections_threshold=25,
+        service_enabled=True,
+        service_categories=["ingestion"],
+    )
+
+    assert settings.service_drops_threshold == 10
+    assert settings.service_rejections_threshold == 25

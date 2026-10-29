@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from opencanary_correlator.constants import KEY_INCIDENTS
-from opencanary_correlator.core.incident import IncidentRepository
+from opencanary_correlator.core.incident import IncidentLockTimeoutError, IncidentRepository
 from opencanary_correlator.schemas import CanaryEvent
 from opencanary_correlator.storage.keys import incident_latest_key
 
@@ -308,6 +310,40 @@ async def test_capped_merge_writes_only_the_counters(
 
     assert len(captured) == 1
     assert set(captured[0]) <= {"events_count", "events_truncated", "updated"}
+
+
+async def test_a_lock_timeout_raises_instead_of_answering_a_merge(
+    repository: Any,
+    store: Any,
+    audit_stream: Any,
+    clock: Any,
+    event_factory: Any,
+    monkeypatch: Any,
+) -> None:
+    """`None` means "merged, already stored", so it must not mean "gave up".
+
+    The engine reads `None` as a stored event and confirms the dedup claim. A
+    lock timeout returned the same value while nothing had been written, so the
+    canary's redelivery was answered `event_deduplicated` against an incident
+    that did not exist.
+    """
+    event = CanaryEvent.model_validate(event_factory())
+
+    @contextlib.asynccontextmanager
+    async def not_acquired(_key: str, **_kwargs: Any) -> AsyncIterator[bool]:
+        yield False
+
+    monkeypatch.setattr(store, "lock", not_acquired)
+
+    with pytest.raises(IncidentLockTimeoutError) as raised:
+        await repository.record("ftp.login_attempt", event)
+
+    assert raised.value.incident == "ftp.login_attempt"
+    assert raised.value.src_host == "10.0.0.5"
+    assert await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf") == []
+    assert "incident_lock_timeout" in [
+        json.loads(line)["action"] for line in audit_stream.getvalue().splitlines()
+    ]
 
 
 async def test_frozen_incident_merges_without_decoding_its_logdata(
