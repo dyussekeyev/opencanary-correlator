@@ -126,7 +126,7 @@ async def run_correlator(
     )
     enricher = build_enricher(settings, store, audit, notifier)
     engine = CorrelationEngine(
-        rules=build_rules(store, repository, settings),
+        rules=build_rules(store, repository, settings, audit),
         dispatchers=active_dispatchers,
         dedup=DedupCache(store, ttl=settings.dedup_ttl, lease=settings.dedup_lease),
         settings=settings,

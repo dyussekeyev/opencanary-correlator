@@ -8,9 +8,28 @@ shape never migrates stored incidents.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
+
+#: First regional-indicator symbol; a flag is the pair for its two-letter code.
+_REGIONAL_INDICATOR_A: Final[int] = 0x1F1E6
+_ASCII_A: Final[int] = ord("A")
+
+
+def country_flag(country_code: str) -> str:
+    """Return the emoji flag of an ISO 3166-1 alpha-2 code, or an empty string.
+
+    The database stores whatever the MMDB record holds, so the value is treated
+    as untrusted: only two ASCII letters produce a flag. A flag is decoration,
+    never data, so anything unexpected yields nothing rather than a placeholder
+    or a lookup table that would have to be maintained.
+    """
+    code = country_code.strip().upper()
+    if len(code) != 2 or not code.isascii() or not code.isalpha():
+        return ""
+    return "".join(chr(_REGIONAL_INDICATOR_A + ord(character) - _ASCII_A) for character in code)
+
 
 #: Outcome of the VirusTotal lookup for one address.
 #: ``ok`` has a report, ``quota`` means every free-tier window was spent, and
@@ -33,6 +52,11 @@ class GeoInfo(BaseModel):
     def is_empty(self) -> bool:
         """True when the database had nothing useful for this address."""
         return not (self.country_code or self.country or self.city or self.asn or self.as_org)
+
+    @property
+    def flag(self) -> str:
+        """Emoji flag for `country_code`, or an empty string when it has none."""
+        return country_flag(self.country_code)
 
     @property
     def location(self) -> str:
@@ -108,6 +132,7 @@ class Enrichment(BaseModel):
             payload["geo"] = {
                 "country_code": geo.country_code,
                 "country": geo.country,
+                "flag": geo.flag,
                 "city": geo.city,
                 "asn": geo.asn,
                 "as_org": geo.as_org,
@@ -127,4 +152,4 @@ class Enrichment(BaseModel):
         return payload
 
 
-__all__ = ["Enrichment", "GeoInfo", "VirusTotalReport", "VirusTotalStatus"]
+__all__ = ["Enrichment", "GeoInfo", "VirusTotalReport", "VirusTotalStatus", "country_flag"]

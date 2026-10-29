@@ -30,6 +30,7 @@ from opencanary_correlator.config_validation import (
     normalise_log_file,
     normalise_log_level,
     normalise_service_severity,
+    normalise_smb_actions,
     require_email_address,
     require_http_urls,
     require_redis_scheme,
@@ -199,6 +200,15 @@ class Settings(BaseSettings):
             "size of the incidents index."
         ),
     )
+    # Samba audit actions that must not create an incident. Empty by default, so
+    # an upgrade never changes which events are correlated. A share under constant
+    # browsing can set `flistxattr` (a directory listing, not an access) to keep
+    # recon chatter out of the alerts; every suppressed event is audited and
+    # counted, so the suppression stays visible.
+    smb_ignore_actions: CommaSeparated = Field(
+        default_factory=list,
+        description=("Comma-separated SMB AUDITACTION values that must not create an incident"),
+    )
     max_stored_events: int = Field(
         default=MAX_EVENT_COUNT,
         ge=1,
@@ -339,6 +349,7 @@ class Settings(BaseSettings):
         "service_channels",
         "service_categories",
         "digest_channels",
+        "smb_ignore_actions",
         mode="before",
     )
     @classmethod
@@ -349,6 +360,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_service_channels(cls, value: list[str]) -> list[str]:
         return validate_service_channels(value)
+
+    @field_validator("smb_ignore_actions")
+    @classmethod
+    def _normalise_smb_ignore_actions(cls, value: list[str]) -> list[str]:
+        return normalise_smb_actions(value)
 
     @field_validator("digest_time")
     @classmethod

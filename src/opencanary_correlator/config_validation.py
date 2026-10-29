@@ -63,6 +63,10 @@ SERVICE_CATEGORIES: Final[tuple[str, ...]] = (
 #: `HH:MM` in UTC for the daily digest.
 DIGEST_TIME_RE: Final[re.Pattern[str]] = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
+#: Longest accepted Samba audit action name. Samba writes bare verbs (`openat`,
+#: `create_file`); anything much longer is a typo or a payload.
+MAX_SMB_ACTION_LENGTH: Final[int] = 64
+
 
 def split_comma_separated(value: Any) -> Any:
     """Split a comma-separated string, or decode a JSON array, into a list."""
@@ -77,6 +81,28 @@ def split_comma_separated(value: Any) -> Any:
         except json.JSONDecodeError:
             return [text]
     return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def normalise_smb_actions(value: list[str]) -> list[str]:
+    """Normalise `OCC_SMB_IGNORE_ACTIONS` into lower-case, unique action names.
+
+    The comparison happens against `AUDITACTION` from the wire, which Samba
+    writes in lower case; normalising here means `OpenAt` and `openat` are one
+    entry, not two, and a trailing comma is harmless. Control characters are
+    rejected rather than stripped: a value that could never match is a
+    configuration mistake worth seeing at startup.
+    """
+    unique: dict[str, None] = {}
+    for raw in value:
+        action = raw.strip().lower()
+        if not action:
+            continue
+        if len(action) > MAX_SMB_ACTION_LENGTH:
+            raise ValueError(f"smb_ignore_actions entry exceeds {MAX_SMB_ACTION_LENGTH} characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in action):
+            raise ValueError("smb_ignore_actions must not contain control characters")
+        unique.setdefault(action, None)
+    return list(unique)
 
 
 def require_http_urls(value: list[str]) -> list[str]:

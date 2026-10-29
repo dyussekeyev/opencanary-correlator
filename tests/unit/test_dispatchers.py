@@ -126,6 +126,7 @@ async def test_webhook_carries_the_attacker_context_as_structured_json(
         "geo": {
             "country_code": "KZ",
             "country": "Kazakhstan",
+            "flag": "🇰🇿",
             "city": "Almaty",
             "asn": 202958,
             "as_org": 'LLP "Kompaniya Hoster.KZ"',
@@ -427,7 +428,7 @@ async def test_smtp_default_layout_shows_the_attacker_context(incident_factory: 
     assert result.status == "success"
     body = sent[0].get_content()
     assert "Instance: canary-1" in body
-    assert "Location: Kazakhstan" in body
+    assert "Location: 🇰🇿 Kazakhstan" in body
     assert "VT: 0/94 malicious (+1 suspicious)" in body
 
 
@@ -686,3 +687,52 @@ async def test_a_broken_breaker_does_not_hide_a_real_failure(incident_factory: A
 
     assert result.status == "error"
     assert result.detail == "http_503"
+
+
+def _text_for(channel: str, incident: Any, detail: str) -> str:
+    """Render one incident through a channel's own payload builder."""
+    if channel == "telegram":
+        dispatcher: Any = TelegramDispatcher(token="123:secret", chat_id="42", detail=detail)
+        return dispatcher.build_payload(incident)["text"]
+    if channel == "slack":
+        dispatcher = SlackDispatcher(url="https://hooks.slack.test/x", detail=detail)
+        return dispatcher.build_payload(incident)["text"]
+    if channel == "discord":
+        dispatcher = DiscordDispatcher(url="https://discord.test/x", detail=detail)
+        return dispatcher.build_payload(incident)["content"]
+    if channel == "webhook":
+        dispatcher = WebhookDispatcher(url="https://siem.test/hook", detail=detail)
+        return dispatcher.build_payload(incident)["text"]
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=587,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        detail=detail,
+    )
+    return dispatcher.build_message(incident).get_content()
+
+
+@pytest.mark.parametrize("channel", ["telegram", "slack", "discord", "webhook", "smtp"])
+def test_every_channel_carries_the_attacker_context(channel: str, incident_factory: Any) -> None:
+    """GeoIP, ASN and VirusTotal must not depend on which channel is configured.
+
+    All five render through the same layout, so this pins the property rather
+    than re-testing each builder: a channel added without the shared renderer
+    would fail here.
+    """
+    incident = incident_factory(enrichment=ATTACKER_CONTEXT)
+
+    standard = _text_for(channel, incident, "standard")
+    # The label carries the channel's own bold markup, hence the value-only check.
+    assert "🇰🇿 Kazakhstan" in standard, channel
+    assert "0/94 malicious" in standard, channel
+    # Telegram escapes the parentheses and the plus of the bonus counter.
+    assert "1 suspicious" in standard, channel
+    # ASN, city and VirusTotal's own reputation belong to the detailed level.
+    assert "AS202958" not in standard, channel
+
+    detailed = _text_for(channel, incident, "detailed")
+    assert "Kazakhstan, Almaty" in detailed, channel
+    assert "AS202958" in detailed, channel
+    assert "reputation 0" in detailed, channel

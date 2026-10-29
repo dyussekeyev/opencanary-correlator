@@ -241,10 +241,24 @@ class SshLoginData(LogDataModel):
 
 
 class SmbFileOpenData(LogDataModel):
-    """`LOG_SMB_FILE_OPEN` payload."""
+    """`LOG_SMB_FILE_OPEN` payload.
 
-    FILENAME: str = ""
+    OpenCanary's Samba watcher (`opencanary/modules/samba.py`) splits one
+    `samba-audit.log` line into these ten fields, so all of them arrive on the
+    wire; the alert renderer shows them as separate rows instead of a clipped
+    `KEY=value` dump.
+    """
+
     USER: str = ""
+    REMOTENAME: str = ""
+    SHARENAME: str = ""
+    LOCALNAME: str = ""
+    SMBVER: str = ""
+    SMBARCH: str = ""
+    DOMAIN: str = ""
+    AUDITACTION: str = ""
+    STATUS: str = ""
+    FILENAME: str = ""
 
 
 class UserData(LogDataModel):

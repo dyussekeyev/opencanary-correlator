@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final, Literal, Protocol
 
+from opencanary_correlator.constants import LogType
 from opencanary_correlator.core.logdata import decode_logdata
 from opencanary_correlator.core.service_messages import ServiceMessage, Severity
 from opencanary_correlator.enrichment.models import Enrichment
@@ -41,6 +42,23 @@ ALERT_DETAIL_LEVELS: Final[tuple[AlertDetail, ...]] = ("minimal", "standard", "d
 
 #: Line separator used inside a rendered alert.
 CRLF: Final[str] = "\r\n"
+
+#: Fields OpenCanary's Samba watcher writes into an SMB event, in the order the
+#: block shows them. Anything else in `logdata` is still reported, in the `Log`
+#: row, so a newer canary is never silently truncated.
+SMB_FIELDS: Final[tuple[str, ...]] = (
+    "USER",
+    "SHARENAME",
+    "LOCALNAME",
+    "FILENAME",
+    "AUDITACTION",
+    "STATUS",
+    "REMOTENAME",
+    "SMBARCH",
+    "SMBVER",
+    "DOMAIN",
+)
+_SMB_KNOWN: Final[frozenset[str]] = frozenset(SMB_FIELDS)
 
 _MAX_FIELD: Final[int] = 160
 _MAX_LOG_ENTRIES: Final[int] = 3
@@ -71,6 +89,7 @@ class AlertIncident(Protocol):
     dst_port: int
     created: int
     events_count: int
+    logtype: int
     logdata: str | None
     description: str
     enrichment: Enrichment | None
@@ -194,6 +213,72 @@ def log_summary(
     return " | ".join(item for item in rendered if item)
 
 
+def _first_entry(logdata: str | None) -> Mapping[str, Any]:
+    """Return the first stored log entry as a mapping, or an empty one.
+
+    Only object entries can be rendered as fields; a scalar entry (an older or
+    hand-written event) leaves the SMB block empty rather than raising on the
+    alert path.
+    """
+    for entry in decode_logdata(logdata):
+        if isinstance(entry, Mapping):
+            return _unwrap_raw(entry)
+    return {}
+
+
+def _smb_lines(entry: Mapping[str, Any], *, detailed: bool, flavor: AlertFlavor) -> list[str]:
+    """Render the share-access block of an SMB incident.
+
+    A row is emitted only for a field the canary actually sent: an older
+    OpenCanary carries `FILENAME` and `USER` alone, and a layout of empty values
+    reads worse than a shorter message. `AUDITACTION` and `STATUS` share one row
+    because Samba reports them as a pair (`openat` + `fail (No such file or
+    directory)`) and the reason is the interesting half.
+    """
+    lines: list[str] = []
+    user = _clean(entry.get("USER", ""))
+    if user:
+        lines.append(_line("👤", "User", user, flavor))
+    share = _clean(entry.get("SHARENAME", ""))
+    local = _clean(entry.get("LOCALNAME", ""))
+    if share:
+        lines.append(_line("📁", "Share", f"{share} ({local})" if local else share, flavor))
+    path = _clean(entry.get("FILENAME", ""))
+    if path:
+        lines.append(_line("🗂", "Path", path, flavor))
+    action = _clean(entry.get("AUDITACTION", ""))
+    if action:
+        status = _clean(entry.get("STATUS", ""))
+        lines.append(_line("⚙️", "Action", f"{action} · {status}" if status else action, flavor))
+    if not detailed:
+        return lines
+    client = " · ".join(
+        part
+        for part in (
+            _clean(entry.get("REMOTENAME", "")),
+            _clean(entry.get("SMBARCH", "")),
+            _clean(entry.get("SMBVER", "")),
+        )
+        if part
+    )
+    if client:
+        lines.append(_line("💻", "Client", client, flavor))
+    domain = _clean(entry.get("DOMAIN", ""))
+    if domain:
+        lines.append(_line("🏷", "Domain", domain, flavor))
+    return lines
+
+
+def _unknown_fields(entry: Mapping[str, Any]) -> str:
+    """Render the log fields the SMB block does not know about, masked."""
+    pairs = [
+        f"{_clean(key, _MAX_LOG_KEY)}={_log_value(str(key), value)}"
+        for key, value in entry.items()
+        if str(key) not in _SMB_KNOWN
+    ]
+    return ", ".join(pairs[:_MAX_LOG_PAIRS])
+
+
 def _format_time(created: int) -> str:
     """Render an incident epoch as a UTC timestamp."""
     try:
@@ -250,7 +335,12 @@ def _enrichment_lines(
     if geo is not None:
         location = geo.location if detailed else (geo.country or geo.country_code)
         if location:
-            lines.append(_line("📍", "Location", location, flavor))
+            # The flag is decoration on top of the country name; when the record
+            # has no usable two-letter code the row is exactly as it was.
+            flag = geo.flag
+            lines.append(
+                _line("📍", "Location", f"{flag} {location}" if flag else location, flavor)
+            )
         network = geo.network
         if detailed and network:
             lines.append(_line("🏢", "ASN", network, flavor))
@@ -303,15 +393,27 @@ def render_alert(
 
     detailed = detail == "detailed"
     lines.extend(_enrichment_lines(incident.enrichment, detailed=detailed, flavor=flavor))
+    # SMB is the one incident whose `logdata` is a fixed, structured record of
+    # what happened on the share. Rendering it as a clipped `KEY=value` dump used
+    # to drop `AUDITACTION` and `FILENAME` - the action and the path - because they
+    # are the seventh and tenth keys. Chosen by log type, not by looking for SMB
+    # keys, so a non-SMB event cannot borrow the layout.
+    is_smb = int(incident.logtype) == int(LogType.LOG_SMB_FILE_OPEN)
+    if is_smb:
+        entry = _first_entry(incident.logdata)
+        lines.extend(_smb_lines(entry, detailed=detailed, flavor=flavor))
     if detailed:
         lines.append(_line("📊", "Events", incident.events_count, flavor))
-    summary = log_summary(
-        incident.logdata,
-        max_entries=_MAX_LOG_ENTRIES if detailed else 1,
-        max_items=_MAX_LOG_ITEMS if detailed else 5,
-    )
+    if is_smb:
+        summary = _unknown_fields(entry)
+    else:
+        summary = log_summary(
+            incident.logdata,
+            max_entries=_MAX_LOG_ENTRIES if detailed else 1,
+            max_items=_MAX_LOG_ITEMS if detailed else 5,
+        )
     if summary:
-        if not detailed:
+        if not detailed and not is_smb:
             lines.append("")
         lines.append(_line("📝", "Log", summary, flavor))
 
@@ -353,6 +455,7 @@ def render_service_message(
 __all__ = [
     "ALERT_DETAIL_LEVELS",
     "CRLF",
+    "SMB_FIELDS",
     "AlertDetail",
     "AlertFlavor",
     "AlertIncident",

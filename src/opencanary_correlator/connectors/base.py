@@ -67,6 +67,10 @@ class IncidentLike(Protocol):
     dst_port: int
     created: int
     events_count: int
+    #: Event type that created the incident. The renderer uses it to pick a
+    #: layout for the incidents whose evidence is structured (SMB), and to keep
+    #: a crafted non-SMB event from borrowing that layout.
+    logtype: int
     logdata: str | None
     description: str
     #: Attacker-IP context attached by the engine before dispatch. Optional: a

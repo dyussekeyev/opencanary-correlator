@@ -190,6 +190,40 @@ data, by the same rule that redacts the audit trail.
 📝 *Log:* USERNAME=admin, PASSWORD=***
 ```
 
+#### SMB alerts
+
+`LOG_SMB_FILE_OPEN` (5000) comes from OpenCanary's Samba watcher, which splits
+every `samba-audit.log` line into a fixed record, so the alert is rendered from
+that record instead of a clipped `KEY=value` dump:
+
+```
+🛡 OpenCanary: *Shared File Opened*
+
+🖥 *Instance:* opencanary-embassy
+🌐 *IP:* 172.19.0.2:445
+
+🎯 *Attacker:* 85.117.156.153
+🕒 *Time:* 2026-10-28 22:38:57 UTC
+👤 *User:* root
+📁 *Share:* share (SRV01)
+🗂 *Path:* /samba/probe.txt
+⚙️ *Action:* openat · fail (No such file or directory)
+```
+
+`detailed` adds `💻 Client: <session> · <architecture> · <SMB dialect>`, the
+`🏷 Domain` and the event counter; `minimal` stays the legacy line. A row appears
+only when the canary sent that field, so an older OpenCanary (which sends just
+`USER` and `FILENAME`) produces a shorter message rather than empty rows, and a
+field this layout does not know is still reported in `📝 Log`.
+
+Samba writes one audit row per filesystem operation, so one client browsing a
+share produces `connect`, `flistxattr` and `openat` rows before anything is
+opened. `OCC_SMB_IGNORE_ACTIONS` (empty by default) lists `AUDITACTION` values
+that must not create an incident — `flistxattr`, a directory listing, is the
+usual entry. A suppressed event is counted in `opencanary_events_ignored_total`
+and audited as `event_ignored` with `reason=smb_action`, so a suppression never
+looks like a lost event.
+
 HTTP channels retry 429/5xx and transport errors three times with exponential
 backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
 endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
@@ -313,8 +347,18 @@ OCC_VIRUSTOTAL_API_KEY=<key>
 | Level | Rows added under the attacker block |
 |---|---|
 | `minimal` | none |
-| `standard` | `📍 Location: Kazakhstan`, `🦠 VT: 0/94 malicious` |
-| `detailed` | `📍 Location: Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+| `standard` | `📍 Location: 🇰🇿 Kazakhstan`, `🦠 VT: 0/94 malicious` |
+| `detailed` | `📍 Location: 🇰🇿 Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+
+The country row carries the emoji flag of the ISO 3166-1 alpha-2 code, in every
+channel a person reads (Telegram, Slack, Discord, SMTP) and in the webhook's
+text. The flag is decoration derived from the code: a record with no usable
+code renders the country without one, so nothing is ever a placeholder.
+The JSON webhook additionally carries `enrichment.geo.flag` next to
+`country_code`, `country`, `city`, `asn` and `as_org`, and
+`enrichment.virustotal` with the detection ratio, `detections`, `total`,
+`reputation` and `checked` — the same facts at every detail level, so a SIEM
+does not have to parse message text.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*
@@ -324,7 +368,7 @@ OCC_VIRUSTOTAL_API_KEY=<key>
 
 🎯 *Attacker:* 89.126.202.164:52344
 🕒 *Time:* 2026-10-28 17:30:28 UTC
-📍 *Location:* Kazakhstan, Almaty
+📍 *Location:* 🇰🇿 Kazakhstan, Almaty
 🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
 🦠 *VT:* 0/94 malicious, reputation 0, 2026-10-26
 📊 *Events:* 1

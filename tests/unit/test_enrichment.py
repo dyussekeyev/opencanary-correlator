@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from opencanary_correlator.enrichment.geo import GeoLookup
-from opencanary_correlator.enrichment.models import GeoInfo, VirusTotalReport
+from opencanary_correlator.enrichment.models import GeoInfo, VirusTotalReport, country_flag
 from opencanary_correlator.enrichment.service import IncidentEnricher
 
 ATTACKER = "74.22.3.178"
@@ -233,3 +233,31 @@ async def test_a_real_geo_lookup_runs_through_the_enricher(tmp_path: Any) -> Non
     assert enrichment is not None
     assert enrichment.geo is not None
     assert enrichment.geo.location == "Kazakhstan, Almaty"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("NL", "🇳🇱"),
+        ("nl", "🇳🇱"),
+        ("KZ", "🇰🇿"),
+        # MMDB records are untrusted: anything that is not two ASCII letters has
+        # no flag, and the row falls back to plain text.
+        ("", ""),
+        ("N", ""),
+        ("NLD", ""),
+        ("N1", ""),
+        ("-1", ""),
+        ("\u00e9\u00e9", ""),
+    ],
+)
+def test_a_country_flag_comes_from_the_two_letter_code(code: str, expected: str) -> None:
+    assert country_flag(code) == expected
+
+
+def test_a_geo_record_without_a_code_renders_without_a_flag() -> None:
+    """The flag is decoration: no code must not leave a stray space in the row."""
+    info = GeoInfo(country="Kazakhstan")
+
+    assert info.flag == ""
+    assert info.location == "Kazakhstan"

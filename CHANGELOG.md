@@ -22,6 +22,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   metrics: `opencanary_outbox_pending`, `..._delivered_total`, `..._retried_total`,
   `..._dead_total`; `OCC_OUTBOX_ENABLED=false` restores the previous behaviour.
 
+- **Structured SMB alerts.** An `smb.file_open` alert now renders the Samba
+  audit record OpenCanary already sends, instead of a `KEY=value` dump clipped at
+  six pairs — which silently dropped `AUDITACTION` and `FILENAME` (the action and
+  the path) from every SMB message. `standard` shows user, share, path and the
+  action with its status; `detailed` adds the client fingerprint, the SMB dialect,
+  the domain and the event counter; `minimal` is unchanged. Rows appear only for
+  fields the canary sent, and a field the layout does not know is still reported
+  in `📝 Log`. `OCC_SMB_IGNORE_ACTIONS` (empty by default) lists audit actions that
+  must not create an incident — `flistxattr` stops a directory listing from
+  paging — and every suppressed event is counted in
+  `opencanary_events_ignored_total` and audited as `event_ignored` with
+  `reason=smb_action`.
+
+- **Country flags in the geo rows.** `📍 Location` now shows the emoji flag of the
+  attacker's country (`🇰🇿 Kazakhstan`, `🇳🇱 Netherlands, Amsterdam`), in Telegram,
+  Slack, Discord, SMTP and the webhook text alike, and `enrichment.geo.flag` is
+  part of the JSON webhook document. The flag is derived from the ISO 3166-1
+  alpha-2 code only: a record without a usable code renders the country exactly
+  as before, with no placeholder. A parametrised dispatcher test now pins that
+  every channel carries GeoIP, ASN and VirusTotal rows at the documented detail
+  levels.
+
 ### Added
 
 - **Service messages (optional, off by default).** The correlator can now report
