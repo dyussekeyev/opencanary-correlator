@@ -101,6 +101,17 @@ class AlertOutbox:
         )
         metrics.OUTBOX_RETRIED.labels(channel=channel).inc()
 
+    async def cancel(self, incident_key: str) -> int:
+        """Withdraw every pending delivery of one incident.
+
+        The alert budget calls this before any attempt is made: the incident is
+        stored, but no channel is going to be told about it, so its entries must
+        not survive to be retried later.
+        """
+        return await self._store.discard_alerts(
+            [outbox_entry_id(incident_key, channel) for channel in self._dispatchers]
+        )
+
     # --- Worker lifecycle ---------------------------------------------------
 
     async def start(self) -> None:

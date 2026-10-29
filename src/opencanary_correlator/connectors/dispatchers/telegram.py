@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
+    clip,
     render_alert,
     render_service_message,
 )
@@ -72,6 +73,14 @@ class TelegramDispatcher(HTTPDispatcher):
                 message, flavor="telegram", max_length=TELEGRAM_MAX_TEXT
             ),
             "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": True,
+        }
+
+    def build_notice_payload(self, message: str) -> dict[str, Any]:
+        """Send a notice as plain text: without ``parse_mode`` nothing needs escaping."""
+        return {
+            "chat_id": self._chat_id,
+            "text": clip(message, TELEGRAM_MAX_TEXT),
             "disable_web_page_preview": True,
         }
 

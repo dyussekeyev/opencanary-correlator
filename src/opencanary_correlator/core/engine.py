@@ -17,6 +17,7 @@ from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
 from opencanary_correlator.constants import IGNORED_LOGTYPES
+from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.outbox import AlertOutbox
@@ -47,6 +48,7 @@ class CorrelationEngine:
         enricher: IncidentEnricher | None = None,
         outbox: AlertOutbox | None = None,
         notifier: ServiceNotifier | None = None,
+        budget: AlertBudget | None = None,
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -60,6 +62,8 @@ class CorrelationEngine:
         # Without a notifier nothing is said about the correlator's own health.
         self._notifier = notifier
         self._failed_alerts_in_a_row = 0
+        # Without a budget every incident notifies, as before.
+        self._budget = budget
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -174,20 +178,62 @@ class CorrelationEngine:
                 )
 
     async def _dispatch(self, incidents: Sequence[Incident]) -> None:
-        """Notify every channel, and notice when none of them works.
+        """Notify every channel about the incidents the budget allowed.
 
-        The fan-out is per incident so the engine can tell "one channel failed"
+        The budget is consulted before the first attempt, so a withheld alert
+        costs nothing but its outbox entries, which are withdrawn here. Incidents
+        themselves are never withheld: they are stored and visible in the console
+        either way, and the window's refusals are summarised when it closes.
+
+        The fan-out stays per incident so the engine can tell "one channel failed"
         from "this alert reached nobody". The second case repeated a few times in
         a row is the one an operator must hear about, because the correlator is
         then storing attacks nobody is being told about.
         """
         for incident in incidents:
+            if not await self._notification_allowed(incident):
+                await self._suppress(incident)
+                continue
             if not self._dispatchers:
                 return
             results = await asyncio.gather(
                 *(self._deliver(dispatcher, incident) for dispatcher in self._dispatchers)
             )
             await self._track_delivery(results, incident)
+
+    async def _notification_allowed(self, incident: Incident) -> bool:
+        """Ask the budget, failing open when it cannot answer.
+
+        A budget that cannot count must not silence an alert: an unreachable
+        Redis is already an outage an operator will see, and dropping every
+        notification on top of it would turn a counting problem into a blind
+        spot. The failure is audited instead.
+        """
+        if self._budget is None:
+            return True
+        try:
+            return await self._budget.allow(incident.node_id)
+        except Exception as exc:
+            self._audit.emit(
+                "alert_budget_failed",
+                "error",
+                {"incident": incident.key, "error_type": type(exc).__name__},
+            )
+            return True
+
+    async def _suppress(self, incident: Incident) -> None:
+        """Drop the notification: withdraw its deliveries and record the refusal."""
+        if self._outbox is not None:
+            await self._outbox.cancel(incident.key)
+        self._audit.emit(
+            "alert_suppressed",
+            "warning",
+            {
+                "incident": incident.key,
+                "node_id": incident.node_id,
+                "src_host": incident.src_host,
+            },
+        )
 
     async def _track_delivery(self, results: Sequence[bool], incident: Incident) -> None:
         """Count consecutive alerts that reached no channel, and report them."""

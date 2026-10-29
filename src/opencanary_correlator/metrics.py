@@ -77,6 +77,11 @@ ALERTS_TOTAL = Counter(
     "Alert delivery attempts, by dispatcher and outcome",
     ["dispatcher", "status"],
 )
+ALERTS_BUDGET = Counter(
+    "opencanary_alerts_budget_total",
+    "Notifications the alert budget allowed or withheld",
+    ["result"],
+)
 BUILD_INFO = Info(
     "opencanary_build",
     "Static build information for the running correlator",

@@ -118,6 +118,31 @@ class SmtpDispatcher(BaseDispatcher):
             return DispatchResult(dispatcher=self.name, status="error", detail=type(exc).__name__)
         return await self._send_with_retries(mail)
 
+    def build_notice_message(self, body: str) -> EmailMessage:
+        """Render an operator notice: the first line is the subject, the rest the body.
+
+        A summary has no incident title, but a mail without a subject is filtered
+        away by most clients, so the headline the renderer already wrote becomes
+        one. It is flattened for the same reason as the alert subject.
+        """
+        message = EmailMessage()
+        message["From"] = sanitize_text(self._sender)
+        message["To"] = sanitize_text(", ".join(self._recipients))
+        headline = next((line for line in body.splitlines() if line.strip()), "")
+        message["Subject"] = sanitize_text(headline) or "OpenCanary notice"
+        message.set_content(body)
+        return message
+
+    async def announce(self, message: str) -> DispatchResult:
+        """Deliver a notice with the same recipients and retries as an alert."""
+        if not self._recipients:
+            return DispatchResult(dispatcher=self.name, status="skipped", detail="no_recipients")
+        try:
+            notice = self.build_notice_message(message)
+        except (TypeError, ValueError) as exc:
+            return DispatchResult(dispatcher=self.name, status="error", detail=type(exc).__name__)
+        return await self._send_with_retries(notice)
+
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """Deliver the email with retries, never raising."""
         if not self._recipients:
@@ -134,7 +159,7 @@ class SmtpDispatcher(BaseDispatcher):
         return await self._send_with_retries(message)
 
     async def _send_with_retries(self, message: EmailMessage) -> DispatchResult:
-        """Send one rendered mail, retrying a relay failure with backoff."""
+        """Send one rendered message, retrying a relay failure with backoff."""
         password = self._password.get_secret_value() if self._password else None
         detail = "no_attempt"
         for attempt in range(1, self._retry.attempts + 1):

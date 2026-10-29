@@ -177,12 +177,29 @@ class HTTPDispatcher(BaseDispatcher):
             raise NotImplementedError(f"{type(self).__name__} cannot carry service messages")
         return await self._post(payload)
 
+    def build_notice_payload(self, message: str) -> dict[str, Any] | None:
+        """Render a plain operator notice, or None when this channel has none.
+
+        A notice is not an incident: it carries no source address, no incident
+        key and no attacker context, so only a channel a human reads overrides
+        this. The webhook leaves it None on purpose - a SIEM consumer would
+        otherwise index a budget summary as an alert document.
+        """
+        return None
+
+    async def announce(self, message: str) -> DispatchResult:
+        """POST a notice, using the same retries and breaker as an alert."""
+        payload = self.build_notice_payload(message)
+        if payload is None:
+            return DispatchResult(dispatcher=self.name, status="skipped", detail="not_supported")
+        return await self._post(payload)
+
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """POST the incident payload with retries, never raising."""
         return await self._post(self.build_payload(incident))
 
     async def _post(self, payload: Mapping[str, Any]) -> DispatchResult:
-        """Deliver one rendered body with retries, never raising."""
+        """Deliver one already-rendered body with retries, never raising."""
         if not await self._breaker_allows():
             return DispatchResult(dispatcher=self.name, status="skipped", detail="circuit_open")
 

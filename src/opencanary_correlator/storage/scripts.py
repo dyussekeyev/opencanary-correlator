@@ -129,13 +129,66 @@ redis.call('EXPIRE', KEYS[2], ARGV[1])
 return {0, 0}
 """
 
+#: Reserve one notification from the per-node and the global budget, or record a
+#: suppression. Reserving and counting separately would let two replicas both use
+#: the last free slot, and a suppression counted outside the reservation could be
+#: lost between the two calls. ARGV: per-node limit, global limit, ttl_ms, node id,
+#: summary due score. KEYS: node counter, global counter, summary hash, summary
+#: index. A suppression re-adds the same summary member with the same score, so
+#: the hundredth refused alert still schedules one summary.
+RESERVE_ALERT_BUDGET_LUA = """
+local node = tonumber(redis.call('GET', KEYS[1]) or '0')
+local global = tonumber(redis.call('GET', KEYS[2]) or '0')
+if node < tonumber(ARGV[1]) and global < tonumber(ARGV[2]) then
+    if redis.call('INCR', KEYS[1]) == 1 then
+        redis.call('PEXPIRE', KEYS[1], ARGV[3])
+    end
+    if redis.call('INCR', KEYS[2]) == 1 then
+        redis.call('PEXPIRE', KEYS[2], ARGV[3])
+    end
+    return 1
+end
+redis.call('HINCRBY', KEYS[3], ARGV[4], 1)
+redis.call('PEXPIRE', KEYS[3], ARGV[3])
+redis.call('ZADD', KEYS[4], ARGV[5], KEYS[3])
+return 0
+"""
+
+#: Hand one closed-window summary to exactly one worker. Removing it before the
+#: read is what makes the handover exclusive: every replica runs this loop, and a
+#: read-then-remove pair would let two of them send the same summary.
+TAKE_BUDGET_SUMMARY_LUA = """
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then
+    return {}
+end
+local flat = redis.call('HGETALL', KEYS[2])
+redis.call('DEL', KEYS[2])
+return flat
+"""
+
+#: Drop pending deliveries nobody will attempt, one batch at a time. ARGV[i] is
+#: the index member for KEYS[i + 1]. A suppressed alert must not keep its outbox
+#: entry: the worker would deliver it later and the ration would be a delay
+#: rather than a limit.
+DISCARD_ALERTS_LUA = """
+local removed = 0
+for i = 2, #KEYS do
+    removed = removed + redis.call('DEL', KEYS[i])
+    redis.call('ZREM', KEYS[1], ARGV[i - 1])
+end
+return removed
+"""
+
 __all__ = [
     "CLAIM_DUE_ALERTS_LUA",
     "CONFIRM_DEDUP_LUA",
+    "DISCARD_ALERTS_LUA",
     "RELEASE_LOCK_LUA",
+    "RESERVE_ALERT_BUDGET_LUA",
     "RESERVE_QUOTA_LUA",
     "SAVE_INCIDENT_LUA",
     "SAVE_INCIDENT_WITH_ALERTS_LUA",
     "SERVICE_MESSAGE_SLOT_LUA",
     "SETTLE_ALERT_LUA",
+    "TAKE_BUDGET_SUMMARY_LUA",
 ]

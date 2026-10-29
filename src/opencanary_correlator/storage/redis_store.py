@@ -21,6 +21,7 @@ searching 400 lines:
 :mod:`_cache`        string values (the enrichment cache)
 :mod:`_console`      the bounded legacy console journal
 :mod:`_incidents`    incident hash, index pointer and bounded lookup scan
+:mod:`_budget`       the per-node notification budget and its window summaries
 :mod:`_outbox`       pending alert deliveries, retries and the dead letter list
 :mod:`_service`      suppression slots for service messages
 :mod:`_stats`        replica heartbeats and the incident/window reads
@@ -37,6 +38,7 @@ or failover endpoint.
 from __future__ import annotations
 
 from opencanary_correlator.storage._base import IncidentLookup, _StoreBase
+from opencanary_correlator.storage._budget import _BudgetMixin
 from opencanary_correlator.storage._cache import _CacheMixin
 from opencanary_correlator.storage._console import _ConsoleMixin
 from opencanary_correlator.storage._dedup import _DedupMixin
@@ -64,6 +66,7 @@ class RedisStore(
     _OutboxMixin,
     _ServiceMixin,
     _StatsMixin,
+    _BudgetMixin,
     _LockMixin,
     _StoreBase,
 ):

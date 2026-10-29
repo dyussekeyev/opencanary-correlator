@@ -69,6 +69,10 @@ class DiscordDispatcher(HTTPDispatcher):
             ]
         }
 
+    def build_notice_payload(self, message: str) -> dict[str, Any]:
+        """Send a notice as `content`, clipped to the message limit."""
+        return {"content": clip(message, DISCORD_MAX_CONTENT)}
+
 
 __all__ = [
     "DISCORD_ALERT_COLOR",

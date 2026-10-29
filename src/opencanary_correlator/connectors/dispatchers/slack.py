@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
+    clip,
     render_alert,
     render_service_message,
 )
@@ -14,6 +15,8 @@ from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from opencanary_correlator.core.service_messages import ServiceMessage
+
+SLACK_MAX_TEXT = 39_000
 
 
 class SlackDispatcher(HTTPDispatcher):
@@ -38,5 +41,9 @@ class SlackDispatcher(HTTPDispatcher):
         """A service message is a human-readable line, so Slack carries it as-is."""
         return {"text": render_service_message(message, flavor="slack")}
 
+    def build_notice_payload(self, message: str) -> dict[str, Any]:
+        """A budget summary is a message for people, so Slack carries it."""
+        return {"text": clip(message, SLACK_MAX_TEXT)}
 
-__all__ = ["SlackDispatcher"]
+
+__all__ = ["SLACK_MAX_TEXT", "SlackDispatcher"]

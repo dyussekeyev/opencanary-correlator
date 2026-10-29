@@ -61,6 +61,10 @@ a compatibility risk, because consumers only rely on these five keys.
 | `digest_sent` | `success` / `error` | the daily digest was produced (or no channel accepted it) | `day`, `incidents`, `replicas`, `events` |
 | `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |
 | `stats_heartbeat_failed` | `warning` | the replica could not publish its heartbeat (a digest field is missing, nothing else) | `error_type` |
+| `alert_suppressed` | `warning` | the alert budget withheld this notification; the incident itself is stored | `incident`, `node_id`, `src_host` |
+| `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |
+| `alert_summary_failed` | `error` | one summary iteration raised and was skipped | `error_type` |
+| `alert_budget_failed` | `error` | the budget could not count, so the alert was sent anyway (fails open) | `incident`, `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
 | `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |

@@ -250,6 +250,12 @@
     "-i"
   ],
   "describe_settings": {
+    "alert_budget": {
+      "enabled": false,
+      "global": 200,
+      "per_node": 20,
+      "window": 3600.0
+    },
     "alert_detail": {
       "discord": "standard",
       "slack": "standard",
