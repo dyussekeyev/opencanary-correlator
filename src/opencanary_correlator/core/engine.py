@@ -22,9 +22,15 @@ from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import Incident
 from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import Rule
+from opencanary_correlator.core.service_messages import ServiceKind, ServiceNotifier
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
 from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.schemas import CanaryEvent
+
+#: Consecutive alerts that reached no channel at all before the engine says so.
+#: One failed alert is normal (a flaky endpoint, a deploy); three in a row means
+#: the correlator is effectively blind and an operator has to know.
+ALL_CHANNELS_FAILING_THRESHOLD: int = 3
 
 
 class CorrelationEngine:
@@ -41,6 +47,7 @@ class CorrelationEngine:
         clock: Callable[[], float] = time.time,
         enricher: IncidentEnricher | None = None,
         outbox: AlertOutbox | None = None,
+        notifier: ServiceNotifier | None = None,
         budget: AlertBudget | None = None,
     ) -> None:
         self._rules = list(rules)
@@ -52,6 +59,9 @@ class CorrelationEngine:
         self._enricher = enricher
         # Without an outbox the inline attempt is the whole story, as before.
         self._outbox = outbox
+        # Without a notifier nothing is said about the correlator's own health.
+        self._notifier = notifier
+        self._failed_alerts_in_a_row = 0
         # Without a budget every incident notifies, as before.
         self._budget = budget
 
@@ -174,20 +184,22 @@ class CorrelationEngine:
         costs nothing but its outbox entries, which are withdrawn here. Incidents
         themselves are never withheld: they are stored and visible in the console
         either way, and the window's refusals are summarised when it closes.
+
+        The fan-out stays per incident so the engine can tell "one channel failed"
+        from "this alert reached nobody". The second case repeated a few times in
+        a row is the one an operator must hear about, because the correlator is
+        then storing attacks nobody is being told about.
         """
-        allowed: list[Incident] = []
         for incident in incidents:
-            if await self._notification_allowed(incident):
-                allowed.append(incident)
-            else:
+            if not await self._notification_allowed(incident):
                 await self._suppress(incident)
-        tasks = [
-            self._deliver(dispatcher, incident)
-            for dispatcher in self._dispatchers
-            for incident in allowed
-        ]
-        if tasks:
-            await asyncio.gather(*tasks)
+                continue
+            if not self._dispatchers:
+                return
+            results = await asyncio.gather(
+                *(self._deliver(dispatcher, incident) for dispatcher in self._dispatchers)
+            )
+            await self._track_delivery(results, incident)
 
     async def _notification_allowed(self, incident: Incident) -> bool:
         """Ask the budget, failing open when it cannot answer.
@@ -223,7 +235,26 @@ class CorrelationEngine:
             },
         )
 
-    async def _deliver(self, dispatcher: BaseDispatcher, incident: Incident) -> None:
+    async def _track_delivery(self, results: Sequence[bool], incident: Incident) -> None:
+        """Count consecutive alerts that reached no channel, and report them."""
+        if any(results):
+            self._failed_alerts_in_a_row = 0
+            return
+        self._failed_alerts_in_a_row += 1
+        if self._failed_alerts_in_a_row < ALL_CHANNELS_FAILING_THRESHOLD:
+            return
+        await self._notify(
+            ServiceKind.CHANNEL_ALL_FAILING,
+            title="No alert reached any channel",
+            lines=(
+                f"{self._failed_alerts_in_a_row} consecutive alerts failed on every channel",
+                f"Channels tried: {', '.join(dispatcher.name for dispatcher in self._dispatchers)}",
+                f"Last incident: {incident.key}",
+            ),
+            subject="channels:all",
+        )
+
+    async def _deliver(self, dispatcher: BaseDispatcher, incident: Incident) -> bool:
         """Try one channel now, then tell the outbox what happened.
 
         The attempt stays inline so a healthy deployment notifies immediately;
@@ -236,8 +267,20 @@ class CorrelationEngine:
             audit=self._audit,
             deadline=float(self._settings.dispatch_timeout),
         )
+        if result is not None and result.status == "skipped" and result.detail == "circuit_open":
+            # The breaker stopped the attempt, so this is where an operator learns
+            # that the endpoint they configured is not being used at all.
+            await self._notify(
+                ServiceKind.CHANNEL_CIRCUIT_OPEN,
+                title=f"Channel {dispatcher.name} is paused",
+                lines=(
+                    "The circuit breaker is open after repeated failures",
+                    "Alerts are queued in the outbox and retried once it closes",
+                ),
+                subject=f"channel:{dispatcher.name}",
+            )
         if self._outbox is None:
-            return
+            return result is not None and result.status == "success"
         if result is None:
             error = "timeout"
         elif result.status != "success":
@@ -245,6 +288,23 @@ class CorrelationEngine:
         else:
             error = None
         await self._outbox.settle(incident.key, dispatcher.name, error=error)
+        return error is None
+
+    async def _notify(
+        self,
+        kind: ServiceKind,
+        *,
+        title: str,
+        lines: tuple[str, ...],
+        subject: str,
+    ) -> None:
+        """Send a service message, never letting it break delivery."""
+        if self._notifier is None:
+            return
+        try:
+            await self._notifier.notify(kind, title=title, lines=lines, subject=subject)
+        except Exception:  # pragma: no cover - the notifier is documented not to raise
+            return
 
 
 __all__ = ["CorrelationEngine"]

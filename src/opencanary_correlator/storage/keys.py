@@ -150,10 +150,53 @@ def console_setting_key(setting: str) -> str:
     return f"{KEY_CONSOLE_SETTING_PREFIX}{setting}"
 
 
+def service_subject_hash(subject: str) -> str:
+    """Stable, short id of a service-message subject.
+
+    The subject can be a node id taken from the wire or a filesystem path, so it
+    is hashed rather than embedded: a key built from arbitrary input would let a
+    canary create keys of any length, and a path in a Redis key is one more place
+    it leaks.
+    """
+    return hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+
+
+def service_message_keys(kind: str, subject: str) -> tuple[str, str]:
+    """Suppression slot and repeat counter for one `(kind, subject)` pair."""
+    suffix = f"{kind}:{service_subject_hash(subject)}"
+    return f"service:mute:{suffix}", f"service:repeat:{suffix}"
+
+
+#: Prefix of the per-replica heartbeat hash. One key per running process, with a
+#: TTL, so the number of live replicas is the number of unexpired keys.
+STATS_INSTANCE_PREFIX = "stats:instance:"
+#: Marker proving one day's digest was already produced.
+DIGEST_SENT_PREFIX = "digest:sent:"
+#: Lock serialising the digest across replicas.
+DIGEST_LOCK_PREFIX = "digest:lock:"
+
+
+def stats_instance_key(instance_id: str) -> str:
+    """Heartbeat hash of one replica."""
+    return f"{STATS_INSTANCE_PREFIX}{instance_id}"
+
+
+def digest_sent_key(day: str) -> str:
+    """Marker for the digest of one UTC day (`YYYY-MM-DD`)."""
+    return f"{DIGEST_SENT_PREFIX}{day}"
+
+
+def digest_lock_key(day: str) -> str:
+    """Lock that elects the replica producing one day's digest."""
+    return f"{DIGEST_LOCK_PREFIX}{day}"
+
+
 __all__ = [
     "BUDGET_SUMMARIES",
     "DEDUP_KEY_PREFIX",
     "DELIVERED_PREFIX",
+    "DIGEST_LOCK_PREFIX",
+    "DIGEST_SENT_PREFIX",
     "ENRICHMENT_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
@@ -161,6 +204,7 @@ __all__ = [
     "OUTBOX_ENTRY_PREFIX",
     "OUTBOX_INDEX",
     "QUOTA_PREFIX",
+    "STATS_INSTANCE_PREFIX",
     "budget_global_key",
     "budget_node_key",
     "budget_summary_key",
@@ -169,6 +213,8 @@ __all__ = [
     "delivered_key",
     "device_hash",
     "device_key",
+    "digest_lock_key",
+    "digest_sent_key",
     "enrichment_cache_key",
     "host_scan_key",
     "incident_key",
@@ -179,4 +225,7 @@ __all__ = [
     "outbox_alert_key",
     "outbox_entry_id",
     "quota_key",
+    "service_message_keys",
+    "service_subject_hash",
+    "stats_instance_key",
 ]

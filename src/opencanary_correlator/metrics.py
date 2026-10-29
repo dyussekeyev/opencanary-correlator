@@ -29,6 +29,11 @@ EVENTS_DROPPED = Counter(
     "Events discarded before correlation, by reason",
     ["reason"],
 )
+EVENTS_IGNORED = Counter(
+    "opencanary_events_ignored_total",
+    "Valid events a rule deliberately did not correlate, by reason",
+    ["reason"],
+)
 EVENT_QUEUE_DEPTH = Gauge(
     "opencanary_event_queue_depth",
     "Events waiting in the bounded receiver queue",

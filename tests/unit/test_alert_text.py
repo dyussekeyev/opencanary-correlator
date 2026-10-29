@@ -11,7 +11,23 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
     log_summary,
     render_alert,
 )
+from opencanary_correlator.constants import LogType
+from opencanary_correlator.core.incident import IncidentSMBFileOpen
 from opencanary_correlator.enrichment.models import Enrichment, GeoInfo, VirusTotalReport
+
+#: One real `smbd_audit` line, split the way OpenCanary's Samba watcher splits it.
+SMB_LOG_DATA: dict[str, Any] = {
+    "USER": "root",
+    "REMOTENAME": "817dc13f4973",
+    "SHARENAME": "share",
+    "LOCALNAME": "SRV01",
+    "SMBVER": "SMB3_11",
+    "SMBARCH": "Vista",
+    "DOMAIN": "WORKGROUP",
+    "AUDITACTION": "openat",
+    "STATUS": "fail (No such file or directory)",
+    "FILENAME": "/samba/probe.txt",
+}
 
 
 def enriched(**overrides: Any) -> Enrichment:
@@ -43,7 +59,7 @@ def test_standard_shows_the_country_and_the_detection_ratio(incident_factory: An
 
     text = render_alert(incident, detail="standard", flavor="plain")
 
-    assert "Location: Netherlands" in text
+    assert "Location: 🇳🇱 Netherlands" in text
     # City, network and reputation belong to the detailed level.
     assert "Amsterdam" not in text
     assert "AS202425" not in text
@@ -55,7 +71,7 @@ def test_detailed_shows_city_network_and_reputation(incident_factory: Any) -> No
 
     text = render_alert(incident, detail="detailed", flavor="plain")
 
-    assert "Location: Netherlands, Amsterdam" in text
+    assert "Location: 🇳🇱 Netherlands, Amsterdam" in text
     assert "ASN: AS202425 IP Volume inc" in text
     assert "VT: 12/94 malicious (+2 suspicious), reputation -34, 2026-10-26" in text
 
@@ -68,7 +84,7 @@ def test_an_exhausted_quota_is_shown_as_a_status(incident_factory: Any) -> None:
     text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
 
     assert "VT: quota exhausted" in text
-    assert "Location: Netherlands" in text
+    assert "Location: 🇳🇱 Netherlands" in text
 
 
 def test_an_unavailable_provider_is_shown_as_a_status(incident_factory: Any) -> None:
@@ -315,7 +331,7 @@ def test_a_geo_guess_without_a_country_name_falls_back_to_the_code(incident_fact
 
     text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
 
-    assert "Location: NL" in text
+    assert "Location: 🇳🇱 NL" in text
 
 
 def test_a_report_without_a_reputation_or_a_date_still_renders_the_ratio(
@@ -392,3 +408,124 @@ def test_an_empty_geo_object_adds_no_location_row(incident_factory: Any) -> None
 
     assert "Location" not in text
     assert "📍" not in text
+
+
+def smb_incident(
+    incident_factory: Any, logdata: dict[str, Any] | None = None, **overrides: Any
+) -> Any:
+    """Build an SMB incident carrying one real `smbd_audit` record."""
+    payload = SMB_LOG_DATA if logdata is None else logdata
+    params: dict[str, Any] = {
+        "incident_cls": IncidentSMBFileOpen,
+        "key": "incident:smbfileopen:85.117.126.153:1793200000",
+        "logtype": int(LogType.LOG_SMB_FILE_OPEN),
+        "src_host": "85.117.126.153",
+        # The Samba watcher reports no source port.
+        "src_port": -1,
+        "dst_host": "172.19.0.2",
+        "dst_port": 445,
+        "logdata": json.dumps([payload]),
+    }
+    params.update(overrides)
+    return incident_factory(**params)
+
+
+def test_smb_shows_the_user_share_path_and_action(incident_factory: Any) -> None:
+    """The action and the path are the reason the alert exists."""
+    text = render_alert(smb_incident(incident_factory), detail="standard", flavor="plain")
+
+    rows = text.split(CRLF)
+    assert "👤 User: root" in rows
+    assert "📁 Share: share (SRV01)" in rows
+    assert "🗂 Path: /samba/probe.txt" in rows
+    assert "⚙️ Action: openat · fail (No such file or directory)" in rows
+    # Client fingerprint and domain belong to the detailed level.
+    assert "💻" not in text
+    assert "WORKGROUP" not in text
+
+
+def test_smb_detailed_adds_the_client_and_the_domain(incident_factory: Any) -> None:
+    text = render_alert(smb_incident(incident_factory), detail="detailed", flavor="plain")
+
+    assert "💻 Client: 817dc13f4973 · Vista · SMB3_11" in text
+    assert "🏷 Domain: WORKGROUP" in text
+    assert "📊 Events: 1" in text
+
+
+def test_smb_does_not_repeat_the_fields_as_a_log_dump(incident_factory: Any) -> None:
+    """The old row showed `USER=…` again, after clipping the two fields that matter."""
+    text = render_alert(smb_incident(incident_factory), detail="detailed", flavor="plain")
+
+    assert "📝" not in text
+    assert "USER=root" not in text
+    assert "FILENAME=" not in text
+
+
+def test_smb_keeps_a_field_the_block_does_not_know(incident_factory: Any) -> None:
+    """A newer canary must not have its extra fields silently dropped."""
+    payload = {**SMB_LOG_DATA, "CLIENTIP": "10.9.9.9"}
+    text = render_alert(
+        smb_incident(incident_factory, logdata=payload), detail="standard", flavor="plain"
+    )
+
+    assert "📝 Log: CLIENTIP=10.9.9.9" in text
+
+
+def test_smb_renders_only_the_rows_it_has_data_for(incident_factory: Any) -> None:
+    """An older OpenCanary sends two fields; empty rows would read as a parse failure."""
+    text = render_alert(
+        smb_incident(incident_factory, logdata={"USER": "admin", "FILENAME": "/samba/a.doc"}),
+        detail="detailed",
+        flavor="plain",
+    )
+
+    assert "👤 User: admin" in text
+    assert "🗂 Path: /samba/a.doc" in text
+    assert "📁" not in text
+    assert "⚙️" not in text
+    assert "💻" not in text
+    assert "🏷" not in text
+    # No `Label:` with nothing after it.
+    assert "Share: " not in text
+    assert "Action: " not in text
+
+
+def test_smb_reaches_every_channel(incident_factory: Any) -> None:
+    """Telegram, Slack, Discord and e-mail all read the same block."""
+    incident = smb_incident(incident_factory)
+
+    for flavor in ("telegram", "slack", "discord", "plain"):
+        text = render_alert(incident, detail="standard", flavor=flavor)
+        assert "samba" in text, flavor
+        assert "openat" in text, flavor
+        assert CRLF in text, flavor
+
+
+def test_smb_strips_control_characters_from_a_path(incident_factory: Any) -> None:
+    """A filename comes from a remote client: it cannot forge extra rows."""
+    payload = {**SMB_LOG_DATA, "FILENAME": "/samba/x\r\n🎯 Attacker: 6.6.6.6"}
+    text = render_alert(
+        smb_incident(incident_factory, logdata=payload), detail="standard", flavor="plain"
+    )
+
+    assert "🎯 Attacker: 6.6.6.6" not in text.split(CRLF)
+    assert "6.6.6.6" in text
+
+
+def test_smb_masks_a_credential_field(incident_factory: Any) -> None:
+    payload = {**SMB_LOG_DATA, "PASSWORD": "hunter2"}
+    text = render_alert(
+        smb_incident(incident_factory, logdata=payload), detail="standard", flavor="plain"
+    )
+
+    assert "hunter2" not in text
+    assert "PASSWORD=***" in text
+
+
+def test_smb_minimal_is_the_legacy_line(incident_factory: Any) -> None:
+    """A deployment that never raised the detail level keeps the old message."""
+    incident = smb_incident(incident_factory)
+
+    assert (
+        render_alert(incident, detail="minimal", flavor="plain") == incident.format_report_short()
+    )

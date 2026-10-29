@@ -93,6 +93,19 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "global": settings.alert_budget_global,
             "window": settings.alert_budget_window,
         },
+        "service_messages": {
+            "enabled": settings.service_enabled,
+            "channels": list(settings.service_channels),
+            "categories": list(settings.service_categories),
+            "cooldown": settings.service_cooldown,
+            "min_severity": settings.service_min_severity,
+        },
+        "digest": {
+            "enabled": settings.digest_enabled,
+            "time": settings.digest_time,
+            "channels": list(settings.digest_channels),
+            "top_sources": settings.digest_top_sources,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }

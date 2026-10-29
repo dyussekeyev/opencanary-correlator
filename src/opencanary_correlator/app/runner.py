@@ -7,10 +7,12 @@ import json
 import logging
 import signal
 import sys
+import time
 from collections.abc import Sequence
 
 from pydantic import ValidationError
 
+from opencanary_correlator import __version__
 from opencanary_correlator.app.channels import build_dispatchers
 from opencanary_correlator.app.describe import describe_settings, log_secrets
 from opencanary_correlator.app.parser import CorrelatorStartupError, build_parser, load_settings
@@ -24,10 +26,16 @@ from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher, BaseReceiver
 from opencanary_correlator.core.budget import AlertBudget
+from opencanary_correlator.core.digest import DigestScheduler
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import build_rules
+from opencanary_correlator.core.service_messages import (
+    ServiceKind,
+    ServiceNotifier,
+)
+from opencanary_correlator.core.stats import StatsReporter
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.log_setup import (
@@ -41,6 +49,26 @@ from opencanary_correlator.log_setup import (
 from opencanary_correlator.storage.redis_store import RedisStore
 
 _logger = logging.getLogger(__name__)
+
+
+def _require_configured_service_channels(
+    settings: Settings, dispatchers: Sequence[BaseDispatcher]
+) -> None:
+    """Fail at startup when a service-message channel was never built.
+
+    A name in `OCC_SERVICE_CHANNELS` that no dispatcher answers would silently
+    drop every service message, which is the opposite of the feature's purpose.
+    The check runs against the dispatchers startup actually built, so a channel
+    that is configured but switched off counts as missing.
+    """
+    if not settings.service_enabled or not settings.service_channels:
+        return
+    built = {dispatcher.name for dispatcher in dispatchers}
+    missing = [name for name in settings.service_channels if name not in built]
+    if missing:
+        raise CorrelatorStartupError(
+            "OCC_SERVICE_CHANNELS names unconfigured channel(s): " + ", ".join(missing)
+        )
 
 
 def install_signal_handlers(stop_event: asyncio.Event) -> None:
@@ -87,6 +115,10 @@ async def run_correlator(
     outbox = (
         AlertOutbox(store, active_dispatchers, settings, audit) if settings.outbox_enabled else None
     )
+    notifier = ServiceNotifier(store, active_dispatchers, settings, audit)
+    _require_configured_service_channels(settings, active_dispatchers)
+    stats = StatsReporter(store, audit)
+    digest = DigestScheduler(store, notifier, settings, audit) if settings.digest_enabled else None
     repository = IncidentRepository(
         store,
         settings,
@@ -100,15 +132,16 @@ async def run_correlator(
         if settings.alert_budget_enabled
         else None
     )
-    enricher = build_enricher(settings, store, audit)
+    enricher = build_enricher(settings, store, audit, notifier)
     engine = CorrelationEngine(
-        rules=build_rules(store, repository, settings),
+        rules=build_rules(store, repository, settings, audit),
         dispatchers=active_dispatchers,
         dedup=DedupCache(store, ttl=settings.dedup_ttl, lease=settings.dedup_lease),
         settings=settings,
         audit=audit,
         enricher=enricher,
         outbox=outbox,
+        notifier=notifier,
         budget=budget,
     )
     rate_limiter = build_rate_limiter(settings, store)
@@ -132,6 +165,7 @@ async def run_correlator(
     package_logger.addHandler(log_handler)
 
     started: list[BaseReceiver] = []
+    began = time.monotonic()
     try:
         await log_handler.start()
         for receiver in receivers:
@@ -141,6 +175,9 @@ async def run_correlator(
             await health.start()
         if outbox is not None:
             await outbox.start()
+        await stats.start()
+        if digest is not None:
+            await digest.start()
         if budget is not None:
             await budget.start()
         audit.emit(
@@ -151,6 +188,16 @@ async def run_correlator(
                 "rules": list(engine.rule_names),
                 "channels": [dispatcher.name for dispatcher in active_dispatchers],
             },
+        )
+        await notifier.notify(
+            ServiceKind.LIFECYCLE_STARTED,
+            title="correlator started",
+            lines=(
+                f"Version {__version__}",
+                f"Receivers: {', '.join(receiver.name for receiver in receivers)}",
+                f"Channels: {', '.join(dispatcher.name for dispatcher in active_dispatchers)}",
+            ),
+            subject="lifecycle",
         )
         await stop.wait()
     except Exception as exc:
@@ -163,8 +210,11 @@ async def run_correlator(
             await health.stop()
         if outbox is not None:
             await outbox.stop()
+        if digest is not None:
+            await digest.stop()
         if budget is not None:
             await budget.stop()
+        await stats.stop()
         await asyncio.gather(
             *(dispatcher.aclose() for dispatcher in active_dispatchers),
             return_exceptions=True,
@@ -173,6 +223,13 @@ async def run_correlator(
             await enricher.aclose()
         package_logger.removeHandler(log_handler)
         await log_handler.stop()
+        uptime = round(time.monotonic() - began, 1)
+        await notifier.notify(
+            ServiceKind.LIFECYCLE_STOPPED,
+            title="correlator stopped",
+            lines=(f"Version {__version__}", f"Uptime: {uptime} s"),
+            subject="lifecycle",
+        )
         if owns_store:
             await store.aclose()
         audit.emit("shutdown", "info", {"receivers": len(started)})

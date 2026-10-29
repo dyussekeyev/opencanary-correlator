@@ -7,15 +7,19 @@ Discord limits message `content` to 2000 characters and embed descriptions to
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
     clip,
     render_alert,
+    render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 DISCORD_MAX_CONTENT = 2000
 DISCORD_MAX_EMBED_DESCRIPTION = 4096
@@ -38,6 +42,14 @@ class DiscordDispatcher(HTTPDispatcher):
         """Discord answers `204 No Content` for a successful webhook execution."""
         self._detail: AlertDetail = detail
         super().__init__(expected_status=expected_status, **kwargs)
+
+    def build_service_payload(self, message: ServiceMessage) -> dict[str, Any]:
+        """Service messages are short, so they fit in `content`."""
+        return {
+            "content": render_service_message(
+                message, flavor="discord", max_length=DISCORD_MAX_CONTENT
+            )
+        }
 
     def build_payload(self, incident: IncidentLike) -> dict[str, Any]:
         """Use `content` when it fits, otherwise a single embed."""

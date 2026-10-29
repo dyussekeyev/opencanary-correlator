@@ -522,3 +522,29 @@ def test_lookup_scan_limit_can_be_raised_from_the_environment(monkeypatch: Any) 
     monkeypatch.setenv("OCC_INCIDENT_LOOKUP_SCAN_LIMIT", "500")
 
     assert Settings(_env_file=None).incident_lookup_scan_limit == 500
+
+
+def test_smb_ignore_actions_are_empty_by_default(settings_factory: Any) -> None:
+    """Nothing is suppressed until an operator asks for it."""
+    assert settings_factory().smb_ignore_actions == []
+
+
+def test_smb_ignore_actions_are_normalised(monkeypatch: Any) -> None:
+    """Samba writes lower case; a configuration file may not, and may have commas."""
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_SMB_IGNORE_ACTIONS", " FLISTXATTR , openat ,, flistxattr ")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.smb_ignore_actions == ["flistxattr", "openat"]
+
+
+def test_smb_ignore_actions_reject_a_control_character(settings_factory: Any) -> None:
+    """A value that could never match an audit action is a mistake, not an entry."""
+    with pytest.raises(ValidationError):
+        settings_factory(smb_ignore_actions=["open\nat"])
+
+
+def test_smb_ignore_actions_reject_an_oversized_entry(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(smb_ignore_actions=["a" * 65])

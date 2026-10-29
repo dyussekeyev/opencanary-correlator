@@ -22,6 +22,65 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   metrics: `opencanary_outbox_pending`, `..._delivered_total`, `..._retried_total`,
   `..._dead_total`; `OCC_OUTBOX_ENABLED=false` restores the previous behaviour.
 
+- **Structured SMB alerts.** An `smb.file_open` alert now renders the Samba
+  audit record OpenCanary already sends, instead of a `KEY=value` dump clipped at
+  six pairs — which silently dropped `AUDITACTION` and `FILENAME` (the action and
+  the path) from every SMB message. `standard` shows user, share, path and the
+  action with its status; `detailed` adds the client fingerprint, the SMB dialect,
+  the domain and the event counter; `minimal` is unchanged. Rows appear only for
+  fields the canary sent, and a field the layout does not know is still reported
+  in `📝 Log`. `OCC_SMB_IGNORE_ACTIONS` (empty by default) lists audit actions that
+  must not create an incident — `flistxattr` stops a directory listing from
+  paging — and every suppressed event is counted in
+  `opencanary_events_ignored_total` and audited as `event_ignored` with
+  `reason=smb_action`.
+
+- **Country flags in the geo rows.** `📍 Location` now shows the emoji flag of the
+  attacker's country (`🇰🇿 Kazakhstan`, `🇳🇱 Netherlands, Amsterdam`), in Telegram,
+  Slack, Discord, SMTP and the webhook text alike, and `enrichment.geo.flag` is
+  part of the JSON webhook document. The flag is derived from the ISO 3166-1
+  alpha-2 code only: a record without a usable code renders the country exactly
+  as before, with no placeholder. A parametrised dispatcher test now pins that
+  every channel carries GeoIP, ASN and VirusTotal rows at the documented detail
+  levels.
+
+### Added
+
+- **Service messages (optional, off by default).** The correlator can now report
+  its own degradation through the channels it already has: a rejected or
+  revoked VirusTotal key (HTTP 401/403, which used to look like "no
+  detections"), an exhausted free-tier quota (naming the minute, day or month
+  window), an unreachable VirusTotal, a GeoIP database that raises, a channel
+  whose circuit breaker opened, no channel accepting an alert for three
+  consecutive incidents, and process start/stop with version, receivers and
+  channels. `OCC_SERVICE_ENABLED` gates the feature; `OCC_SERVICE_CHANNELS`
+  routes it (empty = every enabled channel), `OCC_SERVICE_CATEGORIES` and
+  `OCC_SERVICE_MIN_SEVERITY` filter it, and `OCC_SERVICE_COOLDOWN` allows one
+  message per `(kind, subject)` with a repeat count for what it muted. Each
+  dispatcher gained a `notify()` method; the base contract raises, so a channel
+  that cannot carry a service message is audited as `service_message_failed`
+  rather than silently swallowing it. New audit actions:
+  `service_message_sent`, `service_message_suppressed`, `service_message_failed`.
+  `OCC_SERVICE_CATEGORIES` including `lifecycle` with a severity floor above
+  `info` is a startup error: that pairing would have delivered nothing while
+  looking configured.
+
+### Added
+
+- **Daily digest (optional, off by default).** `OCC_DIGEST_ENABLED=true` sends one
+  message a day at `OCC_DIGEST_TIME` (UTC, default `03:00`) with the trailing 24
+  hours: events accepted/rejected/dropped, deduplicated and unrouted counts,
+  incidents, alerts delivered/failed/timed out, rule failures, VirusTotal lookups
+  and the busiest attacker addresses (`OCC_DIGEST_TOP_SOURCES`, `0` disables the
+  section). Replicas elect one sender through a short lock and a per-day
+  `digest:sent:<date>` marker, so scaling out does not multiply the message. The
+  numbers come from a heartbeat each replica publishes once a minute into
+  `stats:instance:<uuid>` (TTL 5 min) — no Redis write on the event path — summed
+  at digest time, so the replica count is exact and a dead replica drops out on
+  its own. Routing is `OCC_DIGEST_CHANNELS`, falling back to
+  `OCC_SERVICE_CHANNELS`. New audit actions: `digest_sent`, `digest_failed`,
+  `stats_heartbeat_failed`.
+
 - **Alert budget (optional, off by default).** A burst of distinct incidents —
   one subnet probing a hundred addresses — can bury the alert an operator
   needed to see. `OCC_ALERT_BUDGET_ENABLED=true` rations *notifications*, not

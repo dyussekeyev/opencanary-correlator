@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
     render_alert,
+    render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 
 class WebhookDispatcher(HTTPDispatcher):
@@ -47,6 +51,22 @@ class WebhookDispatcher(HTTPDispatcher):
             if context:
                 payload["enrichment"] = context
         return payload
+
+    def build_service_payload(self, message: ServiceMessage) -> dict[str, Any]:
+        """Service messages go out as their own document, not as an alert.
+
+        The shape is deliberately not the incident one: a SIEM rule that keys on
+        ``key``/``enrichment`` must not match a degradation report and page
+        somebody as if a canary had been attacked. ``kind`` and ``severity`` are
+        the fields a pipeline can route on.
+        """
+        return {
+            "kind": message.kind.value,
+            "severity": message.severity.value,
+            "title": message.title,
+            "text": render_service_message(message, flavor="plain"),
+            "count": message.count,
+        }
 
 
 __all__ = ["WebhookDispatcher"]

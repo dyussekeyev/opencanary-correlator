@@ -190,6 +190,40 @@ data, by the same rule that redacts the audit trail.
 📝 *Log:* USERNAME=admin, PASSWORD=***
 ```
 
+#### SMB alerts
+
+`LOG_SMB_FILE_OPEN` (5000) comes from OpenCanary's Samba watcher, which splits
+every `samba-audit.log` line into a fixed record, so the alert is rendered from
+that record instead of a clipped `KEY=value` dump:
+
+```
+🛡 OpenCanary: *Shared File Opened*
+
+🖥 *Instance:* opencanary-embassy
+🌐 *IP:* 172.19.0.2:445
+
+🎯 *Attacker:* 85.117.156.153
+🕒 *Time:* 2026-10-28 22:38:57 UTC
+👤 *User:* root
+📁 *Share:* share (SRV01)
+🗂 *Path:* /samba/probe.txt
+⚙️ *Action:* openat · fail (No such file or directory)
+```
+
+`detailed` adds `💻 Client: <session> · <architecture> · <SMB dialect>`, the
+`🏷 Domain` and the event counter; `minimal` stays the legacy line. A row appears
+only when the canary sent that field, so an older OpenCanary (which sends just
+`USER` and `FILENAME`) produces a shorter message rather than empty rows, and a
+field this layout does not know is still reported in `📝 Log`.
+
+Samba writes one audit row per filesystem operation, so one client browsing a
+share produces `connect`, `flistxattr` and `openat` rows before anything is
+opened. `OCC_SMB_IGNORE_ACTIONS` (empty by default) lists `AUDITACTION` values
+that must not create an incident — `flistxattr`, a directory listing, is the
+usual entry. A suppressed event is counted in `opencanary_events_ignored_total`
+and audited as `event_ignored` with `reason=smb_action`, so a suppression never
+looks like a lost event.
+
 HTTP channels retry 429/5xx and transport errors three times with exponential
 backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
 endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
@@ -220,6 +254,81 @@ redis-cli HGETALL outbox:alert:<id>        # attempts and the last error
 delivery is logged and forgotten. `OCC_OUTBOX_POLL_INTERVAL`,
 `OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH` and `OCC_OUTBOX_DELIVERY_RETENTION` tune
 the worker; none of them has to be set to use it.
+
+### Service messages (off by default)
+
+The correlator can tell you about itself through the same channels: a rejected
+VirusTotal key, an exhausted quota, a GeoIP database that stopped answering, a
+channel whose circuit breaker opened, no channel delivering at all, and the
+process starting or stopping.
+
+```bash
+OCC_SERVICE_ENABLED=true
+OCC_SERVICE_CHANNELS=telegram,slack   # empty = every enabled channel
+OCC_SERVICE_CATEGORIES=enrichment,channels,lifecycle
+OCC_SERVICE_COOLDOWN=3600            # one message per (kind, subject) per hour
+OCC_SERVICE_MIN_SEVERITY=warning     # info, warning or critical
+```
+
+`lifecycle` messages are `info`, so asking for that category with a `warning`
+floor would filter every start and stop out. The contradiction is a startup error
+(`set OCC_SERVICE_MIN_SEVERITY=info or drop the category`) rather than a silent
+no-op.
+
+A degraded dependency fails on *every* alert, so each `(kind, subject)` speaks
+once per cooldown and the message that gets through says how often it repeated
+meanwhile — a hundred failed lookups become one message, not a hundred:
+
+```text
+🛑 OpenCanary service: VirusTotal rejected the API key
+
+• The API answered 401 or 403 for every lookup
+• Check OCC_VIRUSTOTAL_API_KEY and that the key is still enabled
+
+🔁 Repeated 99 times since the last message
+```
+
+Messages are built from fixed templates, counts and status codes: provider URLs,
+API keys and webhook paths never enter them, and the subject used for the
+suppression key is hashed. A channel that cannot carry a service message (a
+plugin's own dispatcher) is audited as `service_message_failed` with
+`reason: not_supported` instead of being silently skipped. Routing is checked at
+startup: a name in `OCC_SERVICE_CHANNELS` that matches no configured channel
+stops the process, because a silently dropped service message is the blind spot
+the feature exists to remove.
+
+### Daily digest (off by default)
+
+One message a day with what the correlator did: events in, incidents, alerts out,
+drops by reason, VirusTotal lookups and the busiest attacker addresses.
+
+```bash
+OCC_DIGEST_ENABLED=true
+OCC_DIGEST_TIME=03:00              # UTC; the window is the trailing 24 hours
+OCC_DIGEST_CHANNELS=telegram      # empty = OCC_SERVICE_CHANNELS
+OCC_DIGEST_TOP_SOURCES=5          # 0 disables the busiest-sources section
+```
+
+The digest is produced once even when several replicas run: a short lock elects
+the sender and a per-day marker (`digest:sent:<date>`) makes a second attempt a
+no-op. The numbers come from a heartbeat each replica publishes once a minute
+into `stats:instance:<id>` (TTL 5 min), summed at digest time, so the number of
+live replicas is exact and a replica that died simply stops contributing — no
+Redis write happens on the event path. The incident count and the busiest sources
+are read from the `incidents` ZSET for the same window.
+
+```text
+ℹ️ OpenCanary service: daily digest 2026-10-29
+
+• 🕒 Window: 2026-10-28 03:00:00 UTC - 2026-10-29 03:00:00 UTC
+• 🖥 Replicas: 2
+• 📥 Events: 12840 accepted, 12 rejected, 0 dropped
+• 🚨 Incidents: 47
+• 📤 Alerts: 47 delivered, 0 failed, 0 timed out
+• 🎯 Busiest sources:
+  • 74.22.3.1: 9
+  • 2001:db8::1: 4
+```
 
 ### Alert budget (optional, off by default)
 
@@ -273,8 +382,18 @@ OCC_VIRUSTOTAL_API_KEY=<key>
 | Level | Rows added under the attacker block |
 |---|---|
 | `minimal` | none |
-| `standard` | `📍 Location: Kazakhstan`, `🦠 VT: 0/94 malicious` |
-| `detailed` | `📍 Location: Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+| `standard` | `📍 Location: 🇰🇿 Kazakhstan`, `🦠 VT: 0/94 malicious` |
+| `detailed` | `📍 Location: 🇰🇿 Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+
+The country row carries the emoji flag of the ISO 3166-1 alpha-2 code, in every
+channel a person reads (Telegram, Slack, Discord, SMTP) and in the webhook's
+text. The flag is decoration derived from the code: a record with no usable
+code renders the country without one, so nothing is ever a placeholder.
+The JSON webhook additionally carries `enrichment.geo.flag` next to
+`country_code`, `country`, `city`, `asn` and `as_org`, and
+`enrichment.virustotal` with the detection ratio, `detections`, `total`,
+`reputation` and `checked` — the same facts at every detail level, so a SIEM
+does not have to parse message text.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*
@@ -284,7 +403,7 @@ OCC_VIRUSTOTAL_API_KEY=<key>
 
 🎯 *Attacker:* 89.126.202.164:52344
 🕒 *Time:* 2026-10-28 17:30:28 UTC
-📍 *Location:* Kazakhstan, Almaty
+📍 *Location:* 🇰🇿 Kazakhstan, Almaty
 🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
 🦠 *VT:* 0/94 malicious, reputation 0, 2026-10-26
 📊 *Events:* 1

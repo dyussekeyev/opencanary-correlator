@@ -40,6 +40,33 @@ DEFAULT_HEALTH_ALLOWED_IPS: Final[tuple[str, ...]] = ("127.0.0.1/32", "::1/128")
 #: Upper bound for a per-incident horizon, in seconds (one week).
 MAX_INCIDENT_HORIZON_SECONDS: Final[float] = 7 * 24 * 3600.0
 
+#: Delivery channels a service message can be routed to. Kept here rather than
+#: imported from `app.channels`, which imports this module's owner: a test asserts
+#: the two lists agree, so a new channel cannot be forgotten in one of them.
+KNOWN_CHANNEL_NAMES: Final[tuple[str, ...]] = (
+    "webhook",
+    "slack",
+    "discord",
+    "telegram",
+    "smtp",
+)
+
+#: Groups of service messages an operator can switch on independently. `digest`
+#: is listed for completeness; it is governed by `OCC_DIGEST_ENABLED` instead.
+SERVICE_CATEGORIES: Final[tuple[str, ...]] = (
+    "enrichment",
+    "channels",
+    "lifecycle",
+    "digest",
+)
+
+#: `HH:MM` in UTC for the daily digest.
+DIGEST_TIME_RE: Final[re.Pattern[str]] = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+#: Longest accepted Samba audit action name. Samba writes bare verbs (`openat`,
+#: `create_file`); anything much longer is a typo or a payload.
+MAX_SMB_ACTION_LENGTH: Final[int] = 64
+
 
 def split_comma_separated(value: Any) -> Any:
     """Split a comma-separated string, or decode a JSON array, into a list."""
@@ -54,6 +81,28 @@ def split_comma_separated(value: Any) -> Any:
         except json.JSONDecodeError:
             return [text]
     return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def normalise_smb_actions(value: list[str]) -> list[str]:
+    """Normalise `OCC_SMB_IGNORE_ACTIONS` into lower-case, unique action names.
+
+    The comparison happens against `AUDITACTION` from the wire, which Samba
+    writes in lower case; normalising here means `OpenAt` and `openat` are one
+    entry, not two, and a trailing comma is harmless. Control characters are
+    rejected rather than stripped: a value that could never match is a
+    configuration mistake worth seeing at startup.
+    """
+    unique: dict[str, None] = {}
+    for raw in value:
+        action = raw.strip().lower()
+        if not action:
+            continue
+        if len(action) > MAX_SMB_ACTION_LENGTH:
+            raise ValueError(f"smb_ignore_actions entry exceeds {MAX_SMB_ACTION_LENGTH} characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in action):
+            raise ValueError("smb_ignore_actions must not contain control characters")
+        unique.setdefault(action, None)
+    return list(unique)
 
 
 def require_http_urls(value: list[str]) -> list[str]:
@@ -200,6 +249,58 @@ def slack_configured_but_disabled(enabled: bool, webhooks: list[str]) -> bool:
     return bool(webhooks) and not enabled
 
 
+def validate_service_channels(value: list[str]) -> list[str]:
+    """Reject a service-message channel name the correlator does not know.
+
+    A misspelled name would otherwise mean "send to nobody": the setting would
+    look configured and the deployment would silently report nothing, which is
+    the exact blind spot service messages exist to remove.
+    """
+    normalised = [name.strip().lower() for name in value if name.strip()]
+    unknown = sorted(set(normalised) - set(KNOWN_CHANNEL_NAMES))
+    if unknown:
+        raise ValueError(
+            "unknown service_channels entries: "
+            + ", ".join(unknown)
+            + f" (expected any of {', '.join(KNOWN_CHANNEL_NAMES)})"
+        )
+    return normalised
+
+
+def validate_service_categories(value: list[str]) -> list[str]:
+    """Reject a service-message category that nothing would ever match."""
+    normalised = [name.strip().lower() for name in value if name.strip()]
+    unknown = sorted(set(normalised) - set(SERVICE_CATEGORIES))
+    if unknown:
+        raise ValueError(
+            "unknown service_categories entries: "
+            + ", ".join(unknown)
+            + f" (expected any of {', '.join(SERVICE_CATEGORIES)})"
+        )
+    return normalised
+
+
+def validate_digest_time(value: str) -> str:
+    """Accept 24-hour `HH:MM` in UTC, zero-padded, and nothing else.
+
+    A malformed time would otherwise be parsed leniently or ignored, and the
+    digest would run at a time the operator did not ask for - or never.
+    """
+    text = value.strip()
+    match = DIGEST_TIME_RE.match(text)
+    if match is None:
+        raise ValueError("digest_time must be HH:MM in UTC, e.g. 03:00")
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+
+def normalise_service_severity(value: Any) -> Any:
+    """Severity levels are case-insensitive and accept the usual short aliases."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip().lower()
+    return {"warn": "warning", "crit": "critical", "fatal": "critical"}.get(text, text)
+
+
 def require_email_address(value: str) -> str:
     """Minimal structural check: an address with a local part and a domain."""
     if "@" not in value or value.startswith("@") or value.endswith("@"):
@@ -235,8 +336,11 @@ __all__ = [
     "DEFAULT_HEALTH_HOST",
     "DEFAULT_HEALTH_PORT",
     "DEFAULT_INTAKE_HOST",
+    "DIGEST_TIME_RE",
+    "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
+    "SERVICE_CATEGORIES",
     "TELEGRAM_TOKEN_RE",
     "decode_incident_horizons",
     "disable_health_port",
@@ -245,6 +349,7 @@ __all__ = [
     "normalise_health_host",
     "normalise_log_file",
     "normalise_log_level",
+    "normalise_service_severity",
     "require_email_address",
     "require_http_urls",
     "require_redis_scheme",
@@ -252,6 +357,9 @@ __all__ = [
     "slack_configured_but_disabled",
     "split_comma_separated",
     "validate_allowed_ips",
+    "validate_digest_time",
     "validate_incident_horizons",
+    "validate_service_categories",
+    "validate_service_channels",
     "validate_telegram_token",
 ]

@@ -16,16 +16,22 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, Literal
 
 import httpx
 from pydantic import SecretStr
 
-from opencanary_correlator.enrichment.models import VirusTotalReport, VirusTotalStatus
+from opencanary_correlator.enrichment.models import VirusTotalReport
 from opencanary_correlator.storage import keys
 from opencanary_correlator.storage.redis_store import RedisStore
 
 VIRUSTOTAL_ENDPOINT: Final[str] = "https://www.virustotal.com/api/v3/ip_addresses/"
+
+#: Outcome of one lookup, including the case the alert cannot express: a key the
+#: API refuses. The enricher reports that as `unavailable` in the alert (nothing
+#: about the attacker is known) and as a service message to the operator, because
+#: "no reputation" and "your key is wrong" are different problems.
+LookupStatus = Literal["ok", "quota", "unavailable", "unauthorized"]
 
 #: A verdict that VirusTotal has no data for is cached briefly: re-asking every
 #: minute would burn the daily budget on addresses that will not resolve soon.
@@ -71,7 +77,7 @@ class VirusTotalClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def report(self, ip: str) -> tuple[VirusTotalReport | None, VirusTotalStatus]:
+    async def report(self, ip: str) -> tuple[VirusTotalReport | None, LookupStatus]:
         """Return the report and the outcome, never raising.
 
         The caller renders `quota` and `unavailable` as a status line, so a
@@ -96,6 +102,10 @@ class VirusTotalClient:
             # Reserved slot spent by somebody else sharing the key, or our own
             # counters drifted from the server's view. Either way: stop asking.
             return None, "quota"
+        if response.status_code in (401, 403):
+            # A wrong, revoked or disabled key. Retrying spends nothing useful:
+            # every alert would fail the same way until somebody fixes the key.
+            return None, "unauthorized"
         if response.status_code != 200:
             return None, "unavailable"
 
@@ -114,26 +124,50 @@ class VirusTotalClient:
 
     async def _reserve(self) -> bool:
         """Take one slot in the minute, day and month windows."""
+        windows = [(key, limit, ttl) for key, limit, ttl, _ in self._quota_windows()]
+        return await self._store.reserve_quota(windows)
+
+    async def exhausted_window(self) -> str | None:
+        """Name the free-tier window that is full, or None when none is.
+
+        Only called after a refusal, so the three reads never touch the hot path.
+        Knowing *which* window is spent is the difference between "wait a minute"
+        and "the daily budget is gone until midnight".
+        """
+        for key, limit, _ttl, name in self._quota_windows():
+            raw = await self._store.get_value(key)
+            try:
+                used = int(raw) if raw is not None else 0
+            except ValueError:  # pragma: no cover - the counter is written by this client
+                used = 0
+            if used >= limit:
+                return name
+        return None
+
+    def _quota_windows(self) -> list[tuple[str, int, int, str]]:
+        """`(key, limit, ttl_ms, name)` for the minute, the day and the month."""
         now = datetime.fromtimestamp(self._clock(), tz=UTC)
         limits = self._limits
-        windows = [
+        return [
             (
                 keys.quota_key("virustotal", "minute", now.strftime("%Y%m%d%H%M")),
                 limits.per_minute,
                 60_000,
+                "minute",
             ),
             (
                 keys.quota_key("virustotal", "day", now.strftime("%Y%m%d")),
                 limits.per_day,
                 24 * 3600 * 1000,
+                "day",
             ),
             (
                 keys.quota_key("virustotal", "month", now.strftime("%Y%m")),
                 limits.per_month,
                 int(_MONTH_SECONDS * 1000),
+                "month",
             ),
         ]
-        return await self._store.reserve_quota(windows)
 
     # --- Cache --------------------------------------------------------------
 
@@ -209,4 +243,4 @@ def _analysis_date(value: object) -> str | None:
         return None
 
 
-__all__ = ["QuotaLimits", "VirusTotalClient"]
+__all__ = ["LookupStatus", "QuotaLimits", "VirusTotalClient"]

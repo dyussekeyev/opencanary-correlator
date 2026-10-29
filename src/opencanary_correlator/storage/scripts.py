@@ -111,6 +111,24 @@ end
 return 0
 """
 
+#: Admit one service message per `(kind, subject)` per cooldown, and count the
+#: ones it turned away. ARGV[1] is the cooldown in seconds; KEYS[1] the
+#: suppression slot, KEYS[2] the repeat counter. Taking the slot and reading the
+#: counter in one script means a broken key cannot fail on every alert, and two
+#: replicas cannot both report the same degradation.
+SERVICE_MESSAGE_SLOT_LUA = """
+if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then
+    local repeats = tonumber(redis.call('GET', KEYS[2]) or '0')
+    if repeats > 0 then
+        redis.call('DEL', KEYS[2])
+    end
+    return {1, repeats}
+end
+redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], ARGV[1])
+return {0, 0}
+"""
+
 #: Reserve one notification from the per-node and the global budget, or record a
 #: suppression. Reserving and counting separately would let two replicas both use
 #: the last free slot, and a suppression counted outside the reservation could be
@@ -170,6 +188,7 @@ __all__ = [
     "RESERVE_QUOTA_LUA",
     "SAVE_INCIDENT_LUA",
     "SAVE_INCIDENT_WITH_ALERTS_LUA",
+    "SERVICE_MESSAGE_SLOT_LUA",
     "SETTLE_ALERT_LUA",
     "TAKE_BUDGET_SUMMARY_LUA",
 ]

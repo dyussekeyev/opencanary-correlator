@@ -199,12 +199,60 @@ therefore never touches correlation logic.
     budget that cannot count fails open: the alert is sent and
     `alert_budget_failed` is audited.
 
+## Service messages
+
+A second, much smaller path runs beside delivery: the correlator's report about
+itself. It is off by default (`OCC_SERVICE_ENABLED`) and never touches the event
+hot path — the call sites are the failure branches that already write an audit
+record, the dispatch result, and process start/stop.
+
+| Source | Kinds | Where it is noticed |
+|---|---|---|
+| Enrichment | `enrichment.virustotal.key_rejected`, `…quota`, `…unavailable`, `enrichment.geo.unavailable` | `enrichment/service.py`, on the branches that already emit `enrichment_failed` / `enrichment_skipped` |
+| Channels | `channel.circuit_open`, `channel.all_failing` | `core/engine.py`, from the dispatch result (a skipped `circuit_open` attempt, or `ALL_CHANNELS_FAILING_THRESHOLD` consecutive alerts nobody accepted) |
+| Lifecycle | `lifecycle.started`, `lifecycle.stopped` | `app/runner.py`, around the supervised task set |
+
+`ServiceNotifier` applies three gates before anything is sent: the category
+(`OCC_SERVICE_CATEGORIES`), the severity floor (`OCC_SERVICE_MIN_SEVERITY`) and a
+suppression slot per `(kind, subject)`. The slot is one Lua script
+(`SERVICE_MESSAGE_SLOT_LUA`): `SET NX EX <cooldown>` admits the first occurrence,
+and every refusal increments a counter that the next admitted message reports as
+its repeat count. Two replicas therefore cannot both announce the same
+degradation, and a broken dependency that fails on every alert becomes one
+message per `OCC_SERVICE_COOLDOWN` rather than a storm.
+
+Delivery reuses the configured dispatchers, each with its own `notify()` method
+(the default raises, so a new channel cannot silently swallow these). Routing is
+by name (`OCC_SERVICE_CHANNELS`, empty means all), and a name that matches no
+configured channel is a startup error. The payload carries no incident key and no
+attacker data: the generic webhook sends `{kind, severity, title, text, count}`,
+which a SIEM can route without matching an alert rule.
+
+## Background tasks
+
+Two tasks run beside the receivers and the outbox worker, in the same supervised
+start/stop sequence (`app/runner.py`):
+
+| Task | Cadence | State |
+|---|---|---|
+| `stats` (`core/stats.py`) | every 60 s | hash `stats:instance:<uuid>`, TTL 300 s, counters read from the process-local Prometheus registry |
+| `digest` (`core/digest.py`) | once a day at `OCC_DIGEST_TIME` | lock `digest:lock:<date>` plus marker `digest:sent:<date>` |
+
+The heartbeat is why the digest is cheap: no Redis write happens per event, and a
+replica that dies stops contributing when its hash expires. `collect_digest` sums
+the live hashes, counts the incidents in the trailing 24 h from the `incidents`
+ZSET and ranks the sources by parsing the incident keys. The scheduler sleeps on
+its stop event in at most 60 s slices, so a clock jump or a changed time is
+picked up quickly, and the day marker is written only after a channel accepted
+the message — a crash mid-send can replay the digest once, which is better than
+losing the day.
+
 ## Correlation rules
 
 | Rule | Trigger | Horizon |
 |---|---|---|
 | `login` | `LOG_FTP_*`, `LOG_HTTP_POST_LOGIN_ATTEMPT`, `LOG_SSH_LOGIN_ATTEMPT`, `LOG_TELNET_LOGIN_ATTEMPT`, `LOG_HTTPPROXY_LOGIN_ATTEMPT`, `LOG_MYSQL_LOGIN_ATTEMPT`, `LOG_MSSQL_LOGIN_SQLAUTH`, `LOG_MSSQL_LOGIN_WINAUTH`, `LOG_TFTP`, `LOG_NTP_MONLIST`, `LOG_VNC`, `LOG_SNMP_CMD`, `LOG_RDP`, `LOG_SIP_REQUEST`, `LOG_MONGODB_LOGIN_ATTEMPT` | `OCC_INCIDENT_HORIZON` |
-| `smb` | `LOG_SMB_FILE_OPEN` | `OCC_INCIDENT_HORIZON` |
+| `smb` | `LOG_SMB_FILE_OPEN`, except actions in `OCC_SMB_IGNORE_ACTIONS` | `OCC_INCIDENT_HORIZON` |
 | `host-portscan` | `LOG_PORT_SYN` to `OCC_SCAN_HOST_THRESHOLD` distinct `dst_port`s per `src_host`/`dst_host`; the window is cleared after firing | `OCC_SCAN_HOST_HORIZON` |
 | `network-portscan` | `LOG_PORT_SYN` from the same `src_host`/`dst_port` against `OCC_SCAN_NETWORK_THRESHOLD` distinct canaries (`reported_dst_host` fallback) | `OCC_SCAN_NETWORK_HORIZON` |
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from email.message import EmailMessage
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiosmtplib
 from pydantic import SecretStr
@@ -18,9 +18,13 @@ from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
     render_alert,
+    render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import RetryPolicy
 from opencanary_correlator.redaction import sanitize_text
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from opencanary_correlator.core.service_messages import ServiceMessage
 
 SendFunction = Callable[..., Awaitable[Any]]
 
@@ -88,6 +92,31 @@ class SmtpDispatcher(BaseDispatcher):
         )
         message.set_content(body)
         return message
+
+    def build_service_message(self, message: ServiceMessage) -> EmailMessage:
+        """Render a service message as mail: severity and title in the subject.
+
+        The subject is flattened for the same reason an alert subject is: a
+        header split by a line break is an injection, and the title is built from
+        a fixed template but still goes through the same guard.
+        """
+        mail = EmailMessage()
+        mail["From"] = sanitize_text(self._sender)
+        mail["To"] = sanitize_text(", ".join(self._recipients))
+        subject = f"[{message.severity.value}] {message.title}"
+        mail["Subject"] = sanitize_text(subject)
+        mail.set_content(render_service_message(message, flavor="plain"))
+        return mail
+
+    async def notify(self, message: ServiceMessage) -> DispatchResult:
+        """Deliver a service message with the same recipients and retries."""
+        if not self._recipients:
+            return DispatchResult(dispatcher=self.name, status="skipped", detail="no_recipients")
+        try:
+            mail = self.build_service_message(message)
+        except (TypeError, ValueError) as exc:
+            return DispatchResult(dispatcher=self.name, status="error", detail=type(exc).__name__)
+        return await self._send_with_retries(mail)
 
     def build_notice_message(self, body: str) -> EmailMessage:
         """Render an operator notice: the first line is the subject, the rest the body.

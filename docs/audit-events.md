@@ -43,6 +43,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `event_dedup_lease_lost` | `info` | the dedup claim expired before the event was correlated (a rule slower than `OCC_DEDUP_LEASE`); the incident exists, a redelivery would merge | `node_id`, `logtype` |
 | `event_ignored` | `info` | the `logtype` is node lifecycle (boot, base message, debug, ping, config save), which nothing correlates | `node_id`, `logtype` |
 | `event_ignored` | `info` | the payload held only framing (a keep-alive newline or NUL), so there was nothing to parse | `reason: empty_payload` |
+| `event_ignored` | `info` | an SMB audit action is listed in `OCC_SMB_IGNORE_ACTIONS`, so the event is valid but deliberately not correlated | `reason: smb_action`, `action`, `node_id`, `src_host` |
 | `event_unrouted` | `warning` | no rule handles this `logtype`, and it is not a known lifecycle type | `node_id`, `logtype` |
 | `event_dispatch_failed` | `error` | the sink raised while handling one event | `node_id`, `error_type` |
 | `datagram_error` | `error` | UDP syslog processing raised | `receiver`, `error_type` |
@@ -54,6 +55,12 @@ a compatibility risk, because consumers only rely on these five keys.
 | `alert_retry` | `warning` | an attempt failed and the outbox scheduled another | `dispatcher`, `incident`, `attempts`, `reason`, `next_attempt_in` |
 | `alert_dead_letter` | `error` | the outbox gave up; the entry is in `outbox:dead` | `dispatcher`, `incident`, `attempts`, `reason` (`timeout`, `error`, `unknown_channel`, `incident_gone`) |
 | `outbox_failed` | `error` | one worker iteration raised and was skipped | `error_type` |
+| `service_message_sent` | `success` / `error` | a service message about the correlator reached (or failed on) one channel | `kind`, `dispatcher`, `status`, `count` |
+| `service_message_suppressed` | `info` | the cooldown muted a repeat of the same `(kind, subject)` | `kind`, `subject`, `count` |
+| `service_message_failed` | `error` | a channel could not carry the service message | `kind`, `dispatcher`, `reason: timeout` / `not_supported`, or `error_type` |
+| `digest_sent` | `success` / `error` | the daily digest was produced (or no channel accepted it) | `day`, `incidents`, `replicas`, `events` |
+| `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |
+| `stats_heartbeat_failed` | `warning` | the replica could not publish its heartbeat (a digest field is missing, nothing else) | `error_type` |
 | `alert_suppressed` | `warning` | the alert budget withheld this notification; the incident itself is stored | `incident`, `node_id`, `src_host` |
 | `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |
 | `alert_summary_failed` | `error` | one summary iteration raised and was skipped | `error_type` |

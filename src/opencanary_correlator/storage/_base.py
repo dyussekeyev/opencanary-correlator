@@ -27,6 +27,7 @@ from opencanary_correlator.storage.scripts import (
     RESERVE_QUOTA_LUA,
     SAVE_INCIDENT_LUA,
     SAVE_INCIDENT_WITH_ALERTS_LUA,
+    SERVICE_MESSAGE_SLOT_LUA,
     SETTLE_ALERT_LUA,
     TAKE_BUDGET_SUMMARY_LUA,
 )
@@ -70,6 +71,7 @@ class _StoreBase:
     _save_incident_alerts_script: Script
     _claim_alerts_script: Script
     _settle_alert_script: Script
+    _service_message_script: Script
     _discard_alerts_script: Script
     _reserve_budget_script: Script
     _take_budget_summary_script: Script
@@ -85,6 +87,9 @@ class _StoreBase:
         )
         self._claim_alerts_script = cast(Script, client.register_script(CLAIM_DUE_ALERTS_LUA))
         self._settle_alert_script = cast(Script, client.register_script(SETTLE_ALERT_LUA))
+        self._service_message_script = cast(
+            Script, client.register_script(SERVICE_MESSAGE_SLOT_LUA)
+        )
         self._discard_alerts_script = cast(Script, client.register_script(DISCARD_ALERTS_LUA))
         self._reserve_budget_script = cast(Script, client.register_script(RESERVE_ALERT_BUDGET_LUA))
         self._take_budget_summary_script = cast(
