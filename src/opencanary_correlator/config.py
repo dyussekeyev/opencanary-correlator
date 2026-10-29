@@ -36,6 +36,7 @@ from opencanary_correlator.config_validation import (
     require_slack_endpoints,
     split_comma_separated,
     validate_allowed_ips,
+    validate_digest_time,
     validate_incident_horizons,
     validate_service_categories,
     validate_service_channels,
@@ -291,6 +292,20 @@ class Settings(BaseSettings):
     service_cooldown: float = Field(default=3600.0, gt=0.0, le=7 * 24 * 3600.0)
     service_min_severity: ServiceSeverity = "warning"
 
+    # --- Daily digest -------------------------------------------------------
+    # One message a day with what the correlator did: events in, incidents, alerts
+    # out, drops by reason, quota spent and the busiest sources. The window is
+    # trailing 24 h, not midnight to midnight, so a run is never partial.
+    digest_enabled: bool = False
+    digest_time: str = Field(default="03:00", description="UTC HH:MM")
+    digest_channels: CommaSeparated = Field(
+        default_factory=list,
+        description=(
+            "Comma-separated channel names for the digest; empty means OCC_SERVICE_CHANNELS"
+        ),
+    )
+    digest_top_sources: int = Field(default=5, ge=0, le=50)
+
     # --- Observability ------------------------------------------------------
     log_level: LogLevel = "INFO"
     # Operational log file. Empty means "stderr only", which is what containers
@@ -323,16 +338,22 @@ class Settings(BaseSettings):
         "health_allowed_ips",
         "service_channels",
         "service_categories",
+        "digest_channels",
         mode="before",
     )
     @classmethod
     def _split_comma_separated(cls, value: Any) -> Any:
         return split_comma_separated(value)
 
-    @field_validator("service_channels")
+    @field_validator("service_channels", "digest_channels")
     @classmethod
     def _validate_service_channels(cls, value: list[str]) -> list[str]:
         return validate_service_channels(value)
+
+    @field_validator("digest_time")
+    @classmethod
+    def _validate_digest_time(cls, value: str) -> str:
+        return validate_digest_time(value)
 
     @field_validator("service_categories")
     @classmethod

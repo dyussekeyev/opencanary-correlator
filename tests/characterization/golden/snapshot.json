@@ -261,6 +261,12 @@
       "telegram",
       "smtp"
     ],
+    "digest": {
+      "channels": [],
+      "enabled": false,
+      "time": "03:00",
+      "top_sources": 5
+    },
     "dispatch_timeout": 10.0,
     "enrichment": {
       "geoip": true,

@@ -145,9 +145,35 @@ def service_message_keys(kind: str, subject: str) -> tuple[str, str]:
     return f"service:mute:{suffix}", f"service:repeat:{suffix}"
 
 
+#: Prefix of the per-replica heartbeat hash. One key per running process, with a
+#: TTL, so the number of live replicas is the number of unexpired keys.
+STATS_INSTANCE_PREFIX = "stats:instance:"
+#: Marker proving one day's digest was already produced.
+DIGEST_SENT_PREFIX = "digest:sent:"
+#: Lock serialising the digest across replicas.
+DIGEST_LOCK_PREFIX = "digest:lock:"
+
+
+def stats_instance_key(instance_id: str) -> str:
+    """Heartbeat hash of one replica."""
+    return f"{STATS_INSTANCE_PREFIX}{instance_id}"
+
+
+def digest_sent_key(day: str) -> str:
+    """Marker for the digest of one UTC day (`YYYY-MM-DD`)."""
+    return f"{DIGEST_SENT_PREFIX}{day}"
+
+
+def digest_lock_key(day: str) -> str:
+    """Lock that elects the replica producing one day's digest."""
+    return f"{DIGEST_LOCK_PREFIX}{day}"
+
+
 __all__ = [
     "DEDUP_KEY_PREFIX",
     "DELIVERED_PREFIX",
+    "DIGEST_LOCK_PREFIX",
+    "DIGEST_SENT_PREFIX",
     "ENRICHMENT_PREFIX",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
@@ -155,11 +181,14 @@ __all__ = [
     "OUTBOX_ENTRY_PREFIX",
     "OUTBOX_INDEX",
     "QUOTA_PREFIX",
+    "STATS_INSTANCE_PREFIX",
     "console_setting_key",
     "dedup_key",
     "delivered_key",
     "device_hash",
     "device_key",
+    "digest_lock_key",
+    "digest_sent_key",
     "enrichment_cache_key",
     "host_scan_key",
     "incident_key",
@@ -172,4 +201,5 @@ __all__ = [
     "quota_key",
     "service_message_keys",
     "service_subject_hash",
+    "stats_instance_key",
 ]

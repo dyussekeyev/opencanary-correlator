@@ -214,6 +214,25 @@ configured channel is a startup error. The payload carries no incident key and n
 attacker data: the generic webhook sends `{kind, severity, title, text, count}`,
 which a SIEM can route without matching an alert rule.
 
+## Background tasks
+
+Two tasks run beside the receivers and the outbox worker, in the same supervised
+start/stop sequence (`app/runner.py`):
+
+| Task | Cadence | State |
+|---|---|---|
+| `stats` (`core/stats.py`) | every 60 s | hash `stats:instance:<uuid>`, TTL 300 s, counters read from the process-local Prometheus registry |
+| `digest` (`core/digest.py`) | once a day at `OCC_DIGEST_TIME` | lock `digest:lock:<date>` plus marker `digest:sent:<date>` |
+
+The heartbeat is why the digest is cheap: no Redis write happens per event, and a
+replica that dies stops contributing when its hash expires. `collect_digest` sums
+the live hashes, counts the incidents in the trailing 24 h from the `incidents`
+ZSET and ranks the sources by parsing the incident keys. The scheduler sleeps on
+its stop event in at most 60 s slices, so a clock jump or a changed time is
+picked up quickly, and the day marker is written only after a channel accepted
+the message — a crash mid-send can replay the digest once, which is better than
+losing the day.
+
 ## Correlation rules
 
 | Rule | Trigger | Horizon |

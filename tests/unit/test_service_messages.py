@@ -505,7 +505,7 @@ def test_an_unknown_service_channel_is_rejected(settings_factory: Any) -> None:
 
 def test_an_unknown_service_category_is_rejected(settings_factory: Any) -> None:
     with pytest.raises(ValidationError, match="service_categories"):
-        settings_factory(service_categories=["enrichment", "digest"])
+        settings_factory(service_categories=["enrichment", "ingestion"])
 
 
 def test_severity_aliases_are_normalised_and_nonsense_is_rejected(

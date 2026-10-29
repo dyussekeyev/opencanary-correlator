@@ -66,6 +66,9 @@ class ServiceCategory(StrEnum):
     ENRICHMENT = "enrichment"
     CHANNELS = "channels"
     LIFECYCLE = "lifecycle"
+    #: The daily digest, which has its own switch (`OCC_DIGEST_ENABLED`) and is not
+    #: filtered by `OCC_SERVICE_CATEGORIES`.
+    DIGEST = "digest"
 
 
 class ServiceKind(StrEnum):
@@ -79,6 +82,7 @@ class ServiceKind(StrEnum):
     CHANNEL_ALL_FAILING = "channel.all_failing"
     LIFECYCLE_STARTED = "lifecycle.started"
     LIFECYCLE_STOPPED = "lifecycle.stopped"
+    DIGEST_DAILY = "digest.daily"
 
     @property
     def category(self) -> ServiceCategory:
@@ -125,6 +129,7 @@ _KIND_SPECS: Final[dict[ServiceKind, _KindSpec]] = {
     ServiceKind.LIFECYCLE_STOPPED: _KindSpec(
         category=ServiceCategory.LIFECYCLE, severity=Severity.INFO
     ),
+    ServiceKind.DIGEST_DAILY: _KindSpec(category=ServiceCategory.DIGEST, severity=Severity.INFO),
 }
 
 
@@ -260,6 +265,25 @@ class ServiceNotifier:
         )
         results = await asyncio.gather(
             *(self._send_one(dispatcher, message) for dispatcher in self._routed)
+        )
+        return any(results)
+
+    async def send(self, message: ServiceMessage, *, channels: Sequence[str] | None = None) -> bool:
+        """Deliver an already-decided message, bypassing the three gates.
+
+        The digest has its own switch, its own schedule and its own once-a-day
+        election, so the category, severity and cooldown gates of a degradation
+        report do not apply to it. `channels` narrows the fan-out by name; None
+        keeps the notifier's routing.
+        """
+        targets = self._routed
+        if channels is not None:
+            wanted = {name.strip().lower() for name in channels if name.strip()}
+            targets = [dispatcher for dispatcher in self._dispatchers if dispatcher.name in wanted]
+        if not targets:
+            return False
+        results = await asyncio.gather(
+            *(self._send_one(dispatcher, message) for dispatcher in targets)
         )
         return any(results)
 

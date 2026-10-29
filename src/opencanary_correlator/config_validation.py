@@ -51,8 +51,17 @@ KNOWN_CHANNEL_NAMES: Final[tuple[str, ...]] = (
     "smtp",
 )
 
-#: Groups of service messages an operator can switch on independently.
-SERVICE_CATEGORIES: Final[tuple[str, ...]] = ("enrichment", "channels", "lifecycle")
+#: Groups of service messages an operator can switch on independently. `digest`
+#: is listed for completeness; it is governed by `OCC_DIGEST_ENABLED` instead.
+SERVICE_CATEGORIES: Final[tuple[str, ...]] = (
+    "enrichment",
+    "channels",
+    "lifecycle",
+    "digest",
+)
+
+#: `HH:MM` in UTC for the daily digest.
+DIGEST_TIME_RE: Final[re.Pattern[str]] = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
 def split_comma_separated(value: Any) -> Any:
@@ -245,6 +254,19 @@ def validate_service_categories(value: list[str]) -> list[str]:
     return normalised
 
 
+def validate_digest_time(value: str) -> str:
+    """Accept 24-hour `HH:MM` in UTC, zero-padded, and nothing else.
+
+    A malformed time would otherwise be parsed leniently or ignored, and the
+    digest would run at a time the operator did not ask for - or never.
+    """
+    text = value.strip()
+    match = DIGEST_TIME_RE.match(text)
+    if match is None:
+        raise ValueError("digest_time must be HH:MM in UTC, e.g. 03:00")
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+
 def normalise_service_severity(value: Any) -> Any:
     """Severity levels are case-insensitive and accept the usual short aliases."""
     if not isinstance(value, str):
@@ -288,6 +310,7 @@ __all__ = [
     "DEFAULT_HEALTH_HOST",
     "DEFAULT_HEALTH_PORT",
     "DEFAULT_INTAKE_HOST",
+    "DIGEST_TIME_RE",
     "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
@@ -308,6 +331,7 @@ __all__ = [
     "slack_configured_but_disabled",
     "split_comma_separated",
     "validate_allowed_ips",
+    "validate_digest_time",
     "validate_incident_horizons",
     "validate_service_categories",
     "validate_service_channels",

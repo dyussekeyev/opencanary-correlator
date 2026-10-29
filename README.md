@@ -258,6 +258,39 @@ startup: a name in `OCC_SERVICE_CHANNELS` that matches no configured channel
 stops the process, because a silently dropped service message is the blind spot
 the feature exists to remove.
 
+### Daily digest (off by default)
+
+One message a day with what the correlator did: events in, incidents, alerts out,
+drops by reason, VirusTotal lookups and the busiest attacker addresses.
+
+```bash
+OCC_DIGEST_ENABLED=true
+OCC_DIGEST_TIME=03:00              # UTC; the window is the trailing 24 hours
+OCC_DIGEST_CHANNELS=telegram      # empty = OCC_SERVICE_CHANNELS
+OCC_DIGEST_TOP_SOURCES=5          # 0 disables the busiest-sources section
+```
+
+The digest is produced once even when several replicas run: a short lock elects
+the sender and a per-day marker (`digest:sent:<date>`) makes a second attempt a
+no-op. The numbers come from a heartbeat each replica publishes once a minute
+into `stats:instance:<id>` (TTL 5 min), summed at digest time, so the number of
+live replicas is exact and a replica that died simply stops contributing — no
+Redis write happens on the event path. The incident count and the busiest sources
+are read from the `incidents` ZSET for the same window.
+
+```text
+ℹ️ OpenCanary service: daily digest 2026-10-29
+
+• 🕒 Window: 2026-10-28 03:00:00 UTC - 2026-10-29 03:00:00 UTC
+• 🖥 Replicas: 2
+• 📥 Events: 12840 accepted, 12 rejected, 0 dropped
+• 🚨 Incidents: 47
+• 📤 Alerts: 47 delivered, 0 failed, 0 timed out
+• 🎯 Busiest sources:
+  • 74.22.3.1: 9
+  • 2001:db8::1: 4
+```
+
 ## Attacker enrichment (optional)
 
 The attacker block can carry where the address comes from and how VirusTotal

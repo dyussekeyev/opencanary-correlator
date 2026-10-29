@@ -40,6 +40,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than silently swallowing it. New audit actions:
   `service_message_sent`, `service_message_suppressed`, `service_message_failed`.
 
+### Added
+
+- **Daily digest (optional, off by default).** `OCC_DIGEST_ENABLED=true` sends one
+  message a day at `OCC_DIGEST_TIME` (UTC, default `03:00`) with the trailing 24
+  hours: events accepted/rejected/dropped, deduplicated and unrouted counts,
+  incidents, alerts delivered/failed/timed out, rule failures, VirusTotal lookups
+  and the busiest attacker addresses (`OCC_DIGEST_TOP_SOURCES`, `0` disables the
+  section). Replicas elect one sender through a short lock and a per-day
+  `digest:sent:<date>` marker, so scaling out does not multiply the message. The
+  numbers come from a heartbeat each replica publishes once a minute into
+  `stats:instance:<uuid>` (TTL 5 min) — no Redis write on the event path — summed
+  at digest time, so the replica count is exact and a dead replica drops out on
+  its own. Routing is `OCC_DIGEST_CHANNELS`, falling back to
+  `OCC_SERVICE_CHANNELS`. New audit actions: `digest_sent`, `digest_failed`,
+  `stats_heartbeat_failed`.
+
 ### Fixed
 
 - The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,

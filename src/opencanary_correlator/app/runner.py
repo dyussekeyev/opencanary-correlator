@@ -25,6 +25,7 @@ from opencanary_correlator.app.wiring import (
 from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher, BaseReceiver
+from opencanary_correlator.core.digest import DigestScheduler
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.outbox import AlertOutbox
@@ -33,6 +34,7 @@ from opencanary_correlator.core.service_messages import (
     ServiceKind,
     ServiceNotifier,
 )
+from opencanary_correlator.core.stats import StatsReporter
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.log_setup import (
@@ -114,6 +116,8 @@ async def run_correlator(
     )
     notifier = ServiceNotifier(store, active_dispatchers, settings, audit)
     _require_configured_service_channels(settings, active_dispatchers)
+    stats = StatsReporter(store, audit)
+    digest = DigestScheduler(store, notifier, settings, audit) if settings.digest_enabled else None
     repository = IncidentRepository(
         store,
         settings,
@@ -162,6 +166,9 @@ async def run_correlator(
             await health.start()
         if outbox is not None:
             await outbox.start()
+        await stats.start()
+        if digest is not None:
+            await digest.start()
         audit.emit(
             "startup",
             "info",
@@ -192,6 +199,9 @@ async def run_correlator(
             await health.stop()
         if outbox is not None:
             await outbox.stop()
+        if digest is not None:
+            await digest.stop()
+        await stats.stop()
         await asyncio.gather(
             *(dispatcher.aclose() for dispatcher in active_dispatchers),
             return_exceptions=True,

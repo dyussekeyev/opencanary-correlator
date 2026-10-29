@@ -94,6 +94,12 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "cooldown": settings.service_cooldown,
             "min_severity": settings.service_min_severity,
         },
+        "digest": {
+            "enabled": settings.digest_enabled,
+            "time": settings.digest_time,
+            "channels": list(settings.digest_channels),
+            "top_sources": settings.digest_top_sources,
+        },
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }
