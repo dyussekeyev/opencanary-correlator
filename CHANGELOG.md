@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-29
+
 ### Added
 
 - **Durable alert delivery (outbox).** An incident and one pending delivery per
@@ -44,8 +46,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every channel carries GeoIP, ASN and VirusTotal rows at the documented detail
   levels.
 
-### Added
-
 - **Service messages (optional, off by default).** The correlator can now report
   its own degradation through the channels it already has: a rejected or
   revoked VirusTotal key (HTTP 401/403, which used to look like "no
@@ -64,8 +64,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `OCC_SERVICE_CATEGORIES` including `lifecycle` with a severity floor above
   `info` is a startup error: that pairing would have delivered nothing while
   looking configured.
-
-### Added
 
 - **Daily digest (optional, off by default).** `OCC_DIGEST_ENABLED=true` sends one
   message a day at `OCC_DIGEST_TIME` (UTC, default `03:00`) with the trailing 24
@@ -94,6 +92,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   count fails open: an alert is never lost to a Redis hiccup. New metric
   `opencanary_alerts_budget_total{result}`.
 
+- `opencanary_events_dropped_total{reason}` (`queue_full`, `dispatch_failed`,
+  `shutdown`), so lost events are visible per cause in a scrape instead of only
+  by grepping the audit log.
+- Tests that pin what `record()` does when it returns `None`: a merge emits
+  `incident_updated` (a merge suppresses the notification, not the trace), and an
+  RDP event plus a MySQL event from one host in the same second produce two
+  incidents with two `incident_created` records rather than collapsing.
+
 ### Fixed
 
 - The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,
@@ -115,16 +121,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   counter useless for its one job: answering whether a canary sent something the
   correlator could not parse. Such frames are `ignored` now and audited as
   `event_ignored` with `reason: empty_payload`.
-
-### Added
-
-- `opencanary_events_dropped_total{reason}` (`queue_full`, `dispatch_failed`,
-  `shutdown`), so lost events are visible per cause in a scrape instead of only
-  by grepping the audit log.
-- Tests that pin what `record()` does when it returns `None`: a merge emits
-  `incident_updated` (a merge suppresses the notification, not the trace), and an
-  RDP event plus a MySQL event from one host in the same second produce two
-  incidents with two `incident_created` records rather than collapsing.
 
 ## [0.4.1] - 2026-10-28
 
