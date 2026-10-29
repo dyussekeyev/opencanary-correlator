@@ -53,6 +53,14 @@ jobs:
           print(f"tag and package version agree on {version}")
           PY
 
+      # Fails here, before the build, when the changelog has no section for the
+      # tag: a release with an empty or stale body is worse than a failed run.
+      - name: Render the release notes from the changelog
+        run: |
+          python tools/release_notes.py --tag "$TAG" --output "$RUNNER_TEMP/release-notes.md"
+          echo "--- release notes"
+          cat "$RUNNER_TEMP/release-notes.md"
+
       - name: Build sdist and wheel
         run: python -m build
 
@@ -78,17 +86,24 @@ jobs:
           print("installed CLI reports a valid configuration")
           PY
 
-      - name: Attach the artifacts to the release
+      - name: Attach the artifacts and the notes to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
+            # Re-running after a changelog fix corrects the body instead of
+            # leaving the previous one in place. Drafts stay drafts.
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
           else
             echo "::warning::no release exists for $TAG yet; creating a draft for review"
-            gh release create "$TAG" --draft --generate-notes --verify-tag --title "$TAG" dist/*
+            gh release create "$TAG" --draft --notes-file "$NOTES_FILE" \
+              --verify-tag --title "$TAG" dist/*
           fi
           gh release view "$TAG" --json assets -q '.assets[].name'
+          body_chars=$(gh release view "$TAG" --json body -q '.body | length')
+          echo "release body: ${body_chars} characters"
 
       - name: Keep the build output for inspection
         if: always()

@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The release body is now the changelog section for the tag.** The release
+  workflow grew a `tools/release_notes.py` step that renders the `## [x.y.z]`
+  block from `CHANGELOG.md` before the build and fails when the tag has no
+  section or an empty one, so a release cannot go out with notes that disagree
+  with the file. The rendered notes are passed to `gh release create` for a new
+  draft and to `gh release edit` when a release already exists — a re-run after a
+  changelog fix now corrects the body instead of leaving the old one in place
+  (the draft still waits for a human to publish it). Titles still default to the
+  tag, and `--generate-notes` is gone from the draft path because the commit list
+  and the changelog would then describe the same release twice.
+
 ## [0.5.1] - 2026-10-29
 
 ### Added
