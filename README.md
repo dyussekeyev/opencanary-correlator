@@ -221,6 +221,41 @@ delivery is logged and forgotten. `OCC_OUTBOX_POLL_INTERVAL`,
 `OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH` and `OCC_OUTBOX_DELIVERY_RETENTION` tune
 the worker; none of them has to be set to use it.
 
+### Alert budget (optional, off by default)
+
+A burst of *distinct* incidents — one subnet probing a hundred addresses — can
+bury the alert an operator needed to see. The budget rations notifications, not
+incidents: every incident is still stored and visible in the console, only the
+message is withheld.
+
+```bash
+OCC_ALERT_BUDGET_ENABLED=true
+OCC_ALERT_BUDGET_PER_NODE=20     # notifications per canary
+OCC_ALERT_BUDGET_GLOBAL=200     # notifications across all canaries
+OCC_ALERT_BUDGET_WINDOW=3600    # seconds; the window is fixed, not sliding
+```
+
+The counters live in Redis, so replicas behind a load balancer share one budget.
+A withheld alert is audited as `alert_suppressed`, and when the window closes the
+refusals are sent as one plain-text summary through every channel that can carry
+one (Telegram, Slack, Discord, SMTP) — the generic webhook declines, since a SIEM
+would index it as an alert:
+
+```text
+🛡 OpenCanary: alert budget
+
+🔕 Suppressed: 300 alerts
+🕒 Window: 2026-10-28 10:00:00 UTC - 2026-10-28 11:00:00 UTC
+🖥 Instances: 2
+
+• opencanary-embassy: 210
+• opencanary-office: 90
+```
+
+A budget that cannot count fails open: the alert is sent and
+`alert_budget_failed` is audited, because a Redis hiccup must not silence a
+canary.
+
 ## Attacker enrichment (optional)
 
 The attacker block can carry where the address comes from and how VirusTotal

@@ -7,9 +7,12 @@ from typing import Any, ClassVar
 from opencanary_correlator.connectors.base import IncidentLike
 from opencanary_correlator.connectors.dispatchers.alert_text import (
     AlertDetail,
+    clip,
     render_alert,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+
+SLACK_MAX_TEXT = 39_000
 
 
 class SlackDispatcher(HTTPDispatcher):
@@ -30,5 +33,9 @@ class SlackDispatcher(HTTPDispatcher):
         """Slack accepts a simple `text` field for plain-message webhooks."""
         return {"text": render_alert(incident, detail=self._detail, flavor="slack")}
 
+    def build_notice_payload(self, message: str) -> dict[str, Any]:
+        """A budget summary is a message for people, so Slack carries it."""
+        return {"text": clip(message, SLACK_MAX_TEXT)}
 
-__all__ = ["SlackDispatcher"]
+
+__all__ = ["SLACK_MAX_TEXT", "SlackDispatcher"]

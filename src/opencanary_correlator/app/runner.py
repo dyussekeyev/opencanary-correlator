@@ -23,6 +23,7 @@ from opencanary_correlator.app.wiring import (
 from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher, BaseReceiver
+from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.outbox import AlertOutbox
@@ -92,6 +93,13 @@ async def run_correlator(
         audit,
         alert_channels=outbox.channels if outbox is not None else (),
     )
+    # The budget rations notifications, so it needs the channels it summarises
+    # through; with the budget off, `None` keeps the old behaviour exactly.
+    budget = (
+        AlertBudget(store, active_dispatchers, settings, audit)
+        if settings.alert_budget_enabled
+        else None
+    )
     enricher = build_enricher(settings, store, audit)
     engine = CorrelationEngine(
         rules=build_rules(store, repository, settings),
@@ -101,6 +109,7 @@ async def run_correlator(
         audit=audit,
         enricher=enricher,
         outbox=outbox,
+        budget=budget,
     )
     rate_limiter = build_rate_limiter(settings, store)
     receivers = build_receivers(settings, engine, audit, rate_limiter)
@@ -132,6 +141,8 @@ async def run_correlator(
             await health.start()
         if outbox is not None:
             await outbox.start()
+        if budget is not None:
+            await budget.start()
         audit.emit(
             "startup",
             "info",
@@ -152,6 +163,8 @@ async def run_correlator(
             await health.stop()
         if outbox is not None:
             await outbox.stop()
+        if budget is not None:
+            await budget.stop()
         await asyncio.gather(
             *(dispatcher.aclose() for dispatcher in active_dispatchers),
             return_exceptions=True,

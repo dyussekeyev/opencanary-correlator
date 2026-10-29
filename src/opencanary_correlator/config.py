@@ -137,6 +137,20 @@ class Settings(BaseSettings):
     # How long the delivered marker and a pending entry are kept.
     outbox_delivery_retention: float = Field(default=7 * 24 * 3600.0, ge=60.0)
 
+    # --- Alert budget -------------------------------------------------------
+    # A burst of distinct incidents from one noisy subnet can bury the alert an
+    # operator needed to see. The budget rations *notifications*, not incidents:
+    # every incident is still stored and visible in the console, only the message
+    # is withheld, and the withheld count is summarised when the window closes.
+    # Off by default, because silently withholding an alert is a decision an
+    # operator must make for their own traffic; the numbers below are the
+    # defaults once it is switched on.
+    alert_budget_enabled: bool = False
+    alert_budget_per_node: int = Field(default=20, ge=1, le=100_000)
+    alert_budget_global: int = Field(default=200, ge=1, le=1_000_000)
+    alert_budget_window: float = Field(default=3600.0, gt=0.0, le=7 * 24 * 3600.0)
+    alert_budget_poll_interval: float = Field(default=60.0, gt=0.0, le=3600.0)
+
     # --- Hardening ----------------------------------------------------------
     max_line_bytes: int = Field(default=65536, ge=1024, le=10 * 1024 * 1024)
     partial_line_timeout: float = Field(default=30.0, gt=0.0, le=3600.0)
@@ -376,6 +390,18 @@ class Settings(BaseSettings):
     def _validate_slack(self) -> Self:
         """An enabled Slack channel must have somewhere to send."""
         require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_alert_budget(self) -> Self:
+        """A per-node ceiling above the global one could never be reached.
+
+        Accepting it would silently turn `alert_budget_per_node` into a second
+        copy of the global limit, so the contradiction is rejected at startup
+        instead of quietly doing something other than what was configured.
+        """
+        if self.alert_budget_per_node > self.alert_budget_global:
+            raise ValueError("alert_budget_per_node cannot exceed alert_budget_global")
         return self
 
     @field_validator("health_host", mode="before")

@@ -29,6 +29,9 @@ OUTBOX_ENTRY_PREFIX = "outbox:alert:"
 OUTBOX_DEAD = "outbox:dead"
 DELIVERED_PREFIX = "outbox:delivered:"
 
+#: ZSET of alert-budget summaries, scored by the end of their window.
+BUDGET_SUMMARIES = "budget:summaries"
+
 
 def device_hash(node_id: str) -> str:
     """Return the legacy device hash: a truncated SHA-256 of the node id.
@@ -104,6 +107,25 @@ def quota_key(provider: str, window: str, stamp: str) -> str:
     return f"{QUOTA_PREFIX}{provider}:{window}:{stamp}"
 
 
+def budget_node_key(stamp: int, node_id: str) -> str:
+    """Notifications counted for one canary inside one budget window.
+
+    A fixed window is part of the key, so a rollover starts at zero without any
+    reset logic and the expired key simply disappears.
+    """
+    return f"budget:node:{stamp}:{node_id}"
+
+
+def budget_global_key(stamp: int) -> str:
+    """Notifications counted for every canary together inside one window."""
+    return f"budget:global:{stamp}"
+
+
+def budget_summary_key(stamp: int) -> str:
+    """What one window withheld, by source node."""
+    return f"budget:suppressed:{stamp}"
+
+
 def outbox_entry_id(incident_key: str, channel: str) -> str:
     """Deterministic id of one delivery.
 
@@ -129,6 +151,7 @@ def console_setting_key(setting: str) -> str:
 
 
 __all__ = [
+    "BUDGET_SUMMARIES",
     "DEDUP_KEY_PREFIX",
     "DELIVERED_PREFIX",
     "ENRICHMENT_PREFIX",
@@ -138,6 +161,9 @@ __all__ = [
     "OUTBOX_ENTRY_PREFIX",
     "OUTBOX_INDEX",
     "QUOTA_PREFIX",
+    "budget_global_key",
+    "budget_node_key",
+    "budget_summary_key",
     "console_setting_key",
     "dedup_key",
     "delivered_key",

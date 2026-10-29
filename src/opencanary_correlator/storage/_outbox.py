@@ -13,6 +13,8 @@ losing it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from opencanary_correlator.storage._base import _StoreBase
 from opencanary_correlator.storage.keys import (
     OUTBOX_DEAD,
@@ -46,6 +48,22 @@ class _OutboxMixin(_StoreBase):
             )
             pipe.zadd(OUTBOX_INDEX, {entry_id: score})
             await pipe.execute()
+
+    async def discard_alerts(self, entry_ids: Sequence[str]) -> int:
+        """Drop pending deliveries in one script, returning how many existed.
+
+        Used when the decision to notify is withdrawn before any attempt: the
+        alert budget suppresses a notification, and a surviving entry would only
+        delay the message the ration was meant to withhold.
+        """
+        if not entry_ids:
+            return 0
+        removed = await self._run_script(
+            self._discard_alerts_script,
+            [OUTBOX_INDEX, *(outbox_alert_key(entry_id) for entry_id in entry_ids)],
+            list(entry_ids),
+        )
+        return int(removed or 0)
 
     async def claim_due_alerts(self, *, now: float, limit: int, lease: float) -> list[str]:
         """Return the ids that are due, pushing each one's next attempt by `lease`."""

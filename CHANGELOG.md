@@ -22,6 +22,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   metrics: `opencanary_outbox_pending`, `..._delivered_total`, `..._retried_total`,
   `..._dead_total`; `OCC_OUTBOX_ENABLED=false` restores the previous behaviour.
 
+- **Alert budget (optional, off by default).** A burst of distinct incidents —
+  one subnet probing a hundred addresses — can bury the alert an operator
+  needed to see. `OCC_ALERT_BUDGET_ENABLED=true` rations *notifications*, not
+  incidents: `OCC_ALERT_BUDGET_PER_NODE` (20) and `OCC_ALERT_BUDGET_GLOBAL`
+  (200) per `OCC_ALERT_BUDGET_WINDOW` (3600 s), counted in Redis so replicas
+  share one budget. A withheld incident is still stored and visible in the
+  console, is audited as `alert_suppressed`, and its outbox entries are
+  withdrawn before any attempt; the window's refusals are sent as one summary
+  (`alert_summary`, plain text, one message per channel that can carry a notice)
+  when the window closes, so the ration cannot hide itself. A budget that cannot
+  count fails open: an alert is never lost to a Redis hiccup. New metric
+  `opencanary_alerts_budget_total{result}`.
+
 ### Fixed
 
 - The dedup claim was taken for the whole `OCC_DEDUP_TTL` *before* the rules ran,
