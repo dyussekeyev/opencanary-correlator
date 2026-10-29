@@ -247,6 +247,33 @@ async def test_a_withheld_notification_leaves_the_incident_and_its_trail(
     assert '"action":"alert_suppressed"' in audit_stream.getvalue()
 
 
+async def test_five_hundred_incidents_send_two_hundred_messages_and_one_summary(
+    store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
+) -> None:
+    """The acceptance case: a burst is rationed, and the rest is reported once."""
+    settings = budget_settings(settings_factory, alert_budget_per_node=200, alert_budget_global=200)
+    dispatcher = RecordingDispatcher()
+    outbox = AlertOutbox(store, [dispatcher], settings, audit, clock=clock)
+    budget = make_budget(store, settings, audit, clock, [dispatcher])
+    engine = make_engine(store, settings, audit, clock, dispatcher, outbox=outbox, budget=budget)
+
+    for index in range(500):
+        await engine.handle_event(
+            CanaryEvent.model_validate(event_factory(src_host=f"10.1.{index // 250}.{index % 250}"))
+        )
+
+    # 200 messages, but all 500 incidents: the ration is on the message only.
+    assert len(dispatcher.incidents) == 200
+    assert len(await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf")) == 500
+    # A withheld alert cost no delivery, so nothing is waiting to be retried.
+    assert await store.outbox_pending() == 0
+    assert audit_stream.getvalue().count('"action":"alert_suppressed"') == 300
+
+    clock.advance(settings.alert_budget_window)
+    assert await budget.run_once() == 1
+    assert "Suppressed: 300 alerts" in dispatcher.notices[0]
+
+
 async def test_a_budget_that_cannot_answer_does_not_silence_the_alert(
     store: Any, settings_factory: Any, audit: Any, audit_stream: Any, clock: Any, event_factory: Any
 ) -> None:
