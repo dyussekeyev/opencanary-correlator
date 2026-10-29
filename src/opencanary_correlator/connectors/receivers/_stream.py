@@ -85,9 +85,16 @@ class StreamProtocol(asyncio.Protocol):
 
         Called by the receiver once the limiter allowed it - and when the limiter
         itself failed, because an unreachable budget must not cost a canary its
-        socket. A connection that was already closed simply ignores the answer.
+        socket.
+
+        A peer that writes one event and closes immediately (`SocketJSONHandler`
+        opens a connection per record and does exactly that) is *closed* by the
+        time the budget answers. The bytes it sent while the socket was open are
+        still valid, so a closed protocol drains them too: the transport going
+        away does not unframe what already arrived. Only a connection the limiter
+        refused is discarded, and that path never reaches here.
         """
-        if self._admitted or self._closed:
+        if self._admitted:
             return
         self._admitted = True
         self._drain()

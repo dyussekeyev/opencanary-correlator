@@ -51,9 +51,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   denied connection had already produced work. A `StreamProtocol` now starts
   unadmitted when a limiter is configured, buffers at most one frame, and the
   receiver releases it on a yes — or when the limiter raises, which keeps the
-  fail-open behaviour a Redis outage needs. Oversized input is still refused
-  while the decision is pending, and a connection without a limiter (the default)
-  keeps the synchronous path.
+  fail-open behaviour a Redis outage needs. A peer that writes one event and
+  closes immediately (`SocketJSONHandler` opens a connection per record and does
+  exactly that) still gets it correlated: the FIN routinely arrives before the
+  budget's Redis round trip, and the bytes received while the socket was open are
+  drained anyway. Oversized input is still refused while the decision is pending,
+  and a connection without a limiter keeps the synchronous path.
 
 - **An event that was never stored no longer counts as seen.**
   `IncidentRepository.record()` returned `None` both for a merge — stored, do not

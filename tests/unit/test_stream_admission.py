@@ -134,6 +134,26 @@ async def test_a_refused_connection_never_parses_its_payload(
     assert not [r for r in audit_records(audit_stream) if r["action"] == "event_rejected"]
 
 
+async def test_a_payload_written_then_closed_is_not_lost(audit: Any, event_line: Any) -> None:
+    """`SocketJSONHandler` sends one event per connection and closes at once.
+
+    The budget is a Redis round trip, so the peer's FIN routinely arrives first.
+    The bytes were received while the socket was open and must still be
+    correlated; the CI compose smoke test failed exactly here when the payload
+    was held and then thrown away with the closed transport.
+    """
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    protocol, _transport = connect(receiver)
+
+    protocol.data_received(event_line())
+    protocol.connection_lost(None)
+    limiter.gate.set()
+    await settle(receiver)
+
+    assert receiver.pending == 1
+
+
 async def test_a_frame_split_across_the_decision_is_still_joined(
     audit: Any, event_line: Any
 ) -> None:
