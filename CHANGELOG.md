@@ -5,6 +5,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-29
+
+### Added
+
+- **`canary.silent`: a node that stopped delivering is now reported.** Every
+  other service message is triggered by a failure that just happened; silence has
+  no event attached to it, so it was only visible as an absence. The receiver now
+  records the last time each node delivered in a process-local `NodeRegistry`
+  (one dict write on the ingest path, no Redis round trip), the existing
+  per-replica heartbeat publishes those times as `node:<id>` fields, and a new
+  `HealthWatch` task compares them on a timer from one elected replica
+  (`health-watch:check`, no wait). A node whose newest evidence is older than
+  `OCC_CANARY_SILENT_AFTER` is audited as `canary_silent` and sent as
+  `canary.silent` under its own `node:<id>` subject, so the cooldown mutes the
+  repeats per canary; the first ten nodes of a mass outage go out individually
+  and the rest in one summary. The check is off by default, only runs when
+  `OCC_SERVICE_ENABLED` and the `canary` category are set — the combinations that
+  would report nothing are startup errors — and reports nothing after a restart,
+  because a missing heartbeat field is not evidence of silence. The registry is
+  bounded: once full it refuses a node id it has never seen instead of evicting a
+  known one, so a peer inventing `node_id` values cannot hide a real canary.
+
+- **`ingestion.dropped` / `ingestion.rejected`: a loss rate now speaks.** Queue
+  overflow, a failed dispatch path and payloads that fail validation were already
+  counted and audited per event, but a rate spread over many events is invisible
+  on the ingest path — and the daily digest is off by default too. `HealthWatch`
+  now samples the process-local counters once per `OCC_WATCH_INTERVAL` and sends
+  one message when a window crosses `OCC_SERVICE_DROPS_THRESHOLD` or
+  `OCC_SERVICE_REJECTIONS_THRESHOLD`, naming the drop reasons (`queue_full`,
+  `dispatch_failed`, `incident_lock_timeout`, `shutdown`) instead of only a
+  total. Both thresholds default to `0` (off), need `OCC_SERVICE_ENABLED` and the
+  new `ingestion` category, and are refused at startup when a floor would filter
+  the warning out. The counters are per process, so every replica reports its own
+  window and the notifier cooldown mutes the rest: a message carries the
+  reporting replica's count, while the digest remains the cluster total.
+
+### Fixed
+
+- **A connection's first payload waits for the rate limiter.** The per-peer
+  connection budget is answered asynchronously, and `data_received` did not wait
+  for it: a `SocketJSONHandler` writes its first event immediately on connect, so
+  that event was parsed, queued and correlated before the limiter had decided.
+  An over-quota peer therefore still delivered one event per connection, and a
+  denied connection had already produced work. A `StreamProtocol` now starts
+  unadmitted when a limiter is configured, buffers at most one frame, and the
+  receiver releases it on a yes — or when the limiter raises, which keeps the
+  fail-open behaviour a Redis outage needs. Oversized input is still refused
+  while the decision is pending, and a connection without a limiter (the default)
+  keeps the synchronous path.
+
+- **An event that was never stored no longer counts as seen.**
+  `IncidentRepository.record()` returned `None` both for a merge — stored, do not
+  notify — and for an incident-lock timeout, where nothing was written at all.
+  The engine read both as success and extended the dedup claim to the full
+  `OCC_DEDUP_TTL`, so an event that lost the per-host lock was remembered as
+  processed: the canary's redelivery (a second syslog relay, a reconnect) was
+  answered `event_deduplicated` and the attack left no incident. A timeout now
+  raises `IncidentLockTimeoutError`, the engine withdraws the claim and counts the
+  loss in `opencanary_events_dropped_total{reason="incident_lock_timeout"}`, and
+  the audit trail carries `incident_lock_timeout` followed by `event_dropped`
+  with the rule and node instead of only the former. A merge still returns
+  `None`.
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

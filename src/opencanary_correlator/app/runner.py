@@ -36,6 +36,7 @@ from opencanary_correlator.core.service_messages import (
     ServiceNotifier,
 )
 from opencanary_correlator.core.stats import StatsReporter
+from opencanary_correlator.core.watch import HealthWatch
 from opencanary_correlator.core.windows import DedupCache
 from opencanary_correlator.health import HealthServer
 from opencanary_correlator.log_setup import (
@@ -46,6 +47,7 @@ from opencanary_correlator.log_setup import (
     SingleLineFilter,
     configure_logging,
 )
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.storage.redis_store import RedisStore
 
 _logger = logging.getLogger(__name__)
@@ -117,8 +119,20 @@ async def run_correlator(
     )
     notifier = ServiceNotifier(store, active_dispatchers, settings, audit)
     _require_configured_service_channels(settings, active_dispatchers)
-    stats = StatsReporter(store, audit)
+    # One registry for every listener: a canary is the same node whichever
+    # transport delivered its event, and the silence check needs all of them.
+    nodes = NodeRegistry()
+    stats = StatsReporter(store, audit, nodes=nodes)
     digest = DigestScheduler(store, notifier, settings, audit) if settings.digest_enabled else None
+    # The window checks (`core.watch`): silence and the ingestion rate. The task
+    # only exists when one of them can actually speak, so a correlator with the
+    # service messages switched off pays nothing for it.
+    window_checks = (
+        settings.canary_silent_after > 0
+        or settings.service_drops_threshold > 0
+        or settings.service_rejections_threshold > 0
+    )
+    watch = HealthWatch(store, notifier, settings, audit) if window_checks else None
     repository = IncidentRepository(
         store,
         settings,
@@ -145,7 +159,7 @@ async def run_correlator(
         budget=budget,
     )
     rate_limiter = build_rate_limiter(settings, store)
-    receivers = build_receivers(settings, engine, audit, rate_limiter)
+    receivers = build_receivers(settings, engine, audit, rate_limiter, nodes)
     health = health or build_health_server(settings, store, audit)
     stop = stop_event or asyncio.Event()
     install_signal_handlers(stop)
@@ -178,6 +192,8 @@ async def run_correlator(
         await stats.start()
         if digest is not None:
             await digest.start()
+        if watch is not None:
+            await watch.start()
         if budget is not None:
             await budget.start()
         audit.emit(
@@ -212,6 +228,8 @@ async def run_correlator(
             await outbox.stop()
         if digest is not None:
             await digest.stop()
+        if watch is not None:
+            await watch.stop()
         if budget is not None:
             await budget.stop()
         await stats.stop()

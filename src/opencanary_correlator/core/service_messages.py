@@ -3,7 +3,9 @@
 An alert tells an operator that somebody attacked a canary. A service message
 tells them that the *correlator* is degraded: a VirusTotal key was rejected, a
 GeoIP database stopped answering, a channel's circuit breaker opened, no channel
-delivered anything for the last few alerts, or the process started and stopped.
+delivered anything for the last few alerts, ingestion dropping or rejecting
+events above a configured rate, a canary went silent, or the process started and
+stopped.
 
 Three properties matter more than the wording:
 
@@ -65,6 +67,11 @@ class ServiceCategory(StrEnum):
 
     ENRICHMENT = "enrichment"
     CHANNELS = "channels"
+    #: Events the correlator itself could not take: a full queue, a failed
+    #: dispatch, a peer whose payloads do not validate.
+    INGESTION = "ingestion"
+    #: A node that stopped delivering. Its events are the ones that are missing.
+    CANARY = "canary"
     LIFECYCLE = "lifecycle"
     #: The daily digest, which has its own switch (`OCC_DIGEST_ENABLED`) and is not
     #: filtered by `OCC_SERVICE_CATEGORIES`.
@@ -80,6 +87,9 @@ class ServiceKind(StrEnum):
     GEO_UNAVAILABLE = "enrichment.geo.unavailable"
     CHANNEL_CIRCUIT_OPEN = "channel.circuit_open"
     CHANNEL_ALL_FAILING = "channel.all_failing"
+    INGESTION_DROPPED = "ingestion.dropped"
+    INGESTION_REJECTED = "ingestion.rejected"
+    CANARY_SILENT = "canary.silent"
     LIFECYCLE_STARTED = "lifecycle.started"
     LIFECYCLE_STOPPED = "lifecycle.stopped"
     DIGEST_DAILY = "digest.daily"
@@ -122,6 +132,15 @@ _KIND_SPECS: Final[dict[ServiceKind, _KindSpec]] = {
     ),
     ServiceKind.CHANNEL_ALL_FAILING: _KindSpec(
         category=ServiceCategory.CHANNELS, severity=Severity.CRITICAL
+    ),
+    ServiceKind.INGESTION_DROPPED: _KindSpec(
+        category=ServiceCategory.INGESTION, severity=Severity.WARNING
+    ),
+    ServiceKind.INGESTION_REJECTED: _KindSpec(
+        category=ServiceCategory.INGESTION, severity=Severity.WARNING
+    ),
+    ServiceKind.CANARY_SILENT: _KindSpec(
+        category=ServiceCategory.CANARY, severity=Severity.WARNING
     ),
     ServiceKind.LIFECYCLE_STARTED: _KindSpec(
         category=ServiceCategory.LIFECYCLE, severity=Severity.INFO

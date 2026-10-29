@@ -107,7 +107,11 @@ therefore never touches correlation logic.
    and rejects any frame above `OCC_MAX_LINE_BYTES` (default 64 KiB) by closing
    the connection with an audit record. A timer is armed only while a partial
    line is buffered, so a silent keep-alive socket from `SocketJSONHandler` is
-   never disconnected.
+   never disconnected. When a per-peer budget is configured, the connection is
+   **unadmitted** until `RedisRateLimiter.allow_connection` answers: the protocol
+   holds up to one frame of bytes and releases them on a yes (or when the limiter
+   itself fails, which stays fail-open), so a peer that sends on connect cannot
+   deliver an event the budget never saw.
 2. **Parse and validate** — JSON is decoded with NaN/Infinity rejected, then
    validated by `CanaryEvent`: ports `-1…65535`, `src_host` up to 255 chars,
    `node_id` 1–128 chars without control characters, `logdata` depth ≤ 5 and
@@ -210,6 +214,8 @@ record, the dispatch result, and process start/stop.
 |---|---|---|
 | Enrichment | `enrichment.virustotal.key_rejected`, `…quota`, `…unavailable`, `enrichment.geo.unavailable` | `enrichment/service.py`, on the branches that already emit `enrichment_failed` / `enrichment_skipped` |
 | Channels | `channel.circuit_open`, `channel.all_failing` | `core/engine.py`, from the dispatch result (a skipped `circuit_open` attempt, or `ALL_CHANNELS_FAILING_THRESHOLD` consecutive alerts nobody accepted) |
+| Ingestion | `ingestion.dropped`, `ingestion.rejected` | `core/watch.py`, from the process-local counters (`opencanary_events_dropped_total`, `opencanary_events_total{result="rejected"}`), once per threshold window and cooldown |
+| Canary silence | `canary.silent` | `core/watch.py`, on a timer, from the per-node evidence the ingest path records and the heartbeat publishes |
 | Lifecycle | `lifecycle.started`, `lifecycle.stopped` | `app/runner.py`, around the supervised task set |
 
 `ServiceNotifier` applies three gates before anything is sent: the category
@@ -235,11 +241,17 @@ start/stop sequence (`app/runner.py`):
 
 | Task | Cadence | State |
 |---|---|---|
-| `stats` (`core/stats.py`) | every 60 s | hash `stats:instance:<uuid>`, TTL 300 s, counters read from the process-local Prometheus registry |
+| `stats` (`core/stats.py`) | every 60 s | hash `stats:instance:<uuid>`, TTL 300 s, counters read from the process-local Prometheus registry, plus `node:<id>` last-seen fields |
 | `digest` (`core/digest.py`) | once a day at `OCC_DIGEST_TIME` | lock `digest:lock:<date>` plus marker `digest:sent:<date>` |
+| `watch` (`core/watch.py`) | every `OCC_WATCH_INTERVAL` | lock `health-watch:check`, no wait: a replica that loses does nothing |
 
 The heartbeat is why the digest is cheap: no Redis write happens per event, and a
-replica that dies stops contributing when its hash expires. `collect_digest` sums
+replica that dies stops contributing when its hash expires. The same hash carries
+the `node:<id>` last-seen times from `presence.NodeRegistry` — a plain dict the
+receiver updates when it queues an event — which is what lets the silence check
+ask "which canary stopped delivering?" without a Redis write per event. A full
+registry refuses a node id it has never seen rather than evicting a known one, so
+a peer inventing `node_id` values cannot hide a real canary. `collect_digest` sums
 the live hashes, counts the incidents in the trailing 24 h from the `incidents`
 ZSET and ranks the sources by parsing the incident keys. The scheduler sleeps on
 its stop event in at most 60 s slices, so a clock jump or a changed time is
@@ -333,7 +345,7 @@ dispatcher name.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `opencanary_events_total` | counter | `result` (`accepted`, `rejected`, `dropped`, `rate_limited`, `deduplicated`, `unrouted`) | event outcomes across ingestion and correlation |
-| `opencanary_events_dropped_total` | counter | `reason` (`queue_full`, `dispatch_failed`, `shutdown`) | events lost before correlation, split by cause |
+| `opencanary_events_dropped_total` | counter | `reason` (`queue_full`, `dispatch_failed`, `shutdown`, `incident_lock_timeout`) | events lost before correlation, split by cause |
 | `opencanary_event_queue_depth` | gauge | — | events waiting across the pipeline lanes |
 | `opencanary_active_connections` | gauge | `receiver` | currently open receiver connections |
 | `opencanary_connection_rejections_total` | counter | `receiver`, `reason` | rejected connections before payload processing |

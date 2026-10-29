@@ -32,6 +32,9 @@ DELIVERED_PREFIX = "outbox:delivered:"
 #: ZSET of alert-budget summaries, scored by the end of their window.
 BUDGET_SUMMARIES = "budget:summaries"
 
+#: Lock that elects the replica running one health-watch interval.
+WATCH_LOCK_PREFIX = "health-watch:"
+
 
 def device_hash(node_id: str) -> str:
     """Return the legacy device hash: a truncated SHA-256 of the node id.
@@ -191,6 +194,11 @@ def digest_lock_key(day: str) -> str:
     return f"{DIGEST_LOCK_PREFIX}{day}"
 
 
+def watch_lock_key() -> str:
+    """Lock that elects the replica running one health-watch interval."""
+    return f"{WATCH_LOCK_PREFIX}check"
+
+
 __all__ = [
     "BUDGET_SUMMARIES",
     "DEDUP_KEY_PREFIX",
@@ -205,6 +213,7 @@ __all__ = [
     "OUTBOX_INDEX",
     "QUOTA_PREFIX",
     "STATS_INSTANCE_PREFIX",
+    "WATCH_LOCK_PREFIX",
     "budget_global_key",
     "budget_node_key",
     "budget_summary_key",
@@ -228,4 +237,5 @@ __all__ = [
     "service_message_keys",
     "service_subject_hash",
     "stats_instance_key",
+    "watch_lock_key",
 ]

@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.connectors.base import EventSink, RateLimiter
+from opencanary_correlator.presence import NodeRegistry
 from opencanary_correlator.schemas import CanaryEvent
 
 DEFAULT_DRAIN_TIMEOUT: float = 5.0
@@ -63,11 +64,15 @@ class EventPipeline:
         queue_size: int,
         rate_limiter: RateLimiter | None = None,
         concurrency: int = DEFAULT_CONCURRENCY,
+        nodes: NodeRegistry | None = None,
     ) -> None:
         self.stats = ReceiverStats()
         self._sink = sink
         self._audit = audit
         self._rate_limiter = rate_limiter
+        # Optional: without it nothing tracks per-node activity, which is what a
+        # deployment that never enables `OCC_CANARY_SILENT_AFTER` wants.
+        self._nodes = nodes
         self._concurrency = max(1, concurrency)
         # Share the configured budget between the lanes instead of multiplying
         # it, so total buffering still honours `queue_size`.
@@ -162,6 +167,11 @@ class EventPipeline:
             )
             return False
         metrics.EVENT_QUEUE_DEPTH.set(self.pending)
+        if self._nodes is not None:
+            # One dict assignment: the node is alive because it just delivered.
+            # A refusal (a full registry) is deliberately ignored here - a
+            # bookkeeping limit must never cost an event.
+            self._nodes.touch(event.node_id)
         return True
 
     def _queue_for(self, event: CanaryEvent) -> asyncio.Queue[CanaryEvent]:

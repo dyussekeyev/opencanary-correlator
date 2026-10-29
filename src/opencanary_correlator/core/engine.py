@@ -19,7 +19,7 @@ from opencanary_correlator.connectors.base import BaseDispatcher
 from opencanary_correlator.constants import IGNORED_LOGTYPES
 from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.delivery import deliver
-from opencanary_correlator.core.incident import Incident
+from opencanary_correlator.core.incident import Incident, IncidentLockTimeoutError
 from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import Rule
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceNotifier
@@ -93,6 +93,26 @@ class CorrelationEngine:
             matched = True
             try:
                 incidents.extend(await rule.apply(event, now=now))
+            except IncidentLockTimeoutError as exc:
+                # Nothing was written: the per-host incident lock timed out. The
+                # event is lost for now, so it must not be remembered as seen -
+                # `failed` withdraws the claim and a redelivery correlates.
+                # Counting it as a rule failure would blame the rule for a
+                # storage problem and hide the real cause in the audit trail.
+                failed = True
+                metrics.EVENTS_TOTAL.labels(result="dropped").inc()
+                metrics.EVENTS_DROPPED.labels(reason="incident_lock_timeout").inc()
+                self._audit.emit(
+                    "event_dropped",
+                    "warning",
+                    {
+                        "reason": "incident_lock_timeout",
+                        "rule": rule.name,
+                        "incident": exc.incident,
+                        "node_id": event.node_id,
+                        "logtype": int(event.logtype),
+                    },
+                )
             except Exception as exc:
                 failed = True
                 metrics.RULE_FAILURES.labels(rule=rule.name).inc()

@@ -29,6 +29,7 @@ from prometheus_client import REGISTRY
 from opencanary_correlator import __version__, metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.constants import INCIDENT_KEY_PREFIX
+from opencanary_correlator.presence import NODE_FIELD_PREFIX, NodeRegistry
 from opencanary_correlator.storage import keys
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -112,12 +113,16 @@ class StatsReporter:
         *,
         instance_id: str | None = None,
         clock: Callable[[], float] = time.time,
+        nodes: NodeRegistry | None = None,
     ) -> None:
         self._store = store
         self._audit = audit
         self._instance = instance_id or uuid.uuid4().hex
         self._clock = clock
         self._started = float(self._clock())
+        # Without a registry the heartbeat carries counters only, which is what a
+        # digest-only deployment needs; the silence check needs the registry.
+        self._nodes = nodes
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -143,6 +148,11 @@ class StatsReporter:
             fields[f"events_{result}"] = int(_sample("opencanary_events_total", {"result": result}))
         for status in ALERT_STATUSES:
             fields[f"alerts_{status}"] = int(_sample("opencanary_alerts_total", {"status": status}))
+        if self._nodes is not None:
+            # `node:<id>` -> the last epoch that node delivered an event. The
+            # digest skips the prefix; the silence check is its only reader.
+            for node_id, last_seen in self._nodes.snapshot().items():
+                fields[f"{NODE_FIELD_PREFIX}{node_id}"] = last_seen
         return fields
 
     async def beat(self) -> None:
@@ -196,7 +206,9 @@ def _source_of(incident_key: str) -> str | None:
 def _sum_heartbeat(instance: str, fields: Mapping[str, str], totals: dict[str, int]) -> None:
     """Add one replica's counters to the digest totals."""
     for name, value in fields.items():
-        if name in {"version", "started"}:
+        if name in {"version", "started"} or name.startswith(NODE_FIELD_PREFIX):
+            # Node evidence is not a counter: summing it would produce totals
+            # nobody asked for and lose the per-node meaning at the same time.
             continue
         try:
             totals[name] = totals.get(name, 0) + int(value)

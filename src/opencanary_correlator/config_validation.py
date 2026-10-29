@@ -56,6 +56,8 @@ KNOWN_CHANNEL_NAMES: Final[tuple[str, ...]] = (
 SERVICE_CATEGORIES: Final[tuple[str, ...]] = (
     "enrichment",
     "channels",
+    "ingestion",
+    "canary",
     "lifecycle",
     "digest",
 )
