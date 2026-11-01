@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import json
 import os
 import signal
@@ -22,6 +23,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import pytest
 from redis.asyncio import Redis
 
@@ -33,7 +35,9 @@ from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.windows import DedupCache
+from opencanary_correlator.enrichment.virustotal import VirusTotalClient
 from opencanary_correlator.schemas import CanaryEvent
+from opencanary_correlator.storage import keys
 from opencanary_correlator.storage.redis_store import RedisStore
 
 REDIS_URL = os.environ.get("OCC_TEST_REDIS_URL", "").strip()
@@ -197,6 +201,70 @@ async def test_1000_events_keep_the_incident_hash_small(
         assert footprint_final <= footprint_at_cap * 1.1, (footprint_at_cap, footprint_final)
     finally:
         await cleanup_host(store, src_host)
+
+
+async def test_vt_singleflight_across_real_redis_connections(
+    replica_stores: Any, monkeypatch: Any
+) -> None:
+    """Two independent clients share one HTTP request and quota reservation."""
+    token = uuid.uuid4().hex
+    ip = str(ipaddress.ip_address(f"2606:4700::{token[:4]}:{token[4:8]}"))
+    quota_key = f"test:vt-quota:{token}"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        entered.set()
+        await release.wait()
+        return httpx.Response(200, json={"data": {"attributes": {"last_analysis_stats": {}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        clients = [
+            VirusTotalClient(api_key="test-key", store=s, client=http) for s in replica_stores
+        ]
+        for client in clients:
+            monkeypatch.setattr(client, "_quota_windows", lambda: [(quota_key, 100, 60000, "test")])
+        tasks = [asyncio.create_task(clients[0].report(ip))]
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            tasks.extend(asyncio.create_task(clients[i % 2].report(ip)) for i in range(6))
+            await asyncio.sleep(0.05)
+            assert len(requests) == 1
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(*tasks), 3)
+            assert all(result == results[0] for result in results)
+            assert results[0][1] == "ok"
+            assert len(requests) == 1
+            assert await replica_stores[0].get_value(quota_key) == "1"
+        finally:
+            release.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await replica_stores[0].delete(
+                keys.enrichment_cache_key("vt", ip), keys.enrichment_lock_key("vt", ip), quota_key
+            )
+
+
+async def test_provider_pause_is_atomic_on_real_redis(replica_stores: Any) -> None:
+    """Concurrent replicas cannot shorten an existing pause; TTL permits recovery."""
+    key = f"test:vt-pause:{uuid.uuid4().hex}"
+    first, second = replica_stores
+    try:
+        await asyncio.gather(
+            first.extend_cached_value(key, "long", ttl=1),
+            second.extend_cached_value(key, "short", ttl=0.1),
+        )
+        assert await first.get_value(key) == "long"
+        assert await first.client.pttl(key) > 500
+        await first.client.pexpire(key, 20)
+        await asyncio.sleep(0.05)
+        assert await second.get_value(key) is None
+        assert await second.extend_cached_value(key, "recovered", ttl=1)
+    finally:
+        await first.delete(key)
 
 
 @pytest.mark.linux

@@ -99,6 +99,16 @@ def enrichment_cache_key(source: str, value: str) -> str:
     return f"{ENRICHMENT_PREFIX}{source}:{value}"
 
 
+def enrichment_cooldown_key(source: str, fingerprint: str, reason: str) -> str:
+    """Provider pause scoped to a one-way credential fingerprint, never a key."""
+    return f"{ENRICHMENT_PREFIX}cooldown:{source}:{fingerprint}:{reason}"
+
+
+def enrichment_lock_key(source: str, value: str) -> str:
+    """Lease for one canonical address, separate from cached result keys."""
+    return f"{ENRICHMENT_PREFIX}lock:{source}:{value}"
+
+
 def quota_key(provider: str, window: str, stamp: str) -> str:
     """Counter for one provider quota window.
 
@@ -225,6 +235,8 @@ __all__ = [
     "digest_lock_key",
     "digest_sent_key",
     "enrichment_cache_key",
+    "enrichment_cooldown_key",
+    "enrichment_lock_key",
     "host_scan_key",
     "incident_key",
     "incident_latest_key",

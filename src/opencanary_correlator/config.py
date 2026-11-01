@@ -289,6 +289,11 @@ class Settings(BaseSettings):
     #: How long a verdict is reused for the same address. Long by default: an
     #: attacker that returns tomorrow should not cost another quota slot.
     virustotal_cache_ttl: float = Field(default=7 * 24 * 3600.0, ge=0.0)
+    virustotal_miss_cache_ttl: float = Field(default=3600.0, gt=0, le=604800, allow_inf_nan=False)
+    virustotal_error_cooldown: float = Field(default=30.0, gt=0, le=3600, allow_inf_nan=False)
+    virustotal_auth_cooldown: float = Field(default=300.0, gt=0, le=86400, allow_inf_nan=False)
+    virustotal_rate_limit_cooldown: float = Field(default=60.0, gt=0, le=3600, allow_inf_nan=False)
+    virustotal_max_retry_after: float = Field(default=3600.0, ge=1, le=86400, allow_inf_nan=False)
     virustotal_timeout: float = Field(default=5.0, gt=0.0, le=60.0)
     #: Budget for one enrichment pass, below `dispatch_timeout` on purpose.
     enrichment_timeout: float = Field(default=6.0, gt=0.0, le=120.0)

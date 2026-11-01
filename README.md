@@ -475,6 +475,31 @@ never delay it by more than `OCC_ENRICHMENT_TIMEOUT` (6 s). The key travels in
 the `x-apikey` header, so it cannot appear in a request-URL log line, and it is
 hidden from `repr()` and `--check-config`.
 
+No-data responses and confirmed `404 NotFoundError` results are cached for
+`OCC_VIRUSTOTAL_MISS_CACHE_TTL` (3600 s), not treated as a clean verdict.
+Malformed response envelopes remain unavailable. Replicas share provider pauses
+in Redis: `OCC_VIRUSTOTAL_ERROR_COOLDOWN` (30 s) after network/timeout/server
+failures, `OCC_VIRUSTOTAL_AUTH_COOLDOWN` (300 s) after 401/403, and
+`OCC_VIRUSTOTAL_RATE_LIMIT_COOLDOWN` (60 s) after 429 without a usable
+`Retry-After`. An optional seconds/date header is bounded to 1 through
+`OCC_VIRUSTOTAL_MAX_RETRY_AFTER` (3600 s). Shorter concurrent pauses never shorten
+an existing one. Pauses are scoped to a one-way API-key fingerprint, so rotating
+credentials does not inherit a rejected key's pause. Cached reports remain
+available during pauses; no automatic HTTP retry is made inside a lookup.
+
+The health listener's `/metrics` exposes `opencanary_enrichment_cache_total`
+(initial hit/negative_hit/miss only), `opencanary_enrichment_requests_total`
+(actual HTTP attempts by transport/status outcome) and
+`opencanary_enrichment_skipped_total` (cooldown, quota, lookup deadline or Redis
+failure). Counters are per replica; lock polling never inflates cache counts.
+A cache miss served by another replica remains one initial miss and spends no
+HTTP request on the waiting replica. HTTP `ok` means status 200, not proof the
+body is usable. Labels contain no IP, credential or URL. JSON audit records
+`enrichment_cooldown_changed` when a pause is installed/extended and
+`enrichment_request_skipped` for terminating skip reasons; no per-poll logs.
+See [metric semantics](docs/architecture.md#metrics) and
+[audit events](docs/audit-events.md) for the bounded label values.
+
 **The JSON webhook carries it as fields, not as text.** A webhook consumer does
 not have to read a message: the document gains an `enrichment` object whenever
 context exists, at every detail level, while `text` stays exactly the legacy

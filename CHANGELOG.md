@@ -5,7 +5,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-01
+
+### Fixed
+
+- **Concurrent VirusTotal cache misses share a per-IP Redis lease.** Replicas
+  recheck the cache before reserving quota, so simultaneous lookups reuse the
+  first successful response instead of spending multiple API calls. Public IPs
+  are canonicalized, including IPv6. The enrichment budget bounds cache reads,
+  lock waits, HTTP and unlock; abandoned leases expire automatically. A zero
+  positive-cache TTL now skips cache writes explicitly. Provider-error cooldowns
+  are implemented separately below.
+
+- **VirusTotal failures now pause requests across replicas.** Configurable Redis
+  cooldowns cover rejected keys, HTTP 429 (bounded optional Retry-After), network
+  errors, timeouts and unusable responses. Existing cached reports stay usable;
+  API-key rotation does not inherit the previous credential's pause. Confirmed
+  404 NotFoundError responses use the configurable no-data cache, while malformed
+  response envelopes are unavailable rather than successful empty verdicts.
+  Concurrent cooldown writes cannot shorten a longer pause. New settings are
+  documented in the environment template and secret-free configuration summary.
+
 ### Changed
+
+- **Enrichment cache and quota use are now observable.** Prometheus counters
+  separate initial cache results, actual HTTP attempts and cooldown/quota/store
+  skips. Lock polling is excluded, labels contain no IPs or secrets, and JSON
+  audit records mark pause installation/extension and terminating skip reasons.
 
 - **The release body is now the changelog section for the tag.** The release
   workflow grew a `tools/release_notes.py` step that renders the `## [x.y.z]`

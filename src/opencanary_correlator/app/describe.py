@@ -86,6 +86,14 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "enrichment": {
             "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),
             "virustotal": settings.virustotal_api_key is not None,
+            "virustotal_cache": {
+                "ttl": settings.virustotal_cache_ttl,
+                "miss_ttl": settings.virustotal_miss_cache_ttl,
+                "error_cooldown": settings.virustotal_error_cooldown,
+                "auth_cooldown": settings.virustotal_auth_cooldown,
+                "rate_limit_cooldown": settings.virustotal_rate_limit_cooldown,
+                "max_retry_after": settings.virustotal_max_retry_after,
+            },
         },
         "alert_budget": {
             "enabled": settings.alert_budget_enabled,

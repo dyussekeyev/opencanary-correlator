@@ -60,6 +60,13 @@ def build_enricher(
             store=store,
             cache_ttl=settings.virustotal_cache_ttl,
             timeout=settings.virustotal_timeout,
+            lookup_timeout=settings.enrichment_timeout,
+            miss_cache_ttl=settings.virustotal_miss_cache_ttl,
+            error_cooldown=settings.virustotal_error_cooldown,
+            auth_cooldown=settings.virustotal_auth_cooldown,
+            rate_limit_cooldown=settings.virustotal_rate_limit_cooldown,
+            max_retry_after=settings.virustotal_max_retry_after,
+            audit=audit,
             limits=QuotaLimits(
                 per_minute=settings.virustotal_per_minute,
                 per_day=settings.virustotal_per_day,

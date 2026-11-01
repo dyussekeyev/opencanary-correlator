@@ -63,6 +63,8 @@ a compatibility risk, because consumers only rely on these five keys.
 | `service_message_failed` | `error` | a channel could not carry the service message | `kind`, `dispatcher`, `reason: timeout` / `not_supported`, or `error_type` |
 | `digest_sent` | `success` / `error` | the daily digest was produced (or no channel accepted it) | `day`, `incidents`, `replicas`, `events` |
 | `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |
+| `enrichment_cooldown_changed` | `warning` | an atomic Redis write installs or extends a VT pause; shorter competing writes emit nothing | `provider`, `reason` (`auth`, `rate`, `error`), `outcome`, `seconds` |
+| `enrichment_request_skipped` | `info` | a VT lookup is withheld/interrupted, once per terminating reason, never per lock poll | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) |
 | `stats_heartbeat_failed` | `warning` | the replica could not publish its heartbeat (a digest field is missing, nothing else) | `error_type` |
 | `alert_suppressed` | `warning` | the alert budget withheld this notification; the incident itself is stored | `incident`, `node_id`, `src_host` |
 | `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |

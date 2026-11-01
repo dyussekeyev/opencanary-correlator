@@ -284,7 +284,15 @@
     "dispatch_timeout": 10.0,
     "enrichment": {
       "geoip": true,
-      "virustotal": true
+      "virustotal": true,
+      "virustotal_cache": {
+        "auth_cooldown": 300.0,
+        "error_cooldown": 30.0,
+        "max_retry_after": 3600.0,
+        "miss_ttl": 3600.0,
+        "rate_limit_cooldown": 60.0,
+        "ttl": 604800.0
+      }
     },
     "health_allowed_ips": [
       "127.0.0.1/32",
