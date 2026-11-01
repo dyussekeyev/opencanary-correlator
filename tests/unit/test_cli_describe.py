@@ -73,7 +73,18 @@ def test_check_config_reports_enrichment(monkeypatch: Any, capsys: Any) -> None:
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload["enrichment"] == {"geoip": True, "virustotal": True}
+    assert payload["enrichment"] == {
+        "geoip": True,
+        "virustotal": True,
+        "virustotal_cache": {
+            "ttl": 604800.0,
+            "miss_ttl": 3600.0,
+            "error_cooldown": 30.0,
+            "auth_cooldown": 300.0,
+            "rate_limit_cooldown": 60.0,
+            "max_retry_after": 3600.0,
+        },
+    }
     assert "1:key" not in captured.out
 
 

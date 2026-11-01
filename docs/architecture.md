@@ -356,7 +356,21 @@ dispatcher name.
 | `opencanary_outbox_retried_total` | counter | `channel` | deliveries rescheduled for another attempt |
 | `opencanary_outbox_dead_total` | counter | `channel` | deliveries buried in the dead letter list |
 | `opencanary_alerts_budget_total` | counter | `result` (`allowed`, `suppressed`) | notifications the alert budget rationed |
+| `opencanary_enrichment_cache_total` | counter | `provider`, `result` (`hit`, `negative_hit`, `miss`) | initial cache read per VT lookup; polling and post-lock rechecks excluded |
+| `opencanary_enrichment_requests_total` | counter | `provider`, `outcome` (`ok`, `not_found`, `unauthorized`, `quota`, `http_error`, `timeout`, `network_error`, `cancelled`) | actual HTTP attempts, counted once independently of cache writes |
+| `opencanary_enrichment_skipped_total` | counter | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) | withheld or interrupted lookups, not dropped honeypot events |
 | `opencanary_build_info` | info | `version`, `python` | static build information |
+
+Enrichment `provider` is currently `virustotal` only. HTTP outcomes describe
+transport/status, not validated reputation: `ok` means HTTP 200 (including a
+malformed body), and `not_found` means HTTP 404 (negative caching still requires
+`NotFoundError`). `timeout` covers the HTTP budget; `cancelled` covers external
+cancellation of an in-flight attempt. `singleflight_timeout` means the whole
+lookup deadline expired, including cache/lock/store work. Cache misses coalesced
+by a lease remain misses; they do not become additional hits when polling finds
+the owner's answer. A Redis read failure before the initial read completes has
+no cache result, but does count `store_error`. All counters are process-local;
+sum across replicas for cluster totals. No new metrics are needed for offline GeoIP.
 
 The endpoint never pings Redis, so it remains scrapeable during a Redis failure;
 use `/readyz` for dependency health. Disabling `OCC_HEALTH_PORT` disables both

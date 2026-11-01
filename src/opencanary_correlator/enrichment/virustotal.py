@@ -11,16 +11,25 @@ up in a log line the way a Telegram bot token does.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import math
 import time
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Final, Literal
 
 import httpx
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from redis.exceptions import RedisError
 
+from opencanary_correlator import metrics
+from opencanary_correlator.audit import AuditLogger
+from opencanary_correlator.enrichment.geo import public_address
 from opencanary_correlator.enrichment.models import VirusTotalReport
 from opencanary_correlator.storage import keys
 from opencanary_correlator.storage.redis_store import RedisStore
@@ -35,8 +44,14 @@ LookupStatus = Literal["ok", "quota", "unavailable", "unauthorized"]
 
 #: A verdict that VirusTotal has no data for is cached briefly: re-asking every
 #: minute would burn the daily budget on addresses that will not resolve soon.
-_MISS_CACHE_TTL: Final[float] = 3600.0
 _MONTH_SECONDS: Final[float] = 31 * 24 * 3600.0
+
+
+class _Cooldown(BaseModel):
+    """Validated Redis marker, never a reputation verdict."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+    status: Literal["unauthorized", "quota", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,17 +75,32 @@ class VirusTotalClient:
         store: RedisStore,
         cache_ttl: float = 7 * 24 * 3600.0,
         timeout: float = 5.0,
+        lookup_timeout: float = 6.0,
+        miss_cache_ttl: float = 3600.0,
+        error_cooldown: float = 30.0,
+        auth_cooldown: float = 300.0,
+        rate_limit_cooldown: float = 60.0,
+        max_retry_after: float = 3600.0,
         limits: QuotaLimits | None = None,
         client: httpx.AsyncClient | None = None,
         clock: Callable[[], float] = time.time,
+        audit: AuditLogger | None = None,
     ) -> None:
         self._api_key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self._store = store
         self._cache_ttl = cache_ttl
+        self._lookup_timeout = lookup_timeout
+        self._http_timeout = timeout
+        self._miss_cache_ttl = miss_cache_ttl
+        self._error_cooldown = error_cooldown
+        self._auth_cooldown = auth_cooldown
+        self._rate_limit_cooldown = rate_limit_cooldown
+        self._max_retry_after = max_retry_after
         self._client = client if client is not None else httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self._limits = limits or QuotaLimits()
         self._clock = clock
+        self._audit = audit
 
     async def aclose(self) -> None:
         """Close the HTTP client if this client created it."""
@@ -78,47 +108,219 @@ class VirusTotalClient:
             await self._client.aclose()
 
     async def report(self, ip: str) -> tuple[VirusTotalReport | None, LookupStatus]:
-        """Return the report and the outcome, never raising.
+        """Return a report within the lookup budget; cancellation propagates.
+
+        Redis failures propagate to the enricher's audit/fail-soft boundary:
+        bypassing an unavailable cache or lock would bypass the quota as well.
 
         The caller renders `quota` and `unavailable` as a status line, so a
         throttled or failing provider is visible in the alert instead of looking
         like an address with no detections.
         """
-        hit, cached = await self._read_cache(ip)
-        if hit:
-            return cached, "ok"
+        address = public_address(ip)
+        if address is None:
+            return None, "unavailable"
+        ip = str(address)
+        deadline = asyncio.get_running_loop().time() + self._lookup_timeout
+        try:
+            async with asyncio.timeout_at(deadline):
+                return await self._singleflight(ip, deadline)
+        except TimeoutError:
+            self._skip("singleflight_timeout")
+            return None, "unavailable"
+        except RedisError:
+            self._skip("store_error")
+            raise
 
+    def _skip(self, reason: str) -> None:
+        metrics.ENRICHMENT_SKIPPED.labels(provider=self.name, reason=reason).inc()
+        if self._audit is not None:
+            self._audit.emit(
+                "enrichment_request_skipped", "info", {"provider": self.name, "reason": reason}
+            )
+
+    async def _singleflight(
+        self, ip: str, deadline: float
+    ) -> tuple[VirusTotalReport | None, LookupStatus]:
+        loop = asyncio.get_running_loop()
+        initial = True
+        while True:
+            hit, cached = await self._read_cache(ip)
+            if initial:
+                result = ("negative_hit" if cached is None else "hit") if hit else "miss"
+                metrics.ENRICHMENT_CACHE.labels(provider=self.name, result=result).inc()
+                initial = False
+            if hit:
+                return cached, "ok"
+            cooldown = await self._read_cooldown()
+            if cooldown is not None:
+                return None, cooldown
+            # The owner must finish before its lease expires, even when the HTTP
+            # timeout is configured above the store's default five-second lease.
+            ttl_ms = max(1, math.ceil((deadline - loop.time()) * 1000)) + 1000
+            lease = AsyncExitStack()
+            try:
+                acquired = await lease.enter_async_context(
+                    self._store.lock(
+                        keys.enrichment_lock_key("vt", ip), ttl_ms=ttl_ms, wait_timeout=0
+                    )
+                )
+                if acquired:
+                    # Another owner may have filled the cache between our read
+                    # and SET NX. Reserve quota only after this second check.
+                    hit, cached = await self._read_cache(ip)
+                    if hit:
+                        return cached, "ok"
+                    cooldown = await self._read_cooldown()
+                    if cooldown is not None:
+                        return None, cooldown
+                    return await self._request(ip, deadline)
+            finally:
+                # A timed-out or cancelled HTTP must not wait for an unresponsive
+                # Redis during unlock. The lease's TTL is the recovery fallback.
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await lease.aclose()
+                except TimeoutError:
+                    pass
+            await asyncio.sleep(0.01)
+
+    def _cooldown_key(self, reason: str) -> str:
+        fingerprint = hashlib.sha256(self._api_key.encode()).hexdigest()
+        return keys.enrichment_cooldown_key("vt", fingerprint, reason)
+
+    async def _read_cooldown(self) -> LookupStatus | None:
+        for reason in ("auth", "rate", "error"):
+            raw = await self._store.get_value(self._cooldown_key(reason))
+            if raw is None:
+                continue
+            try:
+                marker = _Cooldown.model_validate_json(raw)
+            except ValidationError:
+                continue
+            if await self._store.client.pttl(self._cooldown_key(reason)) > 0:
+                self._skip(
+                    {
+                        "auth": "cooldown_auth",
+                        "rate": "cooldown_rate_limit",
+                        "error": "cooldown_error",
+                    }[reason]
+                )
+                return marker.status
+        return None
+
+    async def _pause(
+        self, reason: str, status: Literal["unauthorized", "quota", "unavailable"], ttl: float
+    ) -> None:
+        changed = await self._store.extend_cached_value(
+            self._cooldown_key(reason), _Cooldown(status=status).model_dump_json(), ttl=ttl
+        )
+        if changed and self._audit is not None:
+            self._audit.emit(
+                "enrichment_cooldown_changed",
+                "warning",
+                {"provider": self.name, "reason": reason, "outcome": status, "seconds": ttl},
+            )
+
+    def _retry_after(self, value: str | None) -> float:
+        delay = self._rate_limit_cooldown
+        if value:
+            try:
+                if value.isascii() and value.isdecimal():
+                    delay = float(value)
+                else:
+                    date = parsedate_to_datetime(value)
+                    if date.tzinfo is None:
+                        raise ValueError("Retry-After date requires timezone")
+                    delay = date.timestamp() - self._clock()
+            except (ValueError, TypeError, OverflowError):
+                delay = self._rate_limit_cooldown
+        return min(self._max_retry_after, max(1.0, delay))
+
+    async def _request(
+        self, ip: str, deadline: float
+    ) -> tuple[VirusTotalReport | None, LookupStatus]:
+        """Fetch and cache one result while holding the per-address lease."""
         if not await self._reserve():
+            self._skip("quota")
             return None, "quota"
 
         try:
-            response = await self._client.get(
-                f"{VIRUSTOTAL_ENDPOINT}{ip}", headers={"x-apikey": self._api_key}
-            )
-        except httpx.HTTPError:
+            # Leave part of the existing budget for persisting a timeout pause.
+            remaining = deadline - asyncio.get_running_loop().time()
+            request_budget = min(self._http_timeout, max(0.0, remaining * 0.8))
+            response = await self._http_request(ip, request_budget)
+        except (httpx.HTTPError, TimeoutError):
+            await self._pause("error", "unavailable", self._error_cooldown)
             return None, "unavailable"
 
         if response.status_code == 429:
             # Reserved slot spent by somebody else sharing the key, or our own
             # counters drifted from the server's view. Either way: stop asking.
+            await self._pause(
+                "rate", "quota", self._retry_after(response.headers.get("Retry-After"))
+            )
             return None, "quota"
         if response.status_code in (401, 403):
             # A wrong, revoked or disabled key. Retrying spends nothing useful:
             # every alert would fail the same way until somebody fixes the key.
+            await self._pause("auth", "unauthorized", self._auth_cooldown)
             return None, "unauthorized"
+        if response.status_code == 404:
+            try:
+                payload = response.json()
+                not_found = (
+                    isinstance(payload, dict)
+                    and payload.get("error", {}).get("code") == "NotFoundError"
+                )
+            except (ValueError, AttributeError):
+                not_found = False
+            if not_found:
+                await self._write_cache(ip, None, ttl=self._miss_cache_ttl)
+                return None, "ok"
         if response.status_code != 200:
+            await self._pause("error", "unavailable", self._error_cooldown)
             return None, "unavailable"
 
         try:
             payload = response.json()
             report = _parse(payload)
         except (ValueError, TypeError, KeyError, AttributeError):
+            await self._pause("error", "unavailable", self._error_cooldown)
             return None, "unavailable"
         if report is None:
-            await self._write_cache(ip, None, ttl=_MISS_CACHE_TTL)
+            await self._write_cache(ip, None, ttl=self._miss_cache_ttl)
             return None, "ok"
         await self._write_cache(ip, report, ttl=self._cache_ttl)
         return report, "ok"
+
+    async def _http_request(self, ip: str, budget: float) -> httpx.Response:
+        """Count only an actual HTTP attempt, independently of Redis persistence."""
+        outcome = "cancelled"
+        try:
+            async with asyncio.timeout(budget):
+                response = await self._client.get(
+                    f"{VIRUSTOTAL_ENDPOINT}{ip}", headers={"x-apikey": self._api_key}
+                )
+            if response.status_code == 200:
+                outcome = "ok"
+            elif response.status_code == 404:
+                outcome = "not_found"
+            elif response.status_code in (401, 403):
+                outcome = "unauthorized"
+            elif response.status_code == 429:
+                outcome = "quota"
+            else:
+                outcome = "http_error"
+            return response
+        except (httpx.TimeoutException, TimeoutError):
+            outcome = "timeout"
+            raise
+        except httpx.HTTPError:
+            outcome = "network_error"
+            raise
+        finally:
+            metrics.ENRICHMENT_REQUESTS.labels(provider=self.name, outcome=outcome).inc()
 
     # --- Quota --------------------------------------------------------------
 
@@ -193,6 +395,8 @@ class VirusTotalClient:
             return False, None
 
     async def _write_cache(self, ip: str, report: VirusTotalReport | None, *, ttl: float) -> None:
+        if ttl <= 0:
+            return
         payload = json.dumps(report.model_dump() if report is not None else None)
         await self._store.set_with_ttl(keys.enrichment_cache_key("vt", ip), payload, ttl=ttl)
 
@@ -200,16 +404,18 @@ class VirusTotalClient:
 def _parse(payload: object) -> VirusTotalReport | None:
     """Turn a VirusTotal IP object into a report, or None when it has no data."""
     if not isinstance(payload, dict):
-        return None
+        raise ValueError("invalid IP object")
     data = payload.get("data")
     if not isinstance(data, dict):
-        return None
+        raise ValueError("invalid IP data")
     attributes = data.get("attributes")
     if not isinstance(attributes, dict):
-        return None
+        raise ValueError("invalid IP attributes")
     stats = attributes.get("last_analysis_stats")
-    if not isinstance(stats, dict):
+    if stats is None:
         return None
+    if not isinstance(stats, dict):
+        raise ValueError("invalid analysis stats")
 
     def count(name: str) -> int:
         try:

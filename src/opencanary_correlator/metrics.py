@@ -82,6 +82,21 @@ ALERTS_BUDGET = Counter(
     "Notifications the alert budget allowed or withheld",
     ["result"],
 )
+ENRICHMENT_CACHE = Counter(
+    "opencanary_enrichment_cache_total",
+    "Initial enrichment cache reads per lookup (polling excluded)",
+    ["provider", "result"],
+)
+ENRICHMENT_REQUESTS = Counter(
+    "opencanary_enrichment_requests_total",
+    "Actual enrichment HTTP attempts by outcome",
+    ["provider", "outcome"],
+)
+ENRICHMENT_SKIPPED = Counter(
+    "opencanary_enrichment_skipped_total",
+    "Enrichment lookups interrupted or withheld by reason",
+    ["provider", "reason"],
+)
 BUILD_INFO = Info(
     "opencanary_build",
     "Static build information for the running correlator",

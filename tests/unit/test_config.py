@@ -16,6 +16,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_REDIS_URL = "redis://localhost:6379/0"
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "virustotal_miss_cache_ttl",
+        "virustotal_error_cooldown",
+        "virustotal_auth_cooldown",
+        "virustotal_rate_limit_cooldown",
+        "virustotal_max_retry_after",
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), 999999999])
+def test_vt_pause_durations_are_finite_and_bounded(
+    settings_factory: Any, field: str, value: float
+) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(**{field: value})
+
+
 def test_redis_url_is_required(monkeypatch: Any) -> None:
     monkeypatch.delenv("OCC_REDIS_URL", raising=False)
 
