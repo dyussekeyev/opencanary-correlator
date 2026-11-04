@@ -93,14 +93,14 @@ def _build_telegram(settings: Settings, target: str, breaker: BreakerFactory) ->
     )
 
 
-def _build_smtp(settings: Settings, _target: str, _breaker: BreakerFactory) -> BaseDispatcher:
-    # One SMTP dispatcher for the configured recipient list, so the target is a
-    # placeholder and the breaker plays no part (a relay failure is retried).
+def _build_smtp(settings: Settings, target: str, _breaker: BreakerFactory) -> BaseDispatcher:
+    # Independent debt per recipient: partial relay acceptance must not settle
+    # another recipient's failed delivery.
     return SmtpDispatcher(
         host=cast(str, settings.smtp_host),
         port=settings.smtp_port,
         sender=settings.smtp_from,
-        recipients=settings.smtp_to,
+        recipients=[target],
         detail=settings.smtp_detail,
         username=settings.smtp_username,
         password=settings.smtp_password,
@@ -153,7 +153,7 @@ CHANNEL_SPECS: Final[tuple[ChannelSpec, ...]] = (
         enabled=lambda settings: bool(
             settings.smtp_enabled and settings.smtp_host and settings.smtp_to
         ),
-        targets=lambda _settings: ("smtp",),
+        targets=lambda settings: tuple(settings.smtp_to),
         detail=lambda settings: settings.smtp_detail,
         build=_build_smtp,
     ),
@@ -180,7 +180,7 @@ def build_dispatchers(settings: Settings, store: RedisStore) -> list[BaseDispatc
                 _logger.warning(spec.disabled_warning)
             continue
         # One dispatcher per target, each guarded by its own circuit breaker.
-        for target in targets:
+        for target in dict.fromkeys(targets):
             dispatchers.append(
                 spec.build(settings, target, partial(_breaker_for, store, spec.name))
             )

@@ -77,9 +77,12 @@ def render_digest(data: DigestData) -> tuple[str, tuple[str, ...]]:
         f"📥 Events: {events.get('accepted', 0)} accepted, "
         f"{events.get('rejected', 0)} rejected, {events.get('dropped', 0)} dropped",
         f"♻️ Deduplicated: {events.get('deduplicated', 0)} • Unrouted: {events.get('unrouted', 0)}",
-        f"🚨 Incidents: {data.incidents}",
+        f"🚨 Incidents: {data.incidents} active • New incidents: {data.new_incidents}",
         f"📤 Alerts: {alerts.get('success', 0)} delivered, "
-        f"{alerts.get('error', 0)} failed, {alerts.get('timeout', 0)} timed out",
+        f"{alerts.get('error', 0)} failed, {alerts.get('timeout', 0)} timed out, "
+        f"{alerts.get('exception', 0)} exceptions (attempts, not unique messages)",
+        f"Accepted durable targets: {data.accepted_targets}",
+        "Statistics: flush-minute approximation; unflushed process losses are not included.",
     ]
     if data.rule_failures:
         lines.append(f"⚠️ Rule failures: {data.rule_failures}")
@@ -89,7 +92,8 @@ def render_digest(data: DigestData) -> tuple[str, tuple[str, ...]]:
         )
     if data.top_sources:
         lines.append("")
-        lines.append("🎯 Busiest sources:")
+        sample = " (sample: newest 1000 active incidents):" if data.sources_sampled else ":"
+        lines.append("🎯 Busiest sources" + sample)
         lines.extend(f"• {host}: {count}" for host, count in data.top_sources)
     day = datetime.fromtimestamp(data.end, tz=UTC).strftime("%Y-%m-%d")
     return f"daily digest {day}", tuple(lines)
@@ -122,6 +126,7 @@ class DigestScheduler:
     async def run_once(self, now: float | None = None) -> bool:
         """Produce the digest for the window ending now, at most once per day."""
         moment = float(self._clock() if now is None else now)
+        moment = next_run(moment, self._settings.digest_time) - 86400
         day = datetime.fromtimestamp(moment, tz=UTC).strftime("%Y-%m-%d")
         marker = keys.digest_sent_key(day)
         if await self._store.exists(marker):
@@ -145,9 +150,13 @@ class DigestScheduler:
             message = ServiceMessage(
                 kind=ServiceKind.DIGEST_DAILY, title=title, lines=lines, subject=day
             )
-            sent = await self._notifier.send(message, channels=self._channels())
-            if sent:
-                await self._store.set_if_absent(marker, "1", ttl=SENT_MARKER_TTL)
+            sent = await self._notifier.enqueue(
+                message,
+                channels=self._channels(),
+                occurrence=f"digest:{day}",
+                marker=marker,
+                marker_ttl=int(SENT_MARKER_TTL),
+            )
             self._audit.emit(
                 "digest_sent",
                 "success" if sent else "error",
@@ -160,11 +169,16 @@ class DigestScheduler:
             )
             return sent
 
-    def _channels(self) -> Sequence[str]:
+    def _channels(self) -> Sequence[str] | None:
         """Where the digest goes: its own list, else the service-message routing."""
-        return tuple(self._settings.digest_channels or self._settings.service_channels)
+        return tuple(self._settings.digest_channels or self._settings.service_channels) or None
 
     # --- Scheduling ---------------------------------------------------------
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Background task supervised by the runtime."""
+        return (self._task,) if self._task is not None else ()
 
     async def start(self) -> None:
         """Start the loop that waits for `OCC_DIGEST_TIME` each day."""
@@ -182,18 +196,16 @@ class DigestScheduler:
 
     async def _loop(self) -> None:
         while not self._stop.is_set():
-            target = next_run(float(self._clock()), self._settings.digest_time)
-            delay = max(0.0, target - float(self._clock()))
-            if await self._wait(min(delay, MAX_SLEEP)):
-                return
-            if float(self._clock()) < target:
-                continue
+            # Catch up only the latest scheduled occurrence on startup; durable
+            # debts retain the immutable window and retry each target separately.
             try:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # a digest bug must not kill the process
                 self._audit.emit("digest_failed", "error", {"error_type": type(exc).__name__})
+            if await self._wait(MAX_SLEEP):
+                return
 
     async def _wait(self, delay: float) -> bool:
         """Sleep up to `delay` seconds; return True when a stop was requested."""

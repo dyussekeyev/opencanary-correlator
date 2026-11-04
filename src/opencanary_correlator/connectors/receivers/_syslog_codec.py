@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from opencanary_correlator.connectors.receivers._pipeline import schema_error_details
 from opencanary_correlator.constants import LogType
-from opencanary_correlator.schemas import CanaryEvent
+from opencanary_correlator.schemas import CanaryEvent, load_event_json
 
 _PRI_RE = re.compile(r"^<(?P<pri>\d{1,3})>")
 _RFC5424_RE = re.compile(
@@ -163,10 +163,10 @@ def build_event(message: SyslogMessage, peer_ip: str) -> CanaryEvent:
     json_start = body.find("{")
     payload: Any = None
     if json_start == 0:
-        payload = json.loads(body)
+        payload = load_event_json(body)
     elif json_start > 0:
         try:
-            payload = json.loads(body[json_start:])
+            payload = load_event_json(body[json_start:])
         except json.JSONDecodeError:
             payload = None
     if isinstance(payload, dict):
@@ -213,11 +213,11 @@ def parse_syslog_frame(
         return None
     try:
         return build_event(message, peer_ip)
-    except json.JSONDecodeError:
-        audit_rejection("malformed_json", peer_ip)
-        return None
     except ValidationError as exc:
         audit_rejection("schema_validation", peer_ip, **schema_error_details(exc))
+        return None
+    except (ValueError, RecursionError) as exc:
+        audit_rejection("malformed_json", peer_ip, error_type=type(exc).__name__)
         return None
 
 

@@ -51,6 +51,9 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
 | `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `service.py` bounds the whole pass |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
+| `core/retention.py` | opt-in bounded sweep: incidents past retention, dead letters past DLQ retention and the digest's creation index; skips any incident with an owed delivery |
+| `storage/_retention.py` | the deletion scripts: incident, index, pointer and envelope in one call; DLQ expiry and idempotent replay |
+| `app/admin.py` | operator commands that run instead of the service: `--dlq-list`, `--dlq-replay`, `--retention-run` |
 | `constants.py` | `LogType` registry, incident key prefixes, legacy Redis key names, defaults |
 | `redaction.py` | secret masking and control-character stripping for audit output |
 | `audit.py` | `AuditEvent`/`AuditLogger` JSON lines, `RedisLogHandler` for the bounded console log |
@@ -89,7 +92,7 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `storage/queries.py` | async read side with the console JSON shape (`created_printable`, `events_list`, …) |
 | `storage/rate_limit.py` | per-IP connection and per-node event budgets |
 | `metrics.py` | Prometheus counters/gauges and text exposition |
-| `health.py` | `/healthz` and `/readyz` with a Redis ping; `/metrics` without one |
+| `health.py` | `/healthz` local liveness; `/readyz` and `/health` runtime + Redis readiness; `/metrics` without Redis |
 | `app/parser.py` | flags, `load_settings`, `CorrelatorStartupError` |
 | `app/channels.py` | `CHANNEL_SPECS`, the one table `--check-config` and startup both read; `build_dispatchers` |
 | `app/wiring.py` | enricher, receivers, rate limiter, health server |
@@ -163,45 +166,53 @@ therefore never touches correlation logic.
    and it creates the pointer for later events.
    The incident is then merged (`events_count += 1`, append timestamp, merge
    `logdata`) or created, and one Lua script writes the hash, the ZSET entry and
-   the pointer atomically. Only creation returns an incident for delivery; a
+   the pointer atomically. Both create and merge scripts compare the lock's owner
+   token before writing anything; an expired/replaced owner raises a traceable
+   storage failure and must not confirm event dedup. Extending a lease alone is
+   not used as a substitute for this fencing. Only creation returns an incident for delivery; a
    merge deliberately produces no alert. A merge into an incident whose history
    is already full at `OCC_MAX_STORED_EVENTS` writes the counters only, and skips
    the timestamp append and the stored-history decode entirely, because both
    would return the stored value unchanged (see `docs/validation.md`). Scan
    incidents are exempt: their `logdata` is a deduplicated set that must stay
    exact.
-8. **Deliver** — an incident is created together with one outbox entry per
-   channel in the same Lua script, so the decision to notify cannot exist
-   without a record of it. The engine then fans out inline, each attempt bounded
-   by `OCC_DISPATCH_TIMEOUT`; a timeout, exception or non-success result is
-   audited as `alert_dispatch` with status `error`, other channels are
-   unaffected, and ingestion continues immediately.
-9. **Retry** — the entry of a failed attempt stays in `outbox:alerts` (a ZSET
-   scored by its next attempt). Every replica runs one worker: it claims what is
-   due (the claim pushes the score forward by `OCC_OUTBOX_LEASE`, so two
-   replicas never take the same entry and a dying worker leaves it to become due
-   again), reloads the incident, delivers, and either settles the entry — a
-   `outbox:delivered:<id>` marker plus a delete, in one script — reschedules it
-   with backoff (`1 s, 5 s, 30 s, 5 min, 30 min`, audited as `alert_retry`) or
-   buries it in `outbox:dead` after `OCC_OUTBOX_MAX_ATTEMPTS` (audited as
-   `alert_dead_letter`). Delivery is therefore **at-least-once**: a duplicate is
-   possible only when a channel accepted a message and the process died before
-   settling it. `OCC_OUTBOX_ENABLED=false` restores best-effort delivery, where a
-   failure is logged and forgotten.
-10. **Ration (optional)** — with `OCC_ALERT_BUDGET_ENABLED=true`, step 8 asks the
-    budget before the first attempt. `budget:node:<window>:<node>` and
-    `budget:global:<window>` are fixed-window counters reserved by one Lua
-    script, so replicas share a single budget and scaling out does not multiply
-    it. Over the limit, the notification is withheld — the incident stays stored
-    and visible — its outbox entries are withdrawn in one script so nothing
-    retries them later, and `alert_suppressed` records the refusal. The refusal
-    is counted in `budget:suppressed:<window>` in the same reservation, and the
-    summary worker every replica runs sends it once, to whoever removes the
-    member from `budget:summaries` first, as a plain-text `alert_summary` through
-    each channel's notice path (Telegram, Slack, Discord, SMTP; the generic
-    webhook declines, because a SIEM would index the summary as an alert). A
-    budget that cannot count fails open: the alert is sent and
-    `alert_budget_failed` is audited.
+8. **Prepare** — the same incident script writes an `outbox:v2:envelope:<incident>`
+   and per-target hashes in state `preparing`, indexed only by
+   `outbox:v2:preparing`. They are not available to delivery workers. Inline or
+   recovery preparation takes an owner lease, obtains bounded enrichment and
+   commits a provider-only snapshot together with the budget decision in one
+   fenced Lua script. A crash before commit spends no budget; a committed decision
+   is not reserved again. Redis errors leave preparation recoverable, not fail-open.
+   Suppressed targets keep state `suppressed`, with no runnable index member.
+9. **Deliver/retry** — ready targets enter `outbox:v2:alerts`, scored by due time.
+   Inline and background use the same atomic per-entry claim, incrementing attempts
+   before I/O and setting a random owner token + lease. A batch read only lists
+   candidates; it never leases an unprocessed tail. Success, retry and dead-letter
+   transitions check token AND live lease atomically. Backoff starts at completion;
+   `max_attempts=1` includes the initial dispatch call. Pending deadlines are absolute,
+   not hash TTLs: missing, corrupt and expired entries terminate visibly. Dead hashes
+   have no inherited pending TTL. Effective lease covers dispatch timeout + 10 seconds.
+   Permanent HTTP failures stop; transient failures respect bounded Retry-After.
+   Retry reloads the incident and saved enrichment without new provider requests.
+   Channel kind is separate from target ID: HTTP endpoints, bot ID/chat pairs and
+   SMTP recipients have independent destination hashes. Unknown/removed targets are
+   dead letters, never rerouted. Delivery is at-least-once within attempt/deadline
+   limits; ambiguous remote accepts and pauses beyond the lease may duplicate it.
+10. **Ration (optional)** — preparation atomically reserves per-node/global fixed-window
+    counters together with publishing ready targets, or counts suppression and stores
+    that decision. Incident persistence is never suppressed. The existing budget
+    summary worker still takes a closed summary before sending it; durable service
+    messages/digests and summary recovery belong to a subsequent milestone.
+    With outbox disabled the legacy inline budget path remains fail-open.
+
+**Upgrade boundary:** v2 never consumes old `outbox:alerts`; startup emits
+`outbox_legacy_quarantined` if it has members. Stop all old replicas before changing
+versions, back up Redis and preferably drain legacy deliveries first. Legacy debts
+are preserved for explicit operator reconciliation, not silently transferred to a
+possibly different recipient. Rollback requires stopping new workers and draining
+or preserving/reconciling v2 debts; old workers cannot deliver them. Do not mix
+versions on shared incident state. Full upgrade/rollback details are in README.
+Envelope/DLQ garbage collection is deferred to the data-lifecycle milestone.
 
 ## Service messages
 
@@ -241,23 +252,36 @@ start/stop sequence (`app/runner.py`):
 
 | Task | Cadence | State |
 |---|---|---|
-| `stats` (`core/stats.py`) | every 60 s | hash `stats:instance:<uuid>`, TTL 300 s, counters read from the process-local Prometheus registry, plus `node:<id>` last-seen fields |
-| `digest` (`core/digest.py`) | once a day at `OCC_DIGEST_TIME` | lock `digest:lock:<date>` plus marker `digest:sent:<date>` |
-| `watch` (`core/watch.py`) | every `OCC_WATCH_INTERVAL` | lock `health-watch:check`, no wait: a replica that loses does nothing |
+| `stats` (`core/stats.py`) | every 60 s | heartbeat hash `stats:instance:<uuid>`, TTL 300 s (live replica count, `node:<id>` fields); minute buckets `stats:v2:minute:<epoch-minute>` (8 days) behind per-generation checkpoints `stats:v2:checkpoint:<id>` (9 days) |
+| `digest` (`core/digest.py`) | once a day at `OCC_DIGEST_TIME`, plus one catch-up of the latest occurrence after a restart | lock `digest:lock:<date>`, marker `digest:sent:<date>`, and one outbox debt per target |
+| `watch` (`core/watch.py`) | every `OCC_WATCH_INTERVAL` | lock `health-watch:check`, no wait: a replica that loses does nothing; durable `nodes:v2:last-seen` ZSET |
+| `retention` (`core/retention.py`) | every `OCC_RETENTION_INTERVAL`, only when `retention_enabled` | lock `retention:lock`, no wait; bounded batches; keeps incidents whose delivery is preparing, queued or dead |
 
-The heartbeat is why the digest is cheap: no Redis write happens per event, and a
-replica that dies stops contributing when its hash expires. The same hash carries
-the `node:<id>` last-seen times from `presence.NodeRegistry` — a plain dict the
-receiver updates when it queues an event — which is what lets the silence check
-ask "which canary stopped delivering?" without a Redis write per event. A full
-registry refuses a node id it has never seen rather than evicting a known one, so
-a peer inventing `node_id` values cannot hide a real canary. `collect_digest` sums
-the live hashes, counts the incidents in the trailing 24 h from the `incidents`
-ZSET and ranks the sources by parsing the incident keys. The scheduler sleeps on
-its stop event in at most 60 s slices, so a clock jump or a changed time is
-picked up quickly, and the day marker is written only after a channel accepted
-the message — a crash mid-send can replay the digest once, which is better than
-losing the day.
+The heartbeat and the history are deliberately separate. The hash is *liveness*: it
+expires with its replica, so the digest's replica count and readiness reflect who is
+running now. The counters are history: each flush writes the delta from a
+generation's checkpoint into the minute bucket and moves the checkpoint in one
+transaction, so a repeated flush adds nothing and a replica that leaves keeps
+contributing to the window it covered. The price is time: counters belong to the
+minute of the flush, not of the event, and anything still unflushed when a process
+dies is lost; both are stated in the digest itself. Alert outcomes are summed over
+their `dispatcher` and `status` labels rather than from one unlabelled sample,
+so two channels mean two attempts.
+
+The same flush publishes the `node:<id>` last-seen times from
+`presence.NodeRegistry` — a plain dict the receiver updates when it queues an
+event — into `nodes:v2:last-seen`, which is what lets the silence check ask
+"which canary stopped delivering?" without a Redis write per event and without
+depending on the replica that saw the node last. A registry at its limit refuses a
+node id it has never seen (metric plus `node_registry_overflow` audit) rather than
+evicting a known one, so a peer inventing `node_id` values cannot hide a real
+canary; nodes listed in `OCC_CANARY_EXPECTED_NODES` are reported as silent when
+they never appeared after the startup grace. `collect_digest` sums the minute
+buckets, counts incidents in the trailing 24 h from the `incidents` ZSET, counts
+creations from `stats:v2:incidents-created` and ranks sources by parsing incident
+keys. The scheduler wakes at most every 60 s, and the day marker is committed
+atomically with the outbox debts — a crash mid-send replays one day once instead
+of losing it.
 
 ## Correlation rules
 
@@ -265,7 +289,7 @@ losing the day.
 |---|---|---|
 | `login` | `LOG_FTP_*`, `LOG_HTTP_POST_LOGIN_ATTEMPT`, `LOG_SSH_LOGIN_ATTEMPT`, `LOG_TELNET_LOGIN_ATTEMPT`, `LOG_HTTPPROXY_LOGIN_ATTEMPT`, `LOG_MYSQL_LOGIN_ATTEMPT`, `LOG_MSSQL_LOGIN_SQLAUTH`, `LOG_MSSQL_LOGIN_WINAUTH`, `LOG_TFTP`, `LOG_NTP_MONLIST`, `LOG_VNC`, `LOG_SNMP_CMD`, `LOG_RDP`, `LOG_SIP_REQUEST`, `LOG_MONGODB_LOGIN_ATTEMPT` | `OCC_INCIDENT_HORIZON` |
 | `smb` | `LOG_SMB_FILE_OPEN`, except actions in `OCC_SMB_IGNORE_ACTIONS` | `OCC_INCIDENT_HORIZON` |
-| `host-portscan` | `LOG_PORT_SYN` to `OCC_SCAN_HOST_THRESHOLD` distinct `dst_port`s per `src_host`/`dst_host`; the window is cleared after firing | `OCC_SCAN_HOST_HORIZON` |
+| `host-portscan` | `LOG_PORT_SYN` to `OCC_SCAN_HOST_THRESHOLD` distinct `dst_port`s per `src_host`/`dst_host`; threshold rotates into a durable snapshot, acknowledged atomically with incident commit | `OCC_SCAN_HOST_HORIZON` |
 | `network-portscan` | `LOG_PORT_SYN` from the same `src_host`/`dst_port` against `OCC_SCAN_NETWORK_THRESHOLD` distinct canaries (`reported_dst_host` fallback) | `OCC_SCAN_NETWORK_HORIZON` |
 
 Each rule resolves its merge horizon through `Settings.horizon_for()`:
@@ -297,6 +321,39 @@ distinct ports and `scans.network_portscan` distinct targets, one entry per
 member rather than per event, so their lists are bounded by the port universe
 and truncating them would delete the evidence the incident exists to record.
 
+### Scan recovery and input bounds (v0.6.0 stage B)
+
+Host-scan threshold rotation, event context and pending-index publication occur in
+one Lua script. A snapshot has a unique generation ID and no TTL; a new active
+set keeps later ports with its own fixed TTL. Incident commit atomically removes
+only the acknowledged snapshot/context/pointer/index member, never the new active
+window. Concurrent recovery sees the snapshot already consumed and performs no
+second merge. A recovery task on every replica checks up to 20 snapshots every
+5 seconds, including after restart and without another event from the source.
+Below-threshold windows still expire normally; this does not provide durable
+network ingestion or an ingress WAL. Fixed-set add + initial expiry are atomic.
+
+Timestamp values outside the platform datetime range fall back to receipt time.
+Network JSON nesting is limited to 64 levels before decoding (including unknown
+fields); logdata retains its stricter schema bounds. JSON TCP and syslog reject
+non-finite constants and decoding recursion with event_rejected accounting.
+
+While connection admission is pending, complete frames are held without parsing
+JSON, with at most 256 frames and a hard byte cap of 8 * max_line_bytes + 88.
+ReadTransport backpressure starts at one frame's byte budget. Oversized individual
+frames remain invalid. The total admission deadline starts at connection creation
+and uses partial_line_timeout; limiter timeout closes instead of failing open.
+Other limiter errors retain fail-open behavior. A peer FIN preserves complete
+held frames until the decision/deadline, but receiver rejection, shutdown, overflow
+or timeout discards them and cannot be undone by a late admit. Partial-line timeout
+is still anchored to the first incomplete-frame byte, not refreshed by a trickle.
+
+Legacy identity semantics are intentionally unchanged: event timestamps are not
+part of the fingerprint, logtype and node_id are. Incident aggregation remains
+per incident type + source host across nodes/destinations; attributes of the first
+node remain on a merged incident. Changing these semantics requires a separate
+migration decision, not an incidental reliability fix.
+
 ## Redis state
 
 | Key | Type | Purpose | TTL |
@@ -305,6 +362,9 @@ and truncating them would delete the evidence the incident exists to record.
 | `incidents` | ZSET | incident index, score = last update | none |
 | `scan:host:<src_host>:<dst_host>` | set | distinct scanned ports | `OCC_SCAN_HOST_HORIZON`, fixed at creation |
 | `scan:network:<src_host>:<dst_port>:targets` | set | distinct canaries hit | `OCC_SCAN_NETWORK_HORIZON`, fixed at creation |
+| `scan:v2:snapshot:<uuid>` / `:event` / `:pointer` | set / string / string | durable threshold evidence and original validated event context | until atomic incident commit |
+| `<host-scan-key>:pending` | string | active window's pending snapshot generation | until atomic incident commit |
+| `scan:v2:pending` | ZSET | bounded-batch recovery index | members removed atomically with commit |
 | `dedup:<sha256>` | string | processed-event marker | `OCC_DEDUP_TTL` |
 | `incident-lock:<incident>:<src_host>` | string | create-or-merge lock | 5 s |
 | `incident-latest:<incident>:<src_host>` | hash | newest incident key + score for that host (internal O(1) lookup) | none |
@@ -388,7 +448,8 @@ health and metrics, and `OCC_HEALTH_HOST` chooses the interface they listen on
 | Dispatcher timeout/error | `alert_dispatch` error, other channels still receive the incident |
 | Dispatcher endpoint down | retries, then that endpoint's breaker opens for all replicas for 60 s; the other URLs/chats of the same channel keep delivering |
 | Lock not acquired within 5 s | `incident_lock_timeout`, no duplicate write |
-| Shutdown (SIGINT/SIGTERM) | receivers stop accepting, queues drain for up to 5 s, health listener closes, clients and Redis pool close, `shutdown` audit |
+| Critical task/listener exit | `critical_task_failed`, readiness false, bounded teardown and nonzero exit; provider failure alone does not kill intake |
+| Shutdown (SIGINT/SIGTERM) | readiness enters draining; concurrent receiver drain, queued/in-flight cancellation accounting; stop notice before closing clients; independent cleanup attempts within `OCC_SHUTDOWN_TIMEOUT` (20 s default), `cleanup_failed` on errors, final `shutdown` audit |
 
 ## Security hardening
 

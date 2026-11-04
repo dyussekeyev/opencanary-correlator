@@ -13,6 +13,7 @@ Compatibility rules encoded here (see ``docs/internal/EXECPLAN-refactor.md``):
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -46,6 +47,38 @@ _TIMESTAMP_FORMATS: Final[tuple[str, ...]] = (
 )
 
 
+def load_event_json(text: str) -> Any:
+    """Bound total JSON nesting before the interpreter's recursive decoder.
+
+    Unknown event fields stay compatible, but cannot carry an unbounded tree.
+    Escaped brackets inside JSON strings do not contribute to nesting.
+    """
+    depth = 0
+    quoted = False
+    escaped = False
+    for character in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > 64:
+                raise ValueError("JSON nesting exceeds 64 levels")
+        elif character in "]}":
+            depth -= 1
+    return json.loads(text, parse_constant=_invalid_json_constant)
+
+
+def _invalid_json_constant(value: str) -> Any:
+    raise ValueError("non-finite JSON constant")
+
+
 def _reject_control_characters(value: str, field_name: str) -> str:
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError(f"{field_name} must not contain control characters")
@@ -61,9 +94,12 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        if not math.isfinite(value) or value < 0:
+        try:
+            if not math.isfinite(value) or value < 0:
+                return None
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
             return None
-        return datetime.fromtimestamp(value, tz=UTC)
     if isinstance(value, str):
         text = value.strip()
         if not text:

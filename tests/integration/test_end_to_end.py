@@ -99,7 +99,7 @@ async def test_health_endpoint_follows_the_runtime(
                 await asyncio.sleep(0.02)
                 continue
             break
-        response = await http_get(port, "/healthz")
+        response = await http_get(port, "/readyz")
     finally:
         stop_event.set()
         await asyncio.wait_for(task, timeout=5)

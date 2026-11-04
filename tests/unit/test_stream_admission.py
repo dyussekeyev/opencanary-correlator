@@ -191,6 +191,125 @@ async def test_an_oversized_line_is_refused_while_the_decision_is_pending(
     assert receiver.pending == 0
 
 
+async def test_valid_burst_waits_without_being_mistaken_for_one_large_line(
+    audit: Any, event_line: Any
+) -> None:
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    protocol, transport = connect(receiver)
+    protocol.data_received(event_line() * 5)
+    assert not transport.closed
+    assert receiver.pending == 0
+    limiter.gate.set()
+    await settle(receiver)
+    assert receiver.pending == 5
+
+
+async def test_receiver_timeout_cannot_be_undone_by_late_admission(
+    audit: Any, event_line: Any
+) -> None:
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    protocol, transport = connect(receiver)
+    protocol.data_received(event_line())
+    protocol._on_timeout()
+    protocol.connection_lost(None)
+    limiter.gate.set()
+    await settle(receiver)
+    assert transport.closed
+    assert receiver.pending == 0
+
+
+async def test_deep_json_is_rejected_without_losing_the_next_event(
+    audit: Any, audit_stream: Any, event_line: Any
+) -> None:
+    receiver = make_receiver(audit, None)
+    receiver.max_line_bytes = 65536
+    protocol, _ = connect(receiver)
+    protocol.data_received(
+        b'{"node_id":"n","logdata":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}\n" + event_line()
+    )
+    assert receiver.stats.rejected == 1
+    assert receiver.pending == 1
+    assert "malformed_json" in audit_stream.getvalue()
+
+
+async def test_admission_has_a_total_deadline_even_after_peer_fin(
+    audit: Any, audit_stream: Any, event_line: Any
+) -> None:
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    receiver.partial_line_timeout = 0.01
+    protocol, transport = connect(receiver)
+    protocol.data_received(event_line())
+    protocol.connection_lost(None)
+    await settle(receiver)
+    assert transport.closed
+    assert receiver.pending == 0
+    assert "admission_timeout" in audit_stream.getvalue()
+
+
+async def test_pending_admission_hard_limit_and_backpressure(audit: Any, event_line: Any) -> None:
+    class Transport(asyncio.ReadTransport):
+        paused = False
+        closed = False
+
+        def get_extra_info(self, name: str, default: Any = None) -> Any:
+            return ("10.0.0.9", 5555) if name == "peername" else default
+
+        def pause_reading(self) -> None:
+            self.paused = True
+
+        def resume_reading(self) -> None:
+            self.paused = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    protocol = TCPJSONProtocol(receiver)
+    transport = Transport()
+    protocol.connection_made(transport)
+    protocol.data_received(event_line() * 5)
+    assert transport.paused
+    limiter.gate.set()
+    await settle(receiver)
+    assert receiver.pending == 5
+    assert not transport.paused
+
+    limiter = GatedLimiter()
+    receiver = make_receiver(audit, limiter)
+    protocol, transport = connect(receiver)
+    protocol.data_received(event_line() * 100)
+    assert transport.closed
+    assert not protocol._buffer
+    limiter.gate.set()
+    await settle(receiver)
+    assert receiver.pending == 0
+
+
+async def test_syslog_octet_counted_burst_obeys_admission(audit: Any, event_line: Any) -> None:
+    from opencanary_correlator.connectors.receivers.syslog import (
+        SyslogTCPProtocol,
+        SyslogTCPReceiver,
+    )
+
+    limiter = GatedLimiter()
+    receiver = SyslogTCPReceiver(
+        sink=RecordingSink(), audit=audit, rate_limiter=limiter, max_line_bytes=1024
+    )
+    protocol = SyslogTCPProtocol(receiver)
+    protocol.connection_made(FakeTransport())
+    payload = b"<134>" + event_line().strip()
+    frame = str(len(payload)).encode() + b" " + payload
+    protocol.data_received(frame * 5)
+    assert receiver.pending == 0
+    limiter.gate.set()
+    await settle(receiver)
+    assert receiver.pending == 5
+
+
 async def test_without_a_limiter_a_payload_is_processed_immediately(
     audit: Any, event_line: Any
 ) -> None:

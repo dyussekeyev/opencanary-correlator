@@ -133,17 +133,32 @@ class Settings(BaseSettings):
     syslog_udp_enabled: bool = False
 
     # --- Alert outbox -------------------------------------------------------
-    # An incident and one pending delivery per channel are written together, and
-    # a worker retries whatever a channel did not accept. Turning it off restores
+    # An incident and non-runnable per-target debts are written together; budget
+    # and enrichment preparation must commit before any worker can send. Turning it off restores
     # the pre-0.5.0 behaviour: a failed delivery is logged and forgotten.
     outbox_enabled: bool = True
     outbox_poll_interval: float = Field(default=5.0, gt=0.0, le=3600.0)
-    # How long a worker owns an entry before another replica may take it.
+    # Minimum lease; the effective lease also covers dispatch_timeout + 10 s.
+    # Each target is claimed immediately before its attempt, not per batch.
     outbox_lease: float = Field(default=60.0, gt=0.0, le=3600.0)
     outbox_batch: int = Field(default=20, ge=1, le=1000)
     outbox_max_attempts: int = Field(default=8, ge=1, le=100)
-    # How long the delivered marker and a pending entry are kept.
+    # Absolute pending deadline from creation and delivered-marker TTL.
+    # Pending/DLQ hashes do not silently expire; workers record expiry as dead.
     outbox_delivery_retention: float = Field(default=7 * 24 * 3600.0, ge=60.0)
+
+    # --- Retention and recovery ---------------------------------------------
+    # Off by default: an upgrade must not delete incidents the operator did not
+    # ask it to drop. When enabled, one elected replica removes incidents older
+    # than `retention_days` in bounded batches, and never one whose delivery is
+    # still preparing, queued or waiting in the dead letter list.
+    retention_enabled: bool = False
+    retention_days: float = Field(default=30.0, gt=0.0, le=3650.0)
+    retention_interval: float = Field(default=3600.0, ge=60.0, le=86400.0)
+    retention_batch: int = Field(default=200, ge=1, le=5000)
+    #: Dead letters are kept for inspection, then removed. It has to be shorter
+    #: than `retention_days`: a dead letter protects its incident from deletion.
+    dlq_retention_days: float = Field(default=14.0, gt=0.0, le=3650.0)
 
     # --- Alert budget -------------------------------------------------------
     # A burst of distinct incidents from one noisy subnet can bury the alert an
@@ -343,6 +358,9 @@ class Settings(BaseSettings):
     # disables the silence check, which is also the default: an existing
     # deployment must behave exactly as it did.
     watch_interval: float = Field(default=300.0, ge=30.0, le=3600.0)
+    canary_expected_nodes: CommaSeparated = Field(default_factory=list, max_length=10000)
+    canary_startup_grace: float = Field(default=600, ge=0, le=2592000, allow_inf_nan=False)
+    canary_registry_limit: int = Field(default=10000, ge=1, le=10000)
     canary_silent_after: float = Field(default=0.0, ge=0.0, le=30 * 24 * 3600.0)
     #: Events dropped (or payloads rejected) in one interval before the
     #: correlator says so. A single malformed payload belongs in the audit trail,
@@ -363,6 +381,7 @@ class Settings(BaseSettings):
     # None, so the 1..65535 bound only applies to enabled ports. The default
     # avoids 8080, which honeypot modules imitate as an alternative HTTP port.
     health_port: int | None = Field(default=DEFAULT_HEALTH_PORT, ge=0, le=65535)
+    shutdown_timeout: float = Field(default=20.0, ge=1, le=300, allow_inf_nan=False)
     # Every interface by default, because probes often arrive from a different
     # pod or the Docker bridge. Set 127.0.0.1 (or ::1) to keep the unauthenticated
     # listener on loopback and reach it through a sidecar or `docker exec`.
@@ -387,6 +406,7 @@ class Settings(BaseSettings):
         "service_categories",
         "digest_channels",
         "smb_ignore_actions",
+        "canary_expected_nodes",
         mode="before",
     )
     @classmethod
@@ -402,6 +422,16 @@ class Settings(BaseSettings):
     @classmethod
     def _normalise_smb_ignore_actions(cls, value: list[str]) -> list[str]:
         return normalise_smb_actions(value)
+
+    @field_validator("canary_expected_nodes")
+    @classmethod
+    def _validate_expected_nodes(cls, value: list[str]) -> list[str]:
+        if any(
+            not node or len(node) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in node)
+            for node in value
+        ):
+            raise ValueError("expected node IDs must be 1..255 characters without controls")
+        return list(dict.fromkeys(value))
 
     @field_validator("digest_time")
     @classmethod
@@ -556,6 +586,10 @@ class Settings(BaseSettings):
         setting that looks enabled and reports nothing, which is the blind spot
         the category filter exists to prevent.
         """
+        if self.canary_expected_nodes and self.canary_silent_after <= 0:
+            # An inventory without a threshold would never be checked: the
+            # operator would believe a missing canary is watched when it is not.
+            raise ValueError("OCC_CANARY_EXPECTED_NODES needs OCC_CANARY_SILENT_AFTER>0")
         if self.canary_silent_after <= 0:
             return self
         if not self.service_enabled:
@@ -580,6 +614,16 @@ class Settings(BaseSettings):
         """
         if self.alert_budget_per_node > self.alert_budget_global:
             raise ValueError("alert_budget_per_node cannot exceed alert_budget_global")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_retention(self) -> Self:
+        """A dead letter that outlives its incident would block cleanup forever."""
+        if self.retention_enabled and self.dlq_retention_days >= self.retention_days:
+            raise ValueError(
+                "OCC_DLQ_RETENTION_DAYS must be shorter than OCC_RETENTION_DAYS: "
+                "a dead letter protects its incident from deletion"
+            )
         return self
 
     @field_validator("health_host", mode="before")

@@ -238,12 +238,15 @@
   "cli_options": [
     "--check-config",
     "--config",
+    "--dlq-list",
+    "--dlq-replay",
     "--health-port",
     "--help",
     "--ip",
     "--log-file",
     "--log-level",
     "--redis-url",
+    "--retention-run",
     "--version",
     "-c",
     "-h",
@@ -266,7 +269,10 @@
     "canary_silence": {
       "after_seconds": 0.0,
       "check_interval": 300.0,
-      "enabled": false
+      "enabled": false,
+      "expected_nodes": 0,
+      "registry_limit": 10000,
+      "startup_grace": 600.0
     },
     "channels": [
       "webhook",
@@ -416,7 +422,8 @@
       "incident-latest:ssh.login_attempt:10.0.0.5",
       "incident:ftplogin:10.0.0.5:1793207641",
       "incident:sshlogin:10.0.0.5:1793207641",
-      "incidents"
+      "incidents",
+      "stats:v2:incidents-created"
     ]
   },
   "incident_fields": {

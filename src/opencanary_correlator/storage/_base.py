@@ -19,16 +19,13 @@ from redis.commands.core import Script
 from redis.exceptions import RedisError
 
 from opencanary_correlator.storage.scripts import (
-    CLAIM_DUE_ALERTS_LUA,
     CONFIRM_DEDUP_LUA,
-    DISCARD_ALERTS_LUA,
     RELEASE_LOCK_LUA,
     RESERVE_ALERT_BUDGET_LUA,
     RESERVE_QUOTA_LUA,
     SAVE_INCIDENT_LUA,
     SAVE_INCIDENT_WITH_ALERTS_LUA,
     SERVICE_MESSAGE_SLOT_LUA,
-    SETTLE_ALERT_LUA,
     TAKE_BUDGET_SUMMARY_LUA,
 )
 
@@ -69,10 +66,7 @@ class _StoreBase:
     _reserve_quota_script: Script
     _confirm_dedup_script: Script
     _save_incident_alerts_script: Script
-    _claim_alerts_script: Script
-    _settle_alert_script: Script
     _service_message_script: Script
-    _discard_alerts_script: Script
     _reserve_budget_script: Script
     _take_budget_summary_script: Script
 
@@ -85,12 +79,9 @@ class _StoreBase:
         self._save_incident_alerts_script = cast(
             Script, client.register_script(SAVE_INCIDENT_WITH_ALERTS_LUA)
         )
-        self._claim_alerts_script = cast(Script, client.register_script(CLAIM_DUE_ALERTS_LUA))
-        self._settle_alert_script = cast(Script, client.register_script(SETTLE_ALERT_LUA))
         self._service_message_script = cast(
             Script, client.register_script(SERVICE_MESSAGE_SLOT_LUA)
         )
-        self._discard_alerts_script = cast(Script, client.register_script(DISCARD_ALERTS_LUA))
         self._reserve_budget_script = cast(Script, client.register_script(RESERVE_ALERT_BUDGET_LUA))
         self._take_budget_summary_script = cast(
             Script, client.register_script(TAKE_BUDGET_SUMMARY_LUA)
@@ -209,9 +200,20 @@ class _StoreBase:
             )
         return [self._text(value) for value in values]
 
-    async def zrangebyscore(self, key: str, minimum: str, maximum: str) -> list[str]:
-        """Read ZSET members ordered by ascending score."""
-        values = await self._client.zrangebyscore(key, minimum, maximum)
+    async def zrangebyscore(
+        self, key: str, minimum: str | float, maximum: str | float, *, limit: int | None = None
+    ) -> list[str]:
+        """Read ZSET members ordered by ascending score.
+
+        `limit` keeps a sweep bounded by the server rather than by the reply,
+        so a large index cannot turn one cleanup pass into a full transfer.
+        """
+        if limit is None:
+            values = await self._client.zrangebyscore(key, minimum, maximum)
+        else:
+            values = await self._client.zrangebyscore(
+                key, minimum, maximum, start=0, num=max(1, int(limit))
+            )
         return [self._text(value) for value in values]
 
     # --- Scripts ------------------------------------------------------------

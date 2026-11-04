@@ -1,51 +1,46 @@
-"""The alert outbox: a decided notification either reaches a channel or is seen.
+"""Recoverable preparation and per-target, lease-fenced delivery.
 
-`IncidentRepository.record` enqueues one delivery per channel in the same script
-that writes the incident, so a crash cannot separate the two. This module owns the
-rest of the contract:
-
-* **inline attempt** — the engine delivers immediately, as it always did, and
-  reports the outcome here (`settle`), which frees the entry on success or hands
-  it to the retry schedule on failure;
-* **retry worker** — every replica runs one. It claims the entries that are due
-  (the claim pushes each score forward by a lease, so two replicas never take the
-  same entry and a dying worker simply leaves it to become due again), reloads the
-  incident, delivers and either settles the entry, reschedules it with backoff or
-  buries it in the dead letter list after `OCC_OUTBOX_MAX_ATTEMPTS`.
-
-The result is at-least-once: a duplicate is possible only when a channel accepted
-a message and the process died before settling it, and the delivered marker keeps
-that window from being reopened by a later worker.
+Incident persistence creates a non-runnable preparation. Budget reservation and
+publishing its targets are atomic; inline and background attempts subsequently
+use exactly the same claim/transition path. A remote accept followed by a crash
+can still duplicate a message: this is at-least-once, not exactly-once.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Callable, Sequence
 from typing import Final
 
+from pydantic import ValidationError
+
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
-from opencanary_correlator.connectors.base import BaseDispatcher
+from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult
 from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import INCIDENT_TYPES, Incident
+from opencanary_correlator.core.service_messages import ServiceKind, ServiceMessage
+from opencanary_correlator.enrichment.models import Enrichment
+from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.incident_specs import INCIDENT_SPECS
-from opencanary_correlator.storage.keys import outbox_entry_id
+from opencanary_correlator.storage.keys import (
+    LEGACY_OUTBOX_INDEX,
+    outbox_entry_id,
+    outbox_envelope_key,
+)
 from opencanary_correlator.storage.redis_store import RedisStore
 
-#: Retry delays, in seconds. The last value repeats once it is reached.
 BACKOFF_SECONDS: Final[tuple[float, ...]] = (1.0, 5.0, 30.0, 300.0, 1800.0)
-
-#: Incident key prefix -> the class that can rebuild it.
 _CLASSES_BY_PREFIX: Final[dict[str, type[Incident]]] = {
     spec.key_prefix: INCIDENT_TYPES[spec.name] for spec in INCIDENT_SPECS
 }
 
 
 def incident_class_for_key(key: str) -> type[Incident] | None:
-    """Resolve the incident class from the key prefix the correlator wrote."""
+    """Resolve the incident class from a persisted key."""
     for prefix, incident_cls in _CLASSES_BY_PREFIX.items():
         if key.startswith(prefix):
             return incident_cls
@@ -53,7 +48,7 @@ def incident_class_for_key(key: str) -> type[Incident] | None:
 
 
 class AlertOutbox:
-    """Settlement for the inline attempt, plus the worker that retries."""
+    """One state machine for immediate delivery and recovery workers."""
 
     name: Final[str] = "alert_outbox"
 
@@ -67,79 +62,161 @@ class AlertOutbox:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._store = store
-        self._dispatchers = {dispatcher.name: dispatcher for dispatcher in dispatchers}
+        self._dispatchers = {dispatcher.target_id: dispatcher for dispatcher in dispatchers}
+        if len(self._dispatchers) != len(dispatchers):
+            raise ValueError("duplicate delivery target identity")
         self._settings = settings
         self._audit = audit
         self._clock = clock
         self._task: asyncio.Task[None] | None = None
+        self._enricher: IncidentEnricher | None = None
+
+    def set_enricher(self, enricher: IncidentEnricher | None) -> None:
+        """Use the existing bounded/cache-backed enricher during crash recovery."""
+        self._enricher = enricher
 
     @property
     def channels(self) -> tuple[str, ...]:
-        """Channels an incident is enqueued for."""
+        """Stable target IDs recorded by the incident repository."""
         return tuple(self._dispatchers)
 
-    # --- Inline attempt -----------------------------------------------------
+    @property
+    def _lease(self) -> float:
+        # There is no sequential batch waiting behind this lease. The deadline
+        # plus Redis command slack must fit even if the configured lease is tiny.
+        return max(self._settings.outbox_lease, self._settings.dispatch_timeout + 10)
 
-    async def settle(self, incident_key: str, channel: str, *, error: str | None) -> None:
-        """Report the outcome of the attempt the engine just made.
-
-        `error` is None when the channel accepted the message. A failure is not
-        retried here: the entry gets its first attempt count and the backoff, so a
-        heroically slow channel cannot turn one incident into a tight loop.
-        """
-        entry = outbox_entry_id(incident_key, channel)
-        if error is None:
-            await self._store.settle_alert(entry, retention=self._retention)
-            metrics.OUTBOX_DELIVERED.labels(channel=channel).inc()
-            return
-        await self._store.reschedule_alert(
-            entry,
-            attempts=1,
-            error=error,
-            next_attempt=float(self._clock()) + BACKOFF_SECONDS[0],
-            retention=self._retention,
+    async def prepare(self, incident: Incident) -> bool:
+        """Make a preparation ready, or leave it recoverable if ownership is lost."""
+        now = float(self._clock())
+        token = await self._store.claim_alert(
+            incident.key,
+            now=now,
+            lease=max(self._lease, self._settings.enrichment_timeout + 10),
+            max_attempts=self._settings.outbox_max_attempts,
+            preparing=True,
         )
-        metrics.OUTBOX_RETRIED.labels(channel=channel).inc()
-
-    async def cancel(self, incident_key: str) -> int:
-        """Withdraw every pending delivery of one incident.
-
-        The alert budget calls this before any attempt is made: the incident is
-        stored, but no channel is going to be told about it, so its entries must
-        not survive to be retried later.
-        """
-        return await self._store.discard_alerts(
-            [outbox_entry_id(incident_key, channel) for channel in self._dispatchers]
+        if not token:
+            envelope = await self._store.hgetall(outbox_envelope_key(incident.key))
+            return envelope.get("state") == "ready"
+        if len(token) != 32:
+            self._terminal(incident.key, token)
+            return False
+        if self._enricher is not None:
+            try:
+                incident.enrichment = await asyncio.wait_for(
+                    self._enricher.enrich(incident.src_host),
+                    timeout=self._settings.enrichment_timeout,
+                )
+            except Exception as exc:
+                self._audit.emit(
+                    "enrichment_failed",
+                    "error",
+                    {
+                        "incident": incident.key,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        snapshot = self._snapshot(incident.enrichment)
+        state = await self._store.prepare_alerts(
+            incident.key,
+            owner=token,
+            now=float(self._clock()),
+            enrichment=snapshot,
+            budget_enabled=self._settings.alert_budget_enabled,
+            node_id=incident.node_id,
+            window=self._settings.alert_budget_window,
+            per_node=self._settings.alert_budget_per_node,
+            global_limit=self._settings.alert_budget_global,
         )
+        if state:
+            metrics.ALERTS_BUDGET.labels(
+                result="allowed" if state == "ready" else "suppressed"
+            ).inc()
+        if state == "suppressed":
+            self._audit.emit(
+                "alert_suppressed",
+                "warning",
+                {
+                    "incident": incident.key,
+                    "node_id": incident.node_id,
+                    "src_host": incident.src_host,
+                },
+            )
+        return state == "ready"
 
-    # --- Worker lifecycle ---------------------------------------------------
+    @staticmethod
+    def _snapshot(enrichment: Enrichment | None) -> str:
+        """Bounded provider-only context; never copy credentials or logdata."""
+        if enrichment is None:
+            return "null"
+        geo = enrichment.geo
+        if geo is not None:
+            geo = geo.model_copy(
+                update={
+                    field: str(getattr(geo, field))[:256]
+                    for field in ("country_code", "country", "city", "as_org")
+                }
+            )
+        report = enrichment.virus_total
+        if report is not None and report.checked is not None:
+            report = report.model_copy(update={"checked": report.checked[:32]})
+        return enrichment.model_copy(update={"geo": geo, "virus_total": report}).model_dump_json()
+
+    async def deliver_inline(
+        self, incident: Incident, dispatcher: BaseDispatcher
+    ) -> DispatchResult | None:
+        """Claim immediately before I/O, exactly as the background worker does."""
+        return await self._attempt(outbox_entry_id(incident.key, dispatcher.target_id))
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Background worker supervised by the runtime."""
+        return (self._task,) if self._task is not None else ()
 
     async def start(self) -> None:
-        """Start the retry loop."""
         if self._task is None:
+            legacy = int(await self._store.client.zcard(LEGACY_OUTBOX_INDEX))
+            if legacy:
+                self._audit.emit("outbox_legacy_quarantined", "warning", {"pending": legacy})
             self._task = asyncio.create_task(self._loop(), name="alert-outbox")
 
     async def stop(self) -> None:
-        """Cancel the retry loop and wait for it to unwind."""
         task, self._task = self._task, None
-        if task is None:
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def run_once(self) -> int:
-        """Process every delivery that is due now, returning how many succeeded."""
-        now = float(self._clock())
-        claimed = await self._store.claim_due_alerts(
-            now=now,
+        # Read candidate IDs without leasing the tail of the batch.
+        preparing = await self._store.due_alerts(
+            now=float(self._clock()),
             limit=self._settings.outbox_batch,
-            lease=self._settings.outbox_lease,
+            preparing=True,
         )
+        for incident_key in preparing:
+            try:
+                incident = await self._load(incident_key)
+            except (ValueError, TypeError):
+                incident = None
+            if incident is None:
+                await self._fail_preparation(incident_key, "incident_gone_or_corrupt")
+            else:
+                await self.prepare(incident)
         delivered = 0
-        for entry_id in claimed:
-            if await self._deliver_entry(entry_id, now):
-                delivered += 1
-        metrics.OUTBOX_PENDING.set(await self._store.outbox_pending())
+        due = await self._store.due_alerts(
+            now=float(self._clock()),
+            limit=self._settings.outbox_batch,
+        )
+        for entry_id in due:
+            result = await self._attempt(entry_id)
+            delivered += int(result is not None and result.status == "success")
+        pending, dead, oldest = await self._store.outbox_stats()
+        metrics.OUTBOX_PENDING.set(pending)
+        metrics.OUTBOX_DEAD_ENTRIES.set(dead)
+        metrics.OUTBOX_OLDEST_PENDING.set(
+            0.0 if oldest is None else max(0.0, float(self._clock()) - oldest)
+        )
         return delivered
 
     async def _loop(self) -> None:
@@ -148,100 +225,197 @@ class AlertOutbox:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # an outbox bug must not kill the process
+            except Exception as exc:
                 self._audit.emit("outbox_failed", "error", {"error_type": type(exc).__name__})
             await asyncio.sleep(self._settings.outbox_poll_interval)
 
-    # --- One delivery -------------------------------------------------------
+    async def _send_notice(
+        self, dispatcher: BaseDispatcher, notice: ServiceMessage
+    ) -> DispatchResult | None:
+        """One bounded attempt at a durable notice, audited per channel.
 
-    async def _deliver_entry(self, entry_id: str, now: float) -> bool:
+        The budget summary keeps the legacy `announce` rendering; every other
+        notice goes through `notify`, which is the typed channel path.
+        """
+        try:
+            if notice.kind is ServiceKind.BUDGET_SUMMARY and notice.lines:
+                result = await asyncio.wait_for(
+                    dispatcher.announce(notice.lines[0]),
+                    timeout=self._settings.dispatch_timeout,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    dispatcher.notify(notice),
+                    timeout=self._settings.dispatch_timeout,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # a channel bug is a retry, not a crash
+            self._audit.emit(
+                "service_message_failed",
+                "error",
+                {
+                    "kind": notice.kind.value,
+                    "dispatcher": dispatcher.name,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return None
+        self._audit.emit(
+            "service_message_sent",
+            "success" if result.status == "success" else "error",
+            {"kind": notice.kind.value, "dispatcher": dispatcher.name},
+        )
+        return result
+
+    async def _attempt(self, entry_id: str) -> DispatchResult | None:
+        token = await self._store.claim_alert(
+            entry_id,
+            now=float(self._clock()),
+            lease=self._lease,
+            max_attempts=self._settings.outbox_max_attempts,
+        )
+        if not token:
+            return None
+        if len(token) != 32:
+            self._terminal(entry_id, token)
+            return None
         entry = await self._store.read_alert(entry_id)
         if entry is None:
-            # Settled by another replica between the claim and the read.
-            return False
-        channel = entry.get("channel", "")
-        incident_key = entry.get("incident", "")
-        attempts = int(entry.get("attempts", "0") or 0)
-        dispatcher = self._dispatchers.get(channel)
+            return None  # a deleted payload will be reclaimed as missing_entry
+        dispatcher = self._dispatchers.get(entry.get("target", ""))
         if dispatcher is None:
-            await self._bury(entry_id, incident_key, channel, attempts, "unknown_channel")
-            return False
-        incident = await self._load(incident_key)
-        if incident is None:
-            await self._bury(entry_id, incident_key, channel, attempts, "incident_gone")
-            return False
-
-        result = await deliver(
-            dispatcher,
-            incident,
-            audit=self._audit,
-            deadline=self._settings.dispatch_timeout,
-        )
+            await self._finish(entry_id, token, "dead", "unknown_target")
+            return None
+        try:
+            envelope = await self._store.hgetall(outbox_envelope_key(entry.get("incident", "")))
+            notice = (
+                ServiceMessage.model_validate_json(envelope["payload"])
+                if envelope.get("kind") == "notice"
+                else None
+            )
+            incident = None if notice is not None else await self._load(entry.get("incident", ""))
+            if incident is not None and envelope.get("enrichment"):
+                raw = envelope["enrichment"]
+                incident.enrichment = None if raw == "null" else Enrichment.model_validate_json(raw)
+        except (ValueError, TypeError, ValidationError):
+            await self._finish(entry_id, token, "dead", "corrupt_payload")
+            return None
+        if incident is None and notice is None:
+            await self._finish(entry_id, token, "dead", "incident_gone")
+            return None
+        if not await self._store.owns_alert(entry_id, owner=token, now=float(self._clock())):
+            self._audit.emit(
+                "alert_lease_lost", "warning", {"entry": entry_id, "transition": "send"}
+            )
+            return None
+        if notice is not None:
+            result = await self._send_notice(dispatcher, notice)
+        elif incident is None:
+            await self._finish(entry_id, token, "dead", "incident_gone")
+            return None
+        else:
+            result = await deliver(
+                dispatcher,
+                incident,
+                audit=self._audit,
+                deadline=self._settings.dispatch_timeout,
+                durable=True,
+            )
         if result is not None and result.status == "success":
-            await self._store.settle_alert(entry_id, retention=self._retention)
-            metrics.OUTBOX_DELIVERED.labels(channel=channel).inc()
-            return True
+            if await self._finish(entry_id, token, "delivered"):
+                metrics.OUTBOX_DELIVERED.labels(channel=dispatcher.name).inc()
+            return result
+        reason = "timeout_or_exception" if result is None else self._safe_reason(result)
+        attempts = int(entry["attempts"])
+        if attempts >= self._settings.outbox_max_attempts or (
+            result is not None and not result.retryable
+        ):
+            await self._finish(entry_id, token, "dead", reason)
+        else:
+            delay = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
+            if result is not None and result.retry_after is not None:
+                delay = max(delay, min(3600.0, result.retry_after))
+            if await self._finish(entry_id, token, "ready", reason, delay=delay):
+                metrics.OUTBOX_RETRIED.labels(channel=dispatcher.name).inc()
+                self._audit.emit(
+                    "alert_retry",
+                    "warning",
+                    {
+                        "dispatcher": dispatcher.name,
+                        "target": dispatcher.target_id,
+                        "attempts": attempts,
+                        "reason": reason,
+                        "next_attempt_in": delay,
+                    },
+                )
+        return result
 
-        reason = "timeout" if result is None else result.status
-        attempts += 1
-        if attempts >= self._settings.outbox_max_attempts:
-            await self._bury(entry_id, incident_key, channel, attempts, reason)
-            return False
-        delay = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
-        await self._store.reschedule_alert(
-            entry_id,
-            attempts=attempts,
-            error=reason,
-            next_attempt=now + delay,
-            retention=self._retention,
+    @staticmethod
+    def _safe_reason(result: DispatchResult) -> str:
+        # HTTP codes and internal classifier names only, never remote text/URLs.
+        return (
+            result.detail if re.fullmatch(r"[A-Za-z0-9_]{1,80}", result.detail) else result.status
         )
-        metrics.OUTBOX_RETRIED.labels(channel=channel).inc()
-        self._audit.emit(
-            "alert_retry",
-            "warning",
-            {
-                "dispatcher": channel,
-                "incident": incident_key,
-                "attempts": attempts,
-                "reason": reason,
-                "next_attempt_in": delay,
-            },
-        )
-        return False
 
-    async def _bury(
+    async def _finish(
         self,
         entry_id: str,
-        incident_key: str,
-        channel: str,
-        attempts: int,
-        reason: str,
-    ) -> None:
-        await self._store.bury_alert(entry_id, attempts=attempts, error=reason)
-        metrics.OUTBOX_DEAD.labels(channel=channel or "unknown").inc()
-        self._audit.emit(
-            "alert_dead_letter",
-            "error",
-            {
-                "dispatcher": channel,
-                "incident": incident_key,
-                "attempts": attempts,
-                "reason": reason,
-            },
+        owner: str,
+        state: str,
+        reason: str = "",
+        *,
+        delay: float = 0,
+    ) -> bool:
+        now = float(self._clock())
+        changed = await self._store.transition_alert(
+            entry_id,
+            owner=owner,
+            now=now,
+            state=state,
+            error=reason,
+            next_attempt=now + delay,
+            retention=self._settings.outbox_delivery_retention,
         )
+        if not changed:
+            self._audit.emit(
+                "alert_lease_lost", "warning", {"entry": entry_id, "transition": state}
+            )
+        elif state == "dead":
+            self._terminal(entry_id, reason)
+        return changed
+
+    def _terminal(self, entry_id: str, reason: str) -> None:
+        metrics.OUTBOX_TERMINAL.labels(
+            reason=reason if re.fullmatch(r"[A-Za-z0-9_]{1,40}", reason) else "other"
+        ).inc()
+        metrics.OUTBOX_DEAD.labels(channel="unknown").inc()
+        self._audit.emit("alert_dead_letter", "error", {"entry": entry_id, "reason": reason})
+
+    async def _fail_preparation(self, incident_key: str, reason: str) -> None:
+        token = await self._store.claim_alert(
+            incident_key,
+            now=float(self._clock()),
+            lease=self._lease,
+            max_attempts=self._settings.outbox_max_attempts,
+            preparing=True,
+        )
+        if not token:
+            return
+        if len(token) == 32:
+            if await self._store.fail_alert_preparation(
+                incident_key, owner=token, now=float(self._clock()), reason=reason
+            ):
+                self._terminal(incident_key, reason)
+        else:
+            self._terminal(incident_key, token)
 
     async def _load(self, incident_key: str) -> Incident | None:
-        incident_cls = incident_class_for_key(incident_key)
-        if incident_cls is None:
+        cls = incident_class_for_key(incident_key)
+        if cls is None:
             return None
         fields = await self._store.hgetall(incident_key)
-        if not fields:
-            return None
-        return incident_cls.from_fields(incident_key, fields)
-
-    @property
-    def _retention(self) -> float:
-        return float(self._settings.outbox_delivery_retention)
+        return cls.from_fields(incident_key, fields) if fields else None
 
 
 __all__ = ["BACKOFF_SECONDS", "AlertOutbox", "incident_class_for_key"]

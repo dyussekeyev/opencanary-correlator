@@ -118,7 +118,7 @@ def test_timestamp_shapes_are_parsed(raw: Any, expected: datetime) -> None:
     assert event.local_time == expected
 
 
-@pytest.mark.parametrize("raw", ["not-a-date", "", -1, True, None])
+@pytest.mark.parametrize("raw", ["not-a-date", "", -1, True, None, 1e300, 10**400])
 def test_unparsable_timestamp_falls_back_to_receipt_time(raw: Any) -> None:
     event = CanaryEvent.model_validate({"node_id": "n1", "local_time": raw})
 

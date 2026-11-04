@@ -49,7 +49,7 @@ EVENT_RESULTS: Final[tuple[str, ...]] = (
 )
 
 #: Alert delivery outcomes summed into the digest.
-ALERT_STATUSES: Final[tuple[str, ...]] = ("success", "error", "timeout", "skipped")
+ALERT_STATUSES: Final[tuple[str, ...]] = ("success", "error", "timeout", "exception", "skipped")
 
 #: Incidents inspected to rank the busiest sources. The digest lists at most
 #: `OCC_DIGEST_TOP_SOURCES`, but the ranking needs more than that to be honest.
@@ -94,6 +94,9 @@ class DigestData:
     top_sources: tuple[tuple[str, int], ...]
     quota_day: int
     quota_month: int
+    new_incidents: int = 0
+    accepted_targets: int = 0
+    sources_sampled: bool = False
 
     @property
     def total_events(self) -> int:
@@ -147,7 +150,14 @@ class StatsReporter:
         for result in EVENT_RESULTS:
             fields[f"events_{result}"] = int(_sample("opencanary_events_total", {"result": result}))
         for status in ALERT_STATUSES:
-            fields[f"alerts_{status}"] = int(_sample("opencanary_alerts_total", {"status": status}))
+            fields[f"alerts_{status}"] = int(
+                sum(
+                    sample.value
+                    for family in metrics.ALERTS_TOTAL.collect()
+                    for sample in family.samples
+                    if sample.name.endswith("_total") and sample.labels.get("status") == status
+                )
+            )
         if self._nodes is not None:
             # `node:<id>` -> the last epoch that node delivered an event. The
             # digest skips the prefix; the silence check is its only reader.
@@ -157,7 +167,25 @@ class StatsReporter:
 
     async def beat(self) -> None:
         """Publish one heartbeat, replacing the previous counters."""
-        await self._store.write_heartbeat(self.key, self.snapshot(), ttl=HEARTBEAT_TTL)
+        fields = self.snapshot()
+        counters = {
+            name: int(value)
+            for name, value in fields.items()
+            if name.startswith(("events_", "alerts_")) or name == "rule_failures"
+        }
+        counters["accepted_targets"] = int(_sum_total(metrics.OUTBOX_DELIVERED))
+        await self._store.flush_statistics(self._instance, counters, now=float(self._clock()))
+        if self._nodes is not None:
+            refused = await self._store.flush_node_activity(self._nodes.snapshot(limit=10000))
+            if refused:
+                metrics.NODE_REGISTRY_OVERFLOW.labels(scope="durable").inc(refused)
+                self._audit.emit("node_registry_overflow", "warning", {"count": refused})
+        await self._store.write_heartbeat(self.key, fields, ttl=HEARTBEAT_TTL)
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Background task supervised by the runtime."""
+        return (self._task,) if self._task is not None else ()
 
     async def start(self) -> None:
         """Publish a first heartbeat now, then refresh it on a timer."""
@@ -173,6 +201,7 @@ class StatsReporter:
             return
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        await self._beat_quietly()
 
     async def _loop(self) -> None:
         while True:
@@ -203,19 +232,6 @@ def _source_of(incident_key: str) -> str | None:
     return None
 
 
-def _sum_heartbeat(instance: str, fields: Mapping[str, str], totals: dict[str, int]) -> None:
-    """Add one replica's counters to the digest totals."""
-    for name, value in fields.items():
-        if name in {"version", "started"} or name.startswith(NODE_FIELD_PREFIX):
-            # Node evidence is not a counter: summing it would produce totals
-            # nobody asked for and lose the per-node meaning at the same time.
-            continue
-        try:
-            totals[name] = totals.get(name, 0) + int(value)
-        except ValueError:  # pragma: no cover - written by this module
-            continue
-
-
 async def collect_digest(
     store: RedisStore,
     *,
@@ -229,9 +245,7 @@ async def collect_digest(
     start = int(moment - window)
 
     heartbeats = await store.live_heartbeats()
-    totals: dict[str, int] = {}
-    for instance, fields in heartbeats.items():
-        _sum_heartbeat(instance, fields, totals)
+    totals = await store.statistics_between(start=start, end=end)
 
     incidents = await store.count_incidents(start=start, end=end)
     sources: dict[str, int] = {}
@@ -261,6 +275,9 @@ async def collect_digest(
         top_sources=ranked,
         quota_day=quota_day,
         quota_month=quota_month,
+        new_incidents=await store.count_new_incidents(start=start, end=end),
+        accepted_targets=totals.get("accepted_targets", 0),
+        sources_sampled=incidents > DIGEST_SCAN_LIMIT,
     )
 
 

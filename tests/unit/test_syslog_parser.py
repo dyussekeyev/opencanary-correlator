@@ -11,6 +11,20 @@ from opencanary_correlator.connectors.receivers.syslog import build_event, parse
 from opencanary_correlator.constants import LogType
 
 
+@pytest.mark.parametrize("prefix", [b"<134>", b"<134>host app: "])
+@pytest.mark.parametrize("body", [b'{"x":NaN}', b'{"x":' + b"[" * 100 + b"0" + b"]" * 100 + b"}"])
+def test_hostile_json_is_rejected_in_all_syslog_envelopes(prefix: bytes, body: bytes) -> None:
+    from opencanary_correlator.connectors.receivers._syslog_codec import parse_syslog_frame
+
+    reasons = []
+
+    def reject(reason: str, peer: str, **kwargs) -> None:
+        reasons.append(reason)
+
+    assert parse_syslog_frame(prefix + body, "10.0.0.1", reject) is None
+    assert reasons == ["malformed_json"]
+
+
 def test_rfc5424_envelope_is_parsed() -> None:
     message = parse_syslog(
         b"<34>1 2026-10-24T10:00:00Z canary-1 opencanary 123 ID47 - login attempt"

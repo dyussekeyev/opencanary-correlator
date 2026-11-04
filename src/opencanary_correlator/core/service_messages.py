@@ -31,8 +31,9 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from enum import StrEnum
 from typing import Final
+from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
@@ -76,11 +77,13 @@ class ServiceCategory(StrEnum):
     #: The daily digest, which has its own switch (`OCC_DIGEST_ENABLED`) and is not
     #: filtered by `OCC_SERVICE_CATEGORIES`.
     DIGEST = "digest"
+    BUDGET = "budget"
 
 
 class ServiceKind(StrEnum):
     """Every message the correlator can produce about itself."""
 
+    BUDGET_SUMMARY = "budget.summary"
     VIRUSTOTAL_KEY_REJECTED = "enrichment.virustotal.key_rejected"
     VIRUSTOTAL_QUOTA = "enrichment.virustotal.quota"
     VIRUSTOTAL_UNAVAILABLE = "enrichment.virustotal.unavailable"
@@ -148,6 +151,7 @@ _KIND_SPECS: Final[dict[ServiceKind, _KindSpec]] = {
     ServiceKind.LIFECYCLE_STOPPED: _KindSpec(
         category=ServiceCategory.LIFECYCLE, severity=Severity.INFO
     ),
+    ServiceKind.BUDGET_SUMMARY: _KindSpec(category=ServiceCategory.BUDGET, severity=Severity.INFO),
     ServiceKind.DIGEST_DAILY: _KindSpec(category=ServiceCategory.DIGEST, severity=Severity.INFO),
 }
 
@@ -164,11 +168,18 @@ class ServiceMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: ServiceKind
-    title: str
-    lines: tuple[str, ...] = ()
-    subject: str = ""
+    title: str = Field(max_length=1024)
+    lines: tuple[str, ...] = Field(default=(), max_length=128)
+    subject: str = Field(default="", max_length=1024)
     #: Occurrences this message stands for, including the ones that were muted.
     count: int = 1
+
+    @field_validator("lines")
+    @classmethod
+    def _bounded_lines(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if sum(len(line) for line in value) > 32768:
+            raise ValueError("notice lines exceed 32768 characters")
+        return value
 
     @property
     def severity(self) -> Severity:
@@ -206,12 +217,14 @@ class ServiceNotifier:
         audit: AuditLogger,
         *,
         clock: Callable[[], float] = time.time,
+        durable: bool = False,
     ) -> None:
         self._store = store
         self._dispatchers = list(dispatchers)
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        self._durable = durable
         self._categories = {value.strip().lower() for value in settings.service_categories}
         self._min_severity = _parse_severity(settings.service_min_severity)
         self._routed = self._route(settings.service_channels)
@@ -262,6 +275,25 @@ class ServiceNotifier:
         if kind.severity.rank < self._min_severity.rank:
             return False
 
+        if self._durable:
+            from opencanary_correlator.storage.keys import service_message_keys
+
+            mute, repeats_key = service_message_keys(kind.value, subject or kind.value)
+            repeats = int(await self._store.get_value(repeats_key) or 0)
+            message = ServiceMessage(
+                kind=kind,
+                title=title,
+                lines=tuple(lines),
+                subject=subject,
+                count=max(count, repeats + 1),
+            )
+            return await self.enqueue(
+                message,
+                mute=mute,
+                repeats=repeats_key,
+                marker_ttl=int(self._settings.service_cooldown),
+            )
+
         admitted, repeats = await self._store.claim_service_message(
             kind=kind.value,
             subject=subject or kind.value,
@@ -287,6 +319,45 @@ class ServiceNotifier:
         )
         return any(results)
 
+    async def enqueue(
+        self,
+        message: ServiceMessage,
+        *,
+        channels: Sequence[str] | None = None,
+        occurrence: str = "",
+        marker: str = "",
+        marker_ttl: int = 604800,
+        mute: str = "",
+        repeats: str = "",
+        source_summary: str = "",
+    ) -> bool:
+        """Commit a bounded typed envelope and per-target debts without remote I/O.
+
+        Without the durable outbox (tests, embedded use) the same call still has
+        to deliver: it falls back to the immediate path and marks the occurrence
+        once a channel accepted it, so a scheduler loop cannot repeat it.
+        """
+        if not self._durable:
+            if marker and await self._store.exists(marker):
+                return False
+            sent = await self.send(message, channels=channels)
+            if sent and marker:
+                await self._store.set_if_absent(marker, "1", ttl=float(marker_ttl))
+            return sent
+        targets = self._routed if not channels else self._route(channels)
+        return await self._store.enqueue_notice(
+            occurrence or f"notice:{uuid4().hex}",
+            message.model_dump_json(),
+            [dispatcher.target_id for dispatcher in targets],
+            now=float(self._clock()),
+            retention=self._settings.outbox_delivery_retention,
+            marker=marker,
+            marker_ttl=marker_ttl,
+            mute=mute,
+            repeats=repeats,
+            source_summary=source_summary,
+        )
+
     async def send(self, message: ServiceMessage, *, channels: Sequence[str] | None = None) -> bool:
         """Deliver an already-decided message, bypassing the three gates.
 
@@ -295,8 +366,10 @@ class ServiceNotifier:
         report do not apply to it. `channels` narrows the fan-out by name; None
         keeps the notifier's routing.
         """
+        if self._durable:
+            return await self.enqueue(message, channels=channels)
         targets = self._routed
-        if channels is not None:
+        if channels:
             wanted = {name.strip().lower() for name in channels if name.strip()}
             targets = [dispatcher for dispatcher in self._dispatchers if dispatcher.name in wanted]
         if not targets:

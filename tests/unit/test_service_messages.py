@@ -466,6 +466,9 @@ class BrokenGeo:
     def lookup(self, _ip: str) -> Any:
         raise RuntimeError("corrupt database")
 
+    def inspect(self, _ip: str) -> Any:
+        raise RuntimeError("corrupt database")
+
     def close(self) -> None:
         return None
 
@@ -595,8 +598,10 @@ def make_engine(
     dispatchers: list[BaseDispatcher],
     notifier: ServiceNotifier,
 ) -> CorrelationEngine:
-    repository = IncidentRepository(store, settings, audit, clock=clock)
-    outbox = AlertOutbox(store, dispatchers, settings, audit)
+    outbox = AlertOutbox(store, dispatchers, settings, audit, clock=clock)
+    repository = IncidentRepository(
+        store, settings, audit, clock=clock, alert_channels=outbox.channels
+    )
     return CorrelationEngine(
         rules=build_rules(store, repository, settings),
         dispatchers=dispatchers,

@@ -22,10 +22,18 @@ return 0
 #: one round trip. ARGV[1] is the score, ARGV[2] the pointer value, and the
 #: remaining arguments are the hash field/value pairs.
 SAVE_INCIDENT_LUA = """
-redis.call('HSET', KEYS[1], unpack(ARGV, 3))
+if KEYS[4] ~= '' and redis.call('GET', KEYS[4]) ~= ARGV[3] then return 0 end
+if KEYS[5] ~= '' and redis.call('EXISTS', KEYS[5]) == 0 then return 2 end
+redis.call('HSET', KEYS[1], unpack(ARGV, 4))
 redis.call('ZADD', KEYS[2], ARGV[1], KEYS[1])
-if KEYS[3] then
+if KEYS[3] ~= '' then
     redis.call('HSET', KEYS[3], 'key', ARGV[2], 'score', ARGV[1])
+end
+if KEYS[5] ~= '' then
+    local pointer = redis.call('GET', KEYS[5] .. ':pointer')
+    if pointer and redis.call('GET', pointer) == KEYS[5] then redis.call('DEL', pointer) end
+    redis.call('DEL', KEYS[5], KEYS[5] .. ':event', KEYS[5] .. ':pointer')
+    redis.call('ZREM', KEYS[6], KEYS[5])
 end
 return 1
 """
@@ -52,14 +60,15 @@ end
 return 1
 """
 
-#: Write the incident and one pending delivery per channel in one round trip.
-#: ARGV[1] score, ARGV[2] pointer value, ARGV[3] entry key prefix, ARGV[4]
-#: comma-separated channels, ARGV[5..] hash field/value pairs. KEYS[4] is the
-#: outbox index. Doing this in one script is the whole point: an incident that
-#: exists without its pending deliveries is an alert that was decided on and
-#: then lost.
+#: Write the incident, preparation envelope and non-runnable target debts.
+#: ARGV: score, pointer, entry prefix, CSV target IDs, retention, hash pairs.
+#: KEYS: incident, incident index, pointer, preparation index, envelope.
+#: Delivery transitions are fenced Lua operations in storage._outbox.
 SAVE_INCIDENT_WITH_ALERTS_LUA = """
-redis.call('HSET', KEYS[1], unpack(ARGV, 5))
+if KEYS[6] ~= '' and redis.call('GET', KEYS[6]) ~= ARGV[6] then return 0 end
+if KEYS[7] ~= '' and redis.call('EXISTS', KEYS[7]) == 0 then return 2 end
+redis.call('ZADD', 'stats:v2:incidents-created', 'NX', ARGV[1], KEYS[1])
+redis.call('HSET', KEYS[1], unpack(ARGV, 7))
 redis.call('ZADD', KEYS[2], ARGV[1], KEYS[1])
 if KEYS[3] ~= '' then
     redis.call('HSET', KEYS[3], 'key', ARGV[2], 'score', ARGV[1])
@@ -68,36 +77,21 @@ if ARGV[4] ~= '' then
     for channel in string.gmatch(ARGV[4], '[^,]+') do
         local id = KEYS[1] .. '#' .. channel
         local entry = ARGV[3] .. id
-        redis.call('HSET', entry, 'incident', KEYS[1], 'channel', channel,
-                   'attempts', '0', 'created', ARGV[1])
-        redis.call('ZADD', KEYS[4], ARGV[1], id)
+        redis.call('HSET', entry, 'incident', KEYS[1], 'channel', string.match(channel, '^[^:]+'),
+                   'target', channel, 'attempts', '0', 'created', ARGV[1],
+                   'expires', tonumber(ARGV[1]) + tonumber(ARGV[5]), 'state', 'preparing')
     end
+    redis.call('HSET', KEYS[5], 'state', 'preparing', 'targets', ARGV[4],
+               'node_id', redis.call('HGET', KEYS[1], 'node_id'),
+               'created', ARGV[1], 'expires', tonumber(ARGV[1]) + tonumber(ARGV[5]))
+    redis.call('ZADD', KEYS[4], ARGV[1], KEYS[1])
 end
-return 1
-"""
-
-#: Hand out the deliveries that are due, pushing each one's score forward by the
-#: lease. The read and the reschedule happen together, so two replicas can never
-#: claim the same entry; a worker that dies mid-delivery simply lets its lease
-#: expire and the entry becomes due again.
-CLAIM_DUE_ALERTS_LUA = """
-local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2]))
-for i = 1, #ids do
-    redis.call('ZADD', KEYS[1], tonumber(ARGV[1]) + tonumber(ARGV[3]), ids[i])
+if KEYS[7] ~= '' then
+    local pointer = redis.call('GET', KEYS[7] .. ':pointer')
+    if pointer and redis.call('GET', pointer) == KEYS[7] then redis.call('DEL', pointer) end
+    redis.call('DEL', KEYS[7], KEYS[7] .. ':event', KEYS[7] .. ':pointer')
+    redis.call('ZREM', KEYS[8], KEYS[7])
 end
-return ids
-"""
-
-#: Record a delivery as done and drop its entry, but only if the entry still
-#: exists. Returns 1 when this call settled it, 0 when there was nothing left
-#: (already delivered by another replica, or never enqueued).
-SETTLE_ALERT_LUA = """
-if redis.call('EXISTS', KEYS[1]) == 0 then
-    return 0
-end
-redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
-redis.call('DEL', KEYS[1])
-redis.call('ZREM', KEYS[3], ARGV[1])
 return 1
 """
 
@@ -166,29 +160,13 @@ redis.call('DEL', KEYS[2])
 return flat
 """
 
-#: Drop pending deliveries nobody will attempt, one batch at a time. ARGV[i] is
-#: the index member for KEYS[i + 1]. A suppressed alert must not keep its outbox
-#: entry: the worker would deliver it later and the ration would be a delay
-#: rather than a limit.
-DISCARD_ALERTS_LUA = """
-local removed = 0
-for i = 2, #KEYS do
-    removed = removed + redis.call('DEL', KEYS[i])
-    redis.call('ZREM', KEYS[1], ARGV[i - 1])
-end
-return removed
-"""
-
 __all__ = [
-    "CLAIM_DUE_ALERTS_LUA",
     "CONFIRM_DEDUP_LUA",
-    "DISCARD_ALERTS_LUA",
     "RELEASE_LOCK_LUA",
     "RESERVE_ALERT_BUDGET_LUA",
     "RESERVE_QUOTA_LUA",
     "SAVE_INCIDENT_LUA",
     "SAVE_INCIDENT_WITH_ALERTS_LUA",
     "SERVICE_MESSAGE_SLOT_LUA",
-    "SETTLE_ALERT_LUA",
     "TAKE_BUDGET_SUMMARY_LUA",
 ]

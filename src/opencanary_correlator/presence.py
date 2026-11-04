@@ -17,6 +17,8 @@ import time
 from collections.abc import Callable
 from typing import Final
 
+from opencanary_correlator import metrics
+
 #: Nodes one process tracks. Beyond this a *new* node id is ignored: the oldest
 #: eviction policy would let a flood of invented ids hide the real estate.
 DEFAULT_NODE_LIMIT: Final[int] = 10_000
@@ -57,8 +59,10 @@ class NodeRegistry:
         if not node_id:
             return False
         if node_id not in self._seen and len(self._seen) >= self._limit:
+            metrics.NODE_REGISTRY_OVERFLOW.labels(scope="local").inc()
             return False
-        self._seen[node_id] = int(self._clock() if now is None else now)
+        stamp = int(self._clock() if now is None else now)
+        self._seen[node_id] = max(self._seen.get(node_id, 0), stamp)
         return True
 
     def snapshot(self, *, limit: int = PUBLISH_LIMIT) -> dict[str, int]:

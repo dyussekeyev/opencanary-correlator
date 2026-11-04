@@ -6,7 +6,12 @@ from collections.abc import Mapping, Sequence
 
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.storage._base import IncidentLookup, _StoreBase
-from opencanary_correlator.storage.keys import OUTBOX_ENTRY_PREFIX, OUTBOX_INDEX
+from opencanary_correlator.storage.keys import (
+    OUTBOX_ENTRY_PREFIX,
+    OUTBOX_PREPARING,
+    SCAN_PENDING_INDEX,
+    outbox_envelope_key,
+)
 
 
 class _IncidentsMixin(_StoreBase):
@@ -64,7 +69,10 @@ class _IncidentsMixin(_StoreBase):
         *,
         score: float,
         pointer_key: str | None = None,
-    ) -> None:
+        lock_key: str = "",
+        lock_token: str = "",
+        scan_pending: str = "",
+    ) -> int:
         """Persist the incident hash and refresh its score in the index ZSET.
 
         The hash, the index and the optional per-host `pointer_key` are written
@@ -73,15 +81,17 @@ class _IncidentsMixin(_StoreBase):
         server: Redis Cluster would reject it with ``CROSSSLOT``, and the
         deployment contract is a single logical Redis.
         """
-        keys = [key, KEY_INCIDENTS] + ([pointer_key] if pointer_key is not None else [])
+        keys = [key, KEY_INCIDENTS, pointer_key or "", lock_key, scan_pending, SCAN_PENDING_INDEX]
         pairs: list[str] = []
         for field, value in fields.items():
             pairs.append(field)
             pairs.append(value)
-        await self._run_script(
-            self._save_incident_script,
-            keys,
-            [str(score), key, *pairs],
+        return int(
+            await self._run_script(
+                self._save_incident_script,
+                keys,
+                [str(score), key, lock_token, *pairs],
+            )
         )
 
     async def save_new_incident(
@@ -92,7 +102,11 @@ class _IncidentsMixin(_StoreBase):
         score: float,
         pointer_key: str | None = None,
         alert_channels: Sequence[str] = (),
-    ) -> None:
+        alert_retention: float = 604800,
+        lock_key: str = "",
+        lock_token: str = "",
+        scan_pending: str = "",
+    ) -> int:
         """Persist a new incident and its pending deliveries in one script.
 
         Enqueueing after the write would leave a window in which the incident
@@ -100,21 +114,34 @@ class _IncidentsMixin(_StoreBase):
         silently, because nothing recorded that one was owed. A merge keeps
         using :meth:`save_incident` - it notifies nobody on purpose.
         """
-        keys = [key, KEY_INCIDENTS, pointer_key or "", OUTBOX_INDEX]
+        keys = [
+            key,
+            KEY_INCIDENTS,
+            pointer_key or "",
+            OUTBOX_PREPARING,
+            outbox_envelope_key(key),
+            lock_key,
+            scan_pending,
+            SCAN_PENDING_INDEX,
+        ]
         pairs: list[str] = []
         for field, value in fields.items():
             pairs.append(field)
             pairs.append(value)
-        await self._run_script(
-            self._save_incident_alerts_script,
-            keys,
-            [
-                str(score),
-                key,
-                OUTBOX_ENTRY_PREFIX,
-                ",".join(alert_channels),
-                *pairs,
-            ],
+        return int(
+            await self._run_script(
+                self._save_incident_alerts_script,
+                keys,
+                [
+                    str(score),
+                    key,
+                    OUTBOX_ENTRY_PREFIX,
+                    ",".join(alert_channels),
+                    str(alert_retention),
+                    lock_token,
+                    *pairs,
+                ],
+            )
         )
 
 

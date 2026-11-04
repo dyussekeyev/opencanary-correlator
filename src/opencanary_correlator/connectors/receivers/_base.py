@@ -8,6 +8,7 @@ implements its own socket lifecycle and framing.
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
 
 from opencanary_correlator.audit import AuditLogger
@@ -66,6 +67,11 @@ class NetworkReceiver(BaseReceiver):
     def stats(self) -> ReceiverStats:
         """Counters for health reporting and tests."""
         return self._pipeline.stats
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Expose consumers without coupling the runtime to pipeline internals."""
+        return self._pipeline.critical_tasks
 
     @property
     def pending(self) -> int:

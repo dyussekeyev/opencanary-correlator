@@ -18,7 +18,7 @@ from opencanary_correlator import metrics
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
 from opencanary_correlator.connectors.receivers._pipeline import EventPipeline
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceMessage, ServiceNotifier
-from opencanary_correlator.core.stats import StatsReporter, _sum_heartbeat
+from opencanary_correlator.core.stats import StatsReporter
 from opencanary_correlator.core.watch import SILENT_PER_CHECK, HealthWatch, _minutes, last_seen
 from opencanary_correlator.presence import NODE_FIELD_PREFIX, NodeRegistry
 from opencanary_correlator.schemas import CanaryEvent
@@ -99,6 +99,27 @@ async def publish(store: Any, instance: str, nodes: dict[str, int]) -> None:
 
 def actions(audit_stream: Any) -> list[str]:
     return [json.loads(line)["action"] for line in audit_stream.getvalue().splitlines()]
+
+
+async def test_durable_node_survives_departed_replica(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    await store.flush_node_activity({"canary-old": int(NOW - 1000)})
+    dispatcher = RecordingDispatcher()
+    watch = make_watch(store, watch_settings(settings_factory), audit, dispatcher)
+    assert await watch.check_once() == ("canary-old",)
+
+
+async def test_expected_never_seen_node_has_startup_grace(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    dispatcher = RecordingDispatcher()
+    settings = watch_settings(
+        settings_factory, canary_expected_nodes=["expected"], canary_startup_grace=120
+    )
+    watch = make_watch(store, settings, audit, dispatcher)
+    assert await watch.check_once(NOW + 60) == ()
+    assert await watch.check_once(NOW + 121) == ("expected",)
 
 
 # --- The registry -----------------------------------------------------------
@@ -460,14 +481,19 @@ async def test_a_failing_check_is_audited_and_the_loop_continues(
     assert "health_watch_failed" in actions(audit_stream)
 
 
-def test_the_digest_ignores_node_evidence() -> None:
-    """Node times are not counters: summing them would poison the totals."""
-    totals: dict[str, int] = {}
+async def test_the_digest_ignores_node_evidence(store: Any, audit: Any) -> None:
+    """Node times are not counters: they stay in the heartbeat, not in the buckets."""
+    nodes = NodeRegistry()
+    nodes.touch("canary-1", now=NOW - 100)
+    reporter = StatsReporter(store, audit, instance_id="r1", nodes=nodes, clock=lambda: NOW)
 
-    _sum_heartbeat(
-        "r1",
-        {"events_accepted": "5", f"{NODE_FIELD_PREFIX}canary-1": "1234567890"},
-        totals,
+    await reporter.beat()
+
+    heartbeat = await store.hgetall(keys.stats_instance_key("r1"))
+    assert heartbeat[f"{NODE_FIELD_PREFIX}canary-1"] == str(int(NOW - 100))
+    bucket = await store.hgetall(f"stats:v2:minute:{int(NOW // 60)}")
+    assert bucket, "a beat must publish its counters"
+    allowed = {"rule_failures", "accepted_targets"}
+    assert all(name.startswith(("events_", "alerts_")) or name in allowed for name in bucket), (
+        bucket
     )
-
-    assert totals == {"events_accepted": 5}

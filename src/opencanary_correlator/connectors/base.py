@@ -7,10 +7,11 @@ The core must not import concrete connectors; it talks to :class:`EventSink`
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from opencanary_correlator.schemas import CanaryEvent
 
@@ -105,6 +106,8 @@ class DispatchResult(BaseModel):
     status: Literal["success", "error", "skipped"]
     detail: str = ""
     duration_ms: float | None = None
+    retryable: bool = True
+    retry_after: float | None = Field(default=None, ge=0, le=3600, allow_inf_nan=False)
 
 
 class BaseReceiver(ABC):
@@ -116,6 +119,11 @@ class BaseReceiver(ABC):
     @abstractmethod
     def is_running(self) -> bool:
         """True while the receiver is bound and accepting input."""
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Long-lived tasks supervised by the runtime (empty for sync plugins)."""
+        return ()
 
     @abstractmethod
     async def start(self) -> None:
@@ -130,10 +138,22 @@ class BaseDispatcher(ABC):
     """An alert delivery channel."""
 
     name: ClassVar[str] = "dispatcher"
+    # Concrete connectors override this with a credential-free destination hash.
+    # A custom single-target plugin may retain its channel name as identity.
+    delivery_target_id: str = ""
+
+    @property
+    def target_id(self) -> str:
+        """Stable identity of this destination, distinct from the channel kind."""
+        return self.delivery_target_id or self.name
 
     @abstractmethod
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """Deliver an incident, returning the outcome instead of raising."""
+
+    async def dispatch_once(self, incident: IncidentLike) -> DispatchResult:
+        """One durable attempt; plugins may override to disable internal retries."""
+        return await self.dispatch(incident)
 
     async def notify(self, message: ServiceMessage) -> DispatchResult:
         """Deliver one service message about the correlator itself.

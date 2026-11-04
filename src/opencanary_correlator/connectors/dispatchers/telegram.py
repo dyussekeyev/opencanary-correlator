@@ -14,6 +14,7 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
     render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import HTTPDispatcher
+from opencanary_correlator.storage.keys import delivery_target_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from opencanary_correlator.core.service_messages import ServiceMessage
@@ -42,6 +43,9 @@ class TelegramDispatcher(HTTPDispatcher):
         self._detail: AlertDetail = detail
         secret = SecretStr(token) if isinstance(token, str) else token
         super().__init__(url=self._api_url(secret), **kwargs)
+        # Bot numeric ID survives token rotation; a different bot is a new target.
+        bot_id = secret.get_secret_value().split(":", 1)[0]
+        self.delivery_target_id = delivery_target_id(self.name, bot_id, chat_id)
 
     @staticmethod
     def _api_url(token: SecretStr) -> str:

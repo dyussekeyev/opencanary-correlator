@@ -28,7 +28,19 @@ class _LockMixin(_StoreBase):
         ttl_ms: int = DEFAULT_LOCK_TTL_MS,
         wait_timeout: float = DEFAULT_LOCK_WAIT_SECONDS,
     ) -> AsyncIterator[bool]:
-        """Acquire a best-effort distributed lock, yielding False on timeout."""
+        """Compatibility wrapper for callers needing only acquisition status."""
+        async with self.owned_lock(key, ttl_ms=ttl_ms, wait_timeout=wait_timeout) as token:
+            yield token is not None
+
+    @asynccontextmanager
+    async def owned_lock(
+        self,
+        key: str,
+        *,
+        ttl_ms: int = DEFAULT_LOCK_TTL_MS,
+        wait_timeout: float = DEFAULT_LOCK_WAIT_SECONDS,
+    ) -> AsyncIterator[str | None]:
+        """Acquire a lease and expose its token for a fenced storage commit."""
         token = uuid.uuid4().hex
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait_timeout
@@ -39,7 +51,7 @@ class _LockMixin(_StoreBase):
                 break
             await asyncio.sleep(LOCK_RETRY_INTERVAL_SECONDS)
         try:
-            yield acquired
+            yield token if acquired else None
         finally:
             if acquired:
                 with contextlib.suppress(RedisError):

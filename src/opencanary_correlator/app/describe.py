@@ -118,6 +118,9 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
             "enabled": settings.canary_silent_after > 0,
             "after_seconds": settings.canary_silent_after,
             "check_interval": settings.watch_interval,
+            "expected_nodes": len(settings.canary_expected_nodes),
+            "startup_grace": settings.canary_startup_grace,
+            "registry_limit": settings.canary_registry_limit,
         },
         "ingestion_reports": {
             "drops_threshold": settings.service_drops_threshold,

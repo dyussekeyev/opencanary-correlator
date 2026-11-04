@@ -8,7 +8,13 @@ behaviour and says so.
 
 from __future__ import annotations
 
+from typing import cast
+from uuid import uuid4
+
+from redis.commands.core import Script
+
 from opencanary_correlator.storage._base import _StoreBase
+from opencanary_correlator.storage.keys import SCAN_PENDING_INDEX
 
 
 class _WindowsMixin(_StoreBase):
@@ -21,14 +27,55 @@ class _WindowsMixin(_StoreBase):
         key lost its TTL); later members must not extend a port-scan window, or
         continuous scanning would keep the threshold window alive forever.
         """
-        async with self._client.pipeline(transaction=True) as pipe:
-            pipe.sadd(key, member)
-            pipe.ttl(key)
-            pipe.scard(key)
-            results = await pipe.execute()
-        if int(results[1]) < 0:
-            await self._client.expire(key, max(1, int(ttl)))
-        return int(results[2])
+        script = cast(
+            Script,
+            self._client.register_script("""
+redis.call('SADD', KEYS[1], ARGV[1])
+if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return redis.call('SCARD', KEYS[1])
+"""),
+        )
+        return int(await self._run_script(script, [key], [member, str(max(1, int(ttl * 1000)))]))
+
+    async def snapshot_scan(
+        self,
+        key: str,
+        *,
+        member: str,
+        ttl: float,
+        threshold: int,
+        event: str,
+        now: float,
+    ) -> str | None:
+        """Atomically rotate threshold evidence into durable recovery state.
+
+        New arrivals use a new active set. The pending set never expires and is
+        acknowledged only by the same Lua commit that writes its incident.
+        """
+        pending = f"scan:v2:snapshot:{uuid4().hex}"
+        script = cast(
+            Script,
+            self._client.register_script("""
+redis.call('SADD', KEYS[1], ARGV[1])
+if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+local current = redis.call('GET', KEYS[5])
+if current then return current end
+if redis.call('SCARD', KEYS[1]) < tonumber(ARGV[3]) then return '' end
+redis.call('RENAME', KEYS[1], KEYS[2])
+redis.call('PERSIST', KEYS[2])
+redis.call('SET', KEYS[3], ARGV[4])
+redis.call('SET', KEYS[5], KEYS[2])
+redis.call('SET', KEYS[2] .. ':pointer', KEYS[5])
+redis.call('ZADD', KEYS[4], ARGV[5], KEYS[2])
+return KEYS[2]
+"""),
+        )
+        result = await self._run_script(
+            script,
+            [key, pending, pending + ":event", SCAN_PENDING_INDEX, key + ":pending"],
+            [member, str(max(1, int(ttl * 1000))), str(threshold), event, str(now)],
+        )
+        return self._text(result) if result else None
 
     async def zadd_window(
         self,

@@ -107,6 +107,17 @@ async def test_the_lease_is_clamped_to_the_window(store: Any) -> None:
     assert await pttl(store, "fingerprint") <= 50
 
 
+def test_fingerprint_legacy_time_and_protocol_semantics(event_factory: Any) -> None:
+    first = CanaryEvent.model_validate(event_factory(src_port=-1))
+    later = CanaryEvent.model_validate(event_factory(src_port=-1, local_time="2026-10-25 00:00:00"))
+    assert event_fingerprint(first) == event_fingerprint(later)
+    mysql = CanaryEvent.model_validate(event_factory(logtype=8001))
+    rdp = CanaryEvent.model_validate(event_factory(logtype=14001))
+    assert event_fingerprint(mysql) != event_fingerprint(rdp)
+    other_node = CanaryEvent.model_validate(event_factory(node_id="canary-2", src_port=-1))
+    assert event_fingerprint(first) != event_fingerprint(other_node)
+
+
 def test_the_default_lease_is_shorter_than_the_default_window() -> None:
     assert DEFAULT_DEDUP_LEASE < 60.0
 

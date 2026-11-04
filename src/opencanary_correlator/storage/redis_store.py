@@ -25,6 +25,7 @@ searching 400 lines:
 :mod:`_outbox`       pending alert deliveries, retries and the dead letter list
 :mod:`_service`      suppression slots for service messages
 :mod:`_stats`        replica heartbeats and the incident/window reads
+:mod:`_retention`    bounded removal of old incidents and dead letters
 :mod:`_locks`        the short-lived distributed lock
 ===================  ==========================================================
 
@@ -51,6 +52,7 @@ from opencanary_correlator.storage._locks import (
 )
 from opencanary_correlator.storage._outbox import _OutboxMixin
 from opencanary_correlator.storage._quota import _QuotaMixin
+from opencanary_correlator.storage._retention import _RetentionMixin
 from opencanary_correlator.storage._service import _ServiceMixin
 from opencanary_correlator.storage._stats import _StatsMixin
 from opencanary_correlator.storage._windows import _WindowsMixin
@@ -67,6 +69,7 @@ class RedisStore(
     _ServiceMixin,
     _StatsMixin,
     _BudgetMixin,
+    _RetentionMixin,
     _LockMixin,
     _StoreBase,
 ):

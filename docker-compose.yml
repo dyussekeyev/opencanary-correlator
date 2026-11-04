@@ -34,6 +34,8 @@ services:
     build:
       context: .
     restart: unless-stopped
+    # Must exceed OCC_SHUTDOWN_TIMEOUT (20 seconds by default).
+    stop_grace_period: ${OCC_STOP_GRACE_PERIOD:-30s}
     # Optional `.env` supplies webhooks, SMTP, syslog and health settings. The
     # variables below take precedence, so the container always talks to the
     # bundled Redis instead of a URL copied from a host-oriented `.env`.

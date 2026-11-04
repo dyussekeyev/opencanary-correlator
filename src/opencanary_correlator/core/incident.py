@@ -117,6 +117,7 @@ class IncidentRepository:
         *,
         logdata: Any = _UNSET,
         logtype: int | None = None,
+        scan_pending: str = "",
     ) -> Incident | None:
         """Persist a new incident, or merge into the live one.
 
@@ -136,10 +137,9 @@ class IncidentRepository:
         new_logdata = event.logdata if logdata is _UNSET else logdata
         resolved_logtype = logtype if logtype is not None else int(event.logtype)
 
-        async with self._store.lock(
-            keys.incident_lock_key(incident_name, event.src_host)
-        ) as acquired:
-            if not acquired:
+        lock_key = keys.incident_lock_key(incident_name, event.src_host)
+        async with self._store.owned_lock(lock_key) as token:
+            if token is None:
                 # The lock waits `DEFAULT_LOCK_WAIT_SECONDS` and retries every
                 # 10 ms, so this is real contention or an unresponsive Redis, not
                 # a momentary overlap. Nothing was written: say so by raising,
@@ -217,12 +217,19 @@ class IncidentRepository:
                             updates["logdata"] = merged.logdata or "[]"
                     else:
                         updates = merged.to_fields()
-                    await self._store.save_incident(
+                    committed = await self._store.save_incident(
                         existing_key,
                         updates,
                         score=now,
                         pointer_key=pointer_key,
+                        lock_key=lock_key,
+                        lock_token=token,
+                        scan_pending=scan_pending,
                     )
+                    if committed == 0:
+                        self._lease_lost(incident_name, event.src_host)
+                    if committed == 2:
+                        return None  # another recovery already committed this snapshot
                     self._audit.emit(
                         "incident_updated",
                         "info",
@@ -257,13 +264,21 @@ class IncidentRepository:
             # The incident and its pending deliveries are one script: an incident
             # that exists without a record of what it owes is an alert that was
             # decided on and lost.
-            await self._store.save_new_incident(
+            committed = await self._store.save_new_incident(
                 key,
                 incident.to_fields(),
                 score=now,
                 pointer_key=pointer_key,
                 alert_channels=self._alert_channels,
+                alert_retention=self._settings.outbox_delivery_retention,
+                lock_key=lock_key,
+                lock_token=token,
+                scan_pending=scan_pending,
             )
+            if committed == 0:
+                self._lease_lost(incident_name, event.src_host)
+            if committed == 2:
+                return None
             self._audit.emit(
                 "incident_created",
                 "info",
@@ -275,3 +290,14 @@ class IncidentRepository:
                 },
             )
             return incident
+
+    def _lease_lost(self, incident_name: str, src_host: str) -> None:
+        self._audit.emit(
+            "incident_lease_lost",
+            "warning",
+            {
+                "incident": incident_name,
+                "src_host": src_host,
+            },
+        )
+        raise IncidentLockTimeoutError(incident_name, src_host)

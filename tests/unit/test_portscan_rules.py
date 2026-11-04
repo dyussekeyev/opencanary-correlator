@@ -138,6 +138,53 @@ async def test_network_portscan_ignores_repeated_target(
     assert await rule.apply(event, now=clock.now) == []
 
 
+async def test_failed_record_keeps_the_threshold_evidence_for_retry(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any, monkeypatch: Any
+) -> None:
+    import pytest
+
+    settings = settings_factory(scan_host_threshold=3)
+    repository = make_repository(store, settings, audit, clock)
+    rule = HostPortScanRule(store=store, repository=repository, settings=settings)
+    for port in (21, 22):
+        await rule.apply(syn_event(event_factory, dst_port=port), now=clock())
+    original = store.save_new_incident
+
+    async def fail(*args: Any, **kwargs: Any) -> None:
+        raise ConnectionError("storage unavailable")
+
+    monkeypatch.setattr(store, "save_new_incident", fail)
+    with pytest.raises(ConnectionError):
+        await rule.apply(syn_event(event_factory, dst_port=23), now=clock())
+    monkeypatch.setattr(store, "save_new_incident", original)
+    incidents = await rule.apply(syn_event(event_factory, dst_port=24), now=clock())
+    assert len(incidents) == 1
+    assert {21, 22, 23} <= set(json.loads(incidents[0].logdata))
+
+
+async def test_snapshot_survives_restart_and_new_generation_is_not_cleared(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    settings = settings_factory(scan_host_threshold=2)
+    repository = make_repository(store, settings, audit, clock)
+    key = keys.host_scan_key("10.0.0.5", "10.0.0.2")
+    event = syn_event(event_factory, dst_port=22)
+    await store.snapshot_scan(
+        key, member="21", ttl=1, threshold=2, event=event.model_dump_json(), now=clock()
+    )
+    pending = await store.snapshot_scan(
+        key, member="22", ttl=1, threshold=2, event=event.model_dump_json(), now=clock()
+    )
+    await store.sadd_with_fixed_expire(key, "23", ttl=50)
+    restarted = HostPortScanRule(store=store, repository=repository, settings=settings)
+    incidents = await restarted.recover()
+    assert len(incidents) == 1
+    assert json.loads(incidents[0].logdata) == [21, 22]
+    assert await store.smembers(key) == {"23"}
+    assert not await store.exists(pending)
+    assert await restarted.recover() == []
+
+
 def test_receiver_stats_defaults() -> None:
     stats = ReceiverStats()
 

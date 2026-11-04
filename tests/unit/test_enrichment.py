@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from opencanary_correlator.enrichment.geo import GeoLookup
+from opencanary_correlator.enrichment.geo import GeoInspection, GeoLookup
 from opencanary_correlator.enrichment.models import GeoInfo, VirusTotalReport, country_flag
 from opencanary_correlator.enrichment.service import IncidentEnricher
 
@@ -24,9 +24,15 @@ INFO = GeoInfo(
 class FakeGeo:
     """Geo provider stand-in."""
 
-    def __init__(self, info: GeoInfo | None = INFO, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        info: GeoInfo | None = INFO,
+        error: Exception | None = None,
+        failed: tuple[str, ...] = (),
+    ) -> None:
         self.info = info
         self.error = error
+        self.failed = failed
         self.closed = False
         self.calls: list[str] = []
 
@@ -35,6 +41,9 @@ class FakeGeo:
         if self.error is not None:
             raise self.error
         return self.info
+
+    def inspect(self, ip: str) -> GeoInspection:
+        return GeoInspection(self.lookup(ip), self.failed)
 
     def close(self) -> None:
         self.closed = True
@@ -190,6 +199,33 @@ async def test_an_unavailable_provider_is_audited_without_geo(
     assert enrichment is not None
     assert enrichment.is_empty is False  # the status row is rendered
     assert ("enrichment_failed", "warning") in actions(audit_stream)
+
+
+async def test_a_reader_failure_keeps_the_data_the_other_database_returned(
+    audit: Any, audit_stream: Any
+) -> None:
+    """A broken ASN file must not throw away the country the city file found."""
+    geo = FakeGeo(failed=("asn:RuntimeError",))
+    enricher = IncidentEnricher(geo=geo, virustotal=FakeVirusTotal(), audit=audit)  # type: ignore[arg-type]
+
+    enrichment = await enricher.enrich(ATTACKER)
+
+    assert enrichment is not None
+    assert enrichment.geo is INFO
+    assert enrichment.virus_total == REPORT
+    assert ("enrichment_failed", "error") in actions(audit_stream)
+    records = [json.loads(line) for line in audit_stream.getvalue().splitlines()]
+    assert records[-1]["details"]["failures"] == ["asn:RuntimeError"]
+
+
+async def test_a_missing_geo_record_is_not_reported_as_a_failure(
+    audit: Any, audit_stream: Any
+) -> None:
+    geo = FakeGeo(info=None, failed=())
+    enricher = IncidentEnricher(geo=geo, audit=audit)  # type: ignore[arg-type]
+
+    assert await enricher.enrich(ATTACKER) is None
+    assert ("enrichment_failed", "error") not in actions(audit_stream)
 
 
 async def test_nothing_known_yields_none() -> None:
