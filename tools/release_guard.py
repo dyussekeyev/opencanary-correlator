@@ -89,7 +89,11 @@ def upload_mode(release: dict[str, Any] | None, tag: str) -> str:
 def checksums(directory: Path) -> str:
     """Render a sorted `sha256sum -c` manifest for the artifacts in `directory`."""
     files = sorted(
-        path for path in directory.iterdir() if path.is_file() and path.name != "SHA256SUMS"
+        path
+        for path in directory.iterdir()
+        # Build tools drop a `.gitignore` into an output directory; it is not a
+        # release asset and would make `sha256sum -c` fail on a consumer's box.
+        if path.is_file() and not path.name.startswith(".") and path.name != "SHA256SUMS"
     )
     if not files:
         raise GuardError(f"no artifacts to checksum in {directory}")
@@ -140,7 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             print(mode)
             return EXIT_OK
         manifest = checksums(Path(args.dist))
-        Path(args.output).write_text(manifest, encoding="utf-8")
+        # `newline="\n"` keeps the manifest readable by `sha256sum -c` when the
+        # tool runs on Windows: the default translation writes CRLF, and then
+        # every filename carries a trailing carriage return.
+        Path(args.output).write_text(manifest, encoding="utf-8", newline="\n")
         print(manifest, end="")
         return EXIT_OK
     except (OSError, ValueError, GuardError) as exc:

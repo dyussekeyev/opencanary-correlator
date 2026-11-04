@@ -13,6 +13,7 @@ from tools.release_guard import (
     GuardError,
     checksums,
     ci_state,
+    main,
     upload_mode,
 )
 
@@ -106,3 +107,23 @@ def test_the_manifest_covers_every_artifact_sorted_and_excludes_itself(tmp_path:
 def test_an_empty_dist_directory_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(GuardError, match="no artifacts"):
         checksums(tmp_path)
+
+
+def test_hidden_build_files_are_not_release_assets(tmp_path: Path) -> None:
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    (tmp_path / ".gitignore").write_text("*\n", encoding="utf-8")
+
+    manifest = checksums(tmp_path)
+
+    assert ".gitignore" not in manifest
+    assert "a.whl" in manifest
+
+
+def test_the_manifest_uses_lf_so_sha256sum_can_read_it(tmp_path: Path) -> None:
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    output = tmp_path / "SHA256SUMS"
+
+    assert main(["checksums", "--dist", str(tmp_path), "--output", str(output)]) == 0
+
+    assert b"\r" not in output.read_bytes()
+    assert output.read_text(encoding="utf-8").endswith("\n")
