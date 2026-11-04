@@ -1,0 +1,27 @@
+version: 2
+
+# Workflows pin actions by commit SHA, which is what makes a supply-chain
+# compromise of a moving tag invisible. The price is that a pin never moves on
+# its own, so these updates arrive as reviewed pull requests instead.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+    commit-message:
+      prefix: "ci"
+    labels: ["dependencies", "ci"]
+
+  # The base images in `Dockerfile` and `docker-compose.yml` are pinned by
+  # digest; this proposes new digests, and the CI docker job proves they build.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies", "docker"]
