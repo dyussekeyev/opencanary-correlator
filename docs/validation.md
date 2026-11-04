@@ -118,6 +118,42 @@ was published. The first run also proved the gates work: `qualification` failed
 on the subset coverage threshold and `container-scan` on a fixable HIGH in the
 base image, both fixed before the merge.
 
+## Recovery objectives (measured)
+
+The numbers come from the 2026-11-04 drill recorded in `docs/operations.md`
+(§Backup, RPO and RTO); they are observations of that dataset, not a vendor SLA.
+
+- **RPO:** at most about one second of acknowledged Redis writes on a process or
+  host crash with the compose defaults (`appendonly yes`, `appendfsync everysec`).
+  Whatever the OS page cache had not flushed, and a lost volume, are covered only
+  by a backup.
+- **RTO:** 0.95 s from `docker start` to accepting connections for a 5 001-key /
+  0.84 MB RDB, 12 ms of which was loading the file, with `redis:7-alpine` 7.4.11.
+
+Container start dominated at that size, so re-measure with the production dataset
+and storage before treating 0.95 s as a promise.
+
+## First-day observation
+
+The signals that decide whether a release behaves, and what the runbook alerts on:
+
+- **Oldest pending delivery:** `max(opencanary_outbox_oldest_pending_age_seconds)`;
+  the runbook alerts above 600 s.
+- **Dead letters:** `opencanary_outbox_dead_entries`; a rising value sends the
+  operator to §Dead letters.
+- **Failed dispatch share:**
+  `sum(rate(opencanary_alerts_total{status=~"error|exception|timeout"}[5m]))`
+  divided by `sum(rate(opencanary_alerts_total[5m]))`. It is undefined when no
+  attempt was made, so an idle deployment must not be read as zero failures.
+- **Liveness:** `/readyz` returning 503 for two minutes.
+
+**Status:** release `v0.6.0` was published on 2026-11-04, but no deployed
+instance is attached to this release, so no 24-hour window has been observed and
+none is claimed. The compose smoke recorded 0 pending deliveries, 0 dead letters
+and no dispatcher attempts, which leaves the failed-dispatch share undefined
+(0/0) rather than zero. The window starts when a deployment is pointed at these
+queries; until then these values are targets, not results.
+
 ## Compatibility proof
 
 `tests/integration/test_tcp_json_receiver.py` and `tests/integration/test_end_to_end.py`
