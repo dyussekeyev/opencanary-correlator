@@ -509,12 +509,15 @@ jobs:
           enable-cache: true
       - name: Install the locked environment
         run: uv sync --extra dev --python "$(command -v python)"
+      # This job runs a subset, so the project-wide coverage gate in addopts
+      # cannot apply: `--no-cov` keeps the run about recovery behaviour, not
+      # about how much of the package these files happen to import.
       - name: Two replicas, restart and POSIX signal handling
-        run: uv run pytest tests/integration/test_real_redis.py -q
+        run: uv run pytest tests/integration/test_real_redis.py -q --no-cov
       - name: Wire compatibility with a real Redis
         run: |
           uv run pytest tests/integration/test_end_to_end.py \
-            tests/integration/test_tcp_json_receiver.py -q
+            tests/integration/test_tcp_json_receiver.py -q --no-cov
 
   package:
     name: Build wheel
