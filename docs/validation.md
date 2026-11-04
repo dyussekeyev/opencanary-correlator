@@ -97,9 +97,11 @@ build running from the pinned, locked environment in CI.
 The Windows job stays required for merge: it covers CRLF in alerts and logs, the
 pidfile handling and the Windows datagram transport that the Linux matrix cannot
 exercise. It is not a separate release gate, because the release gate is the
-whole CI workflow, which includes it. Required status checks and branch
-protection are GitHub repository settings; changing them needs separate
-authorization for a GitHub write and was not done here.
+whole CI workflow, which includes it. On 2026-11-04 the required contexts were
+extended to ten checks: the previous seven plus `Tests (Windows)`, `Recovery
+qualification (real Redis)` and `Container SBOM and vulnerability scan`.
+`benchmark` stays a measurement rather than a gate, because its numbers vary
+more between shared runners than the effects it measures.
 
 Qualification figures (benchmark job, latency probe, memory) are reported in the
 job summary and never used as pass/fail thresholds: repeated runs of one commit
@@ -107,10 +109,14 @@ on shared runners differ by more than the effects being measured. The numbers
 recorded in this file are local or CI observations of specific runs, not
 guarantees.
 
-**Status of this change:** the workflows and `tools/release_guard.py` are
-implemented and the rules are unit-tested locally; the release path itself has
-not been observed in a GitHub Actions run, because pushing a tag, enabling
-branch protection or publishing a release is outside this task.
+**Status of this change:** the release path was exercised end to end on
+2026-11-04. PR #50 ran 11 jobs (all green on `60eccf1`), the merge commit
+`df3a36b` passed CI as `41809072240`, the annotated tag `v0.6.0` triggered CI
+`41809334402` and Release `41809356717`, and the draft's assets passed
+`sha256sum -c` before [the release](https://github.com/dyussekeyev/opencanary-correlator/releases/tag/v0.6.0)
+was published. The first run also proved the gates work: `qualification` failed
+on the subset coverage threshold and `container-scan` on a fixable HIGH in the
+base image, both fixed before the merge.
 
 ## Compatibility proof
 
