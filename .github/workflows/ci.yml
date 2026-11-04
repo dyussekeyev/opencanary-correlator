@@ -5,6 +5,9 @@ on:
     # `release/**` is included so a direct push to a release branch is checked
     # too, not only the pull request into it.
     branches: [master, "release/**"]
+    # A tag starts the same suite the release workflow waits for, so publishing
+    # never depends on a second, weaker definition of "green".
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -26,11 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
         with:
           version: "0.13.0"
           enable-cache: true
@@ -80,11 +83,11 @@ jobs:
     env:
       OCC_TEST_REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
         with:
           version: "0.13.0"
           enable-cache: true
@@ -103,7 +106,7 @@ jobs:
         run: uv run coverage xml -o coverage.xml
       - name: Keep the coverage report
         if: matrix.python-version == '3.13'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: coverage-xml
           path: coverage.xml
@@ -113,7 +116,7 @@ jobs:
         # Fork pull requests run with a read-only token, so a comment would fail
         # there; the artifact above is still uploaded.
         if: matrix.python-version == '3.13' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
           script: |
             const fs = require('fs');
@@ -181,11 +184,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.14"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
         with:
           version: "0.13.0"
           enable-cache: true
@@ -207,11 +210,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
         with:
           version: "0.13.0"
           enable-cache: true
@@ -430,13 +433,99 @@ jobs:
                   )
           PY
 
+  # The image is the artifact operators actually run, so it gets an inventory
+  # and a gate on fixable high-severity findings. Nothing is pushed to a
+  # registry (this repository publishes packages, not images), so there is no
+  # image provenance to attest; the SBOM is the proportionate record of content.
+  container-scan:
+    name: Container SBOM and vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+      - name: Build the image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: .
+          load: true
+          tags: opencanary-correlator:ci
+          provenance: false
+      - name: Write a CycloneDX SBOM
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
+        with:
+          image-ref: opencanary-correlator:ci
+          format: cyclonedx
+          output: sbom.cdx.json
+          scanners: vuln
+          exit-code: "0"
+      # Only fixable findings: an advisory with no released fix would otherwise
+      # block a release nobody can fix from this repository.
+      - name: Fail on fixable high-severity findings
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
+        with:
+          image-ref: opencanary-correlator:ci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Keep the SBOM
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: container-sbom
+          path: sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The qualification gate: this suite needs a real Redis and POSIX signals, so
+  # it skips on a developer machine and runs on every push here. Figures stay
+  # measurements (see the benchmark job); nothing here is a performance
+  # threshold, because a shared runner's CPU steal dominates wall time.
+  qualification:
+    name: Recovery qualification (real Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      OCC_TEST_REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --extra dev --python "$(command -v python)"
+      # This job runs a subset, so the project-wide coverage gate in addopts
+      # cannot apply: `--no-cov` keeps the run about recovery behaviour, not
+      # about how much of the package these files happen to import.
+      - name: Two replicas, restart and POSIX signal handling
+        run: uv run pytest tests/integration/test_real_redis.py -q --no-cov
+      - name: Wire compatibility with a real Redis
+        run: |
+          uv run pytest tests/integration/test_end_to_end.py \
+            tests/integration/test_tcp_json_receiver.py -q --no-cov
+
   package:
     name: Build wheel
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
       - name: Install build tooling
@@ -457,7 +546,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Generate the Redis password for this job
         run: |
           # Random per run, written to GITHUB_ENV so every later compose step sees
@@ -570,6 +659,23 @@ jobs:
             exit 1
           fi
           echo "published port refused, as expected for a loopback-only binding"
+
+      # A restart is the recovery path an operator actually takes. The container
+      # must stop cleanly on SIGTERM, then come back healthy with the stored
+      # incident intact rather than duplicated.
+      - name: Restart the correlator and verify recovery
+        run: |
+          docker compose stop -t 30 correlator
+          code=$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q correlator)")
+          echo "exit after SIGTERM: $code"
+          test "$code" = "0"
+          docker compose up -d --wait correlator
+          count=$(docker compose exec -T redis redis-cli ZCARD incidents | tr -d '\r')
+          echo "incidents after restart: $count"
+          test "$count" = "1"
+          status=$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q correlator)")
+          echo "health after restart: $status"
+          test "$status" = "healthy"
 
       - name: Collect diagnostics on failure
         if: failure()

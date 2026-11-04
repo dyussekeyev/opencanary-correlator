@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Final, Literal
 
+from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceNotifier
 from opencanary_correlator.enrichment.geo import GeoLookup, public_address
@@ -81,22 +82,42 @@ class IncidentEnricher:
         if self._geo is None:
             return None
         try:
-            return self._geo.lookup(src_host)
-        except Exception as exc:  # a broken reader must not stop the alert
+            inspection = self._geo.inspect(src_host)
+        except Exception as exc:  # a broken lookup must not stop the alert
+            metrics.ENRICHMENT_GEO.labels(result="error").inc()
             self._emit(
                 "enrichment_failed", "error", {"provider": "geo", "error_type": type(exc).__name__}
             )
-            await self._notify(
-                ServiceKind.GEO_UNAVAILABLE,
-                title="GeoIP lookup failed",
-                lines=(
-                    f"The database raised {type(exc).__name__}",
-                    "Check OCC_GEOIP_CITY_DB and OCC_GEOIP_ASN_DB",
-                    "Alerts continue without location data",
-                ),
-                subject="geoip",
-            )
+            await self._geo_unavailable([type(exc).__name__])
             return None
+        if inspection.failed:
+            # A reader that raises is not "the database knows nothing": the
+            # alert still goes out with whatever the other file returned, and
+            # the operator learns which one to check. A missing record is just
+            # traffic and stays silent.
+            metrics.ENRICHMENT_GEO.labels(result="error").inc()
+            self._emit(
+                "enrichment_failed",
+                "error",
+                {"provider": "geo", "failures": list(inspection.failed)},
+            )
+            await self._geo_unavailable(list(inspection.failed))
+            return inspection.info
+        metrics.ENRICHMENT_GEO.labels(result="hit" if inspection.info else "no_match").inc()
+        return inspection.info
+
+    async def _geo_unavailable(self, failures: list[str]) -> None:
+        """Tell the operator once per cooldown; enrichment never raises for this."""
+        await self._notify(
+            ServiceKind.GEO_UNAVAILABLE,
+            title="GeoIP lookup failed",
+            lines=(
+                f"The database raised {failures[0]}",
+                "Check OCC_GEOIP_CITY_DB and OCC_GEOIP_ASN_DB",
+                "Alerts continue with the remaining geo data",
+            ),
+            subject="geoip",
+        )
 
     async def _lookup_virustotal(
         self, src_host: str

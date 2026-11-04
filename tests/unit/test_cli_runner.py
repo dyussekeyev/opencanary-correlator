@@ -175,6 +175,122 @@ async def test_run_correlator_starts_and_stops_cleanly(
     )
 
 
+async def test_critical_consumer_exit_stops_runtime(
+    store: Any, settings_factory: Any, audit: Any, monkeypatch: Any, free_tcp_port: Any
+) -> None:
+    from opencanary_correlator.connectors.receivers._pipeline import EventPipeline
+
+    async def exit_consumer(self: Any, queue: Any) -> None:
+        return None
+
+    monkeypatch.setattr(EventPipeline, "_consume", exit_consumer)
+    with pytest.raises(RuntimeError, match="critical"):
+        await asyncio.wait_for(
+            run_correlator(
+                settings_factory(tcp_port=free_tcp_port, syslog_enabled=False, health_port=None),
+                store=store,
+                dispatchers=[],
+                audit=audit,
+            ),
+            2,
+        )
+
+
+async def test_cleanup_error_does_not_skip_other_resources(
+    store: Any, settings_factory: Any, audit: Any, monkeypatch: Any, free_tcp_port: Any
+) -> None:
+    from opencanary_correlator.connectors.receivers.tcp_json import TCPJSONReceiver
+
+    closed: list[str] = []
+    original = TCPJSONReceiver.stop
+
+    async def broken_stop(self: Any) -> None:
+        await original(self)
+        raise RuntimeError("cleanup failed")
+
+    class Dispatcher(RecordingDispatcher):
+        async def aclose(self) -> None:
+            closed.append("dispatcher")
+
+    monkeypatch.setattr(TCPJSONReceiver, "stop", broken_stop)
+    stop = asyncio.Event()
+    stop.set()
+    await run_correlator(
+        settings_factory(tcp_port=free_tcp_port, syslog_enabled=False, health_port=None),
+        store=store,
+        dispatchers=[Dispatcher()],
+        audit=audit,
+        stop_event=stop,
+    )
+    assert closed == ["dispatcher"]
+
+
+async def test_stop_notice_precedes_client_close_and_is_not_start_suppressed(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    calls: list[str] = []
+
+    class Dispatcher(RecordingDispatcher):
+        async def notify(self, message: Any) -> DispatchResult:
+            calls.append(message.kind.value)
+            return DispatchResult(dispatcher=self.name, status="success")
+
+        async def aclose(self) -> None:
+            calls.append("closed")
+
+    stop = asyncio.Event()
+    stop.set()
+    await run_correlator(
+        settings_factory(
+            tcp_enabled=False,
+            syslog_enabled=False,
+            health_port=None,
+            service_enabled=True,
+            service_min_severity="info",
+            service_categories=["lifecycle"],
+        ),
+        store=store,
+        dispatchers=[Dispatcher()],
+        audit=audit,
+        stop_event=stop,
+    )
+    assert calls == ["lifecycle.started", "lifecycle.stopped", "closed"]
+
+
+async def test_shutdown_budget_still_attempts_close_after_hung_stop(
+    store: Any, settings_factory: Any, audit: Any, monkeypatch: Any
+) -> None:
+    from opencanary_correlator.core.stats import StatsReporter
+
+    async def hung(self: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(StatsReporter, "stop", hung)
+    closed: list[bool] = []
+
+    class Dispatcher(RecordingDispatcher):
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(
+        run_correlator(
+            settings_factory(
+                tcp_enabled=False, syslog_enabled=False, health_port=None, shutdown_timeout=1
+            ),
+            store=store,
+            dispatchers=[Dispatcher()],
+            audit=audit,
+            stop_event=stop,
+        ),
+        1.5,
+    )
+    assert closed == [True]
+    # A failed plugin stop cannot leave its known worker running.
+    assert not any(task.get_name() == "stats-heartbeat" for task in asyncio.all_tasks())
+
+
 class UnreachableStore:
     """Redis stand-in whose server is down.
 

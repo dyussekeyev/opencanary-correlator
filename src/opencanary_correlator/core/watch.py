@@ -126,6 +126,7 @@ class HealthWatch:
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        self._started = float(clock())
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         # Baselines for the ingestion report, taken at construction: the first
@@ -217,9 +218,18 @@ class HealthWatch:
 
     async def _report_silent(self, moment: float) -> tuple[str, ...]:
         """Audit and notify every node whose newest evidence is too old."""
-        seen = last_seen(await self._store.live_heartbeats())
+        seen = await self._store.node_activity()
+        # Legacy heartbeat evidence remains readable during the stopped-worker upgrade.
+        for node, stamp in last_seen(await self._store.live_heartbeats()).items():
+            seen[node] = max(seen.get(node, 0), stamp)
         cutoff = moment - float(self._settings.canary_silent_after)
-        silent = tuple(sorted(node for node, stamp in seen.items() if stamp <= cutoff))
+        silent_nodes = {node for node, stamp in seen.items() if stamp <= cutoff}
+        if moment >= self._started + self._settings.canary_startup_grace:
+            for node in self._settings.canary_expected_nodes:
+                if node not in seen:
+                    seen[node] = 0
+                    silent_nodes.add(node)
+        silent = tuple(sorted(silent_nodes))
         if not silent:
             return ()
         for node in silent:
@@ -244,10 +254,11 @@ class HealthWatch:
                 ServiceKind.CANARY_SILENT,
                 title=f"Canary {node} went silent",
                 lines=(
-                    f"Last event: {_utc(seen[node])}",
+                    f"Last event: {_utc(seen[node]) if seen[node] else 'never observed'}",
                     f"Silent for: {_minutes(moment - seen[node])}",
                     "No event reached the correlator since then: the honeypot, its "
-                    "network path or its log handler may be down.",
+                    "network path or its log handler may be down; a quiet honeypot "
+                    "without attacks is not proof of failure.",
                 ),
                 subject=f"node:{node}",
             )
@@ -265,6 +276,11 @@ class HealthWatch:
             )
 
     # --- Scheduling ---------------------------------------------------------
+
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Background task supervised by the runtime."""
+        return (self._task,) if self._task is not None else ()
 
     async def start(self) -> None:
         """Start the loop that checks once per `OCC_WATCH_INTERVAL`."""

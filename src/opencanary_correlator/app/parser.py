@@ -60,6 +60,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate configuration and exit",
     )
+    # Recovery commands: they read or requeue durable state and exit instead of
+    # starting the service. `--retention-run` still refuses to delete anything
+    # unless retention was enabled in the configuration.
+    admin = parser.add_mutually_exclusive_group()
+    admin.add_argument(
+        "--dlq-list",
+        nargs="?",
+        type=int,
+        const=20,
+        metavar="N",
+        help="list dead-letter deliveries (newest first, default 20) and exit",
+    )
+    admin.add_argument(
+        "--dlq-replay",
+        metavar="ENTRY_ID",
+        help="requeue one dead-letter delivery and exit",
+    )
+    admin.add_argument(
+        "--retention-run",
+        action="store_true",
+        help="run one bounded retention pass and exit",
+    )
     return parser
 
 

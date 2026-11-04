@@ -13,6 +13,7 @@ configure a database never needs it.
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -28,6 +29,29 @@ _INSTALL_HINT: Final[str] = (
 
 class GeoLookupError(RuntimeError):
     """Raised when a configured database cannot be opened."""
+
+
+class GeoRecordError(RuntimeError):
+    """A configured database failed to answer one lookup.
+
+    This is deliberately not the same as "the database knows nothing about this
+    address": a missing record is normal traffic, a raising reader is a broken
+    deployment. The message names the provider and the exception type, so the
+    audit record says which file to check without embedding a traceback.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class GeoInspection:
+    """What one lookup found, and which databases failed to answer.
+
+    `failed` is a tuple of `"<provider>:<ErrorType>"` strings. Both databases are
+    queried independently, so one broken file does not throw away the network
+    data the other one returned.
+    """
+
+    info: GeoInfo | None = None
+    failed: tuple[str, ...] = ()
 
 
 def _name(names: Any, fallback: str = "") -> str:
@@ -91,12 +115,31 @@ class GeoLookup:
                 close()
 
     def lookup(self, ip: str) -> GeoInfo | None:
-        """Return the geo data for `ip`, or None for private/invalid addresses."""
+        """Return the geo data for `ip`, or None for private/invalid addresses.
+
+        A raising reader is reported through :meth:`inspect`; this shortcut keeps
+        the simple call shape and returns whatever the healthy database found.
+        """
+        return self.inspect(ip).info
+
+    def inspect(self, ip: str) -> GeoInspection:
+        """Look up `ip` and report reader failures separately from no match."""
         address = public_address(ip)
         if address is None:
-            return None
-        city = self._city_record(address)
-        asn = self._asn_record(address)
+            return GeoInspection()
+        failed: list[str] = []
+        city: dict[str, Any] = {}
+        asn: dict[str, Any] = {}
+        if self._city_reader is not None:
+            try:
+                city = self._city_record(address)
+            except GeoRecordError as exc:
+                failed.append(str(exc))
+        if self._asn_reader is not None:
+            try:
+                asn = self._asn_record(address)
+            except GeoRecordError as exc:
+                failed.append(str(exc))
         info = GeoInfo(
             country_code=str(city.get("country_code") or ""),
             country=str(city.get("country") or ""),
@@ -104,7 +147,7 @@ class GeoLookup:
             asn=asn.get("asn"),
             as_org=str(asn.get("as_org") or ""),
         )
-        return None if info.is_empty else info
+        return GeoInspection(None if info.is_empty else info, tuple(failed))
 
     # --- Record shapes ------------------------------------------------------
 
@@ -116,8 +159,8 @@ class GeoLookup:
             return {}
         try:
             record = self._city_reader.get(str(address))
-        except Exception:  # a corrupt database must not fail the alert
-            return {}
+        except Exception as exc:  # a corrupt database must not fail the alert
+            raise GeoRecordError(f"city:{type(exc).__name__}") from exc
         if not isinstance(record, dict):
             return {}
         raw_country = record.get("country")
@@ -136,8 +179,8 @@ class GeoLookup:
             return {}
         try:
             record = self._asn_reader.get(str(address))
-        except Exception:  # a corrupt database must not fail the alert
-            return {}
+        except Exception as exc:  # a corrupt database must not fail the alert
+            raise GeoRecordError(f"asn:{type(exc).__name__}") from exc
         if not isinstance(record, dict):
             return {}
         number = record.get("autonomous_system_number")
@@ -162,4 +205,10 @@ def public_address(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | N
     return address if address.is_global else None
 
 
-__all__ = ["GeoLookup", "GeoLookupError", "public_address"]
+__all__ = [
+    "GeoInspection",
+    "GeoLookup",
+    "GeoLookupError",
+    "GeoRecordError",
+    "public_address",
+]

@@ -233,27 +233,67 @@ endpoint never blocks the others and never blocks ingestion.
 
 ### Alerts survive a restart
 
-A new incident and one pending delivery per channel are written in the same
-Redis script, and a worker on every replica retries whatever a channel did not
-accept (backoff `1 s, 5 s, 30 s, 5 min, 30 min`). A crash between "incident
-written" and "message sent" therefore costs a delay, not the alert. Delivery is
-**at-least-once**: a duplicate is possible only when a channel accepted a message
-and the process died before recording it, and a second delivery of the same
-event merges rather than notifying twice.
+A new incident, a preparation envelope and one non-runnable debt per destination
+are written in one Redis script. A recoverable preparation obtains bounded
+enrichment and atomically reserves the notification budget **before** making any
+target ready. A crash before this commit spends no budget; a crash after it does
+not spend it again. Redis failure leaves the preparation pending rather than
+bypassing the budget. Suppressed notifications remain recorded, never runnable.
 
-After `OCC_OUTBOX_MAX_ATTEMPTS` the entry moves to the `outbox:dead` ZSET and the
-audit trail gets `alert_dead_letter` with the reason, so a channel that has been
-broken for hours is visible instead of silent:
+Every Telegram chat, HTTP endpoint and configured SMTP recipient has an independent
+stable target ID (channel kind plus a SHA-256 destination hash). Telegram uses bot
+numeric ID + chat, so token rotation for the same bot preserves pending deliveries;
+changing bots, webhook URLs, or SMTP destination settings creates a new identity.
+Removed destinations become `unknown_target` dead letters, never messages to a
+replacement destination. URLs, bot tokens and mail addresses are not stored in IDs.
+
+Inline and background delivery use the same atomic claim/settle protocol, with a
+new owner token for every attempt. Targets are claimed immediately before work,
+not leased as a sequential batch. Stale owners cannot settle, retry or bury a new
+owner's delivery; retries are scheduled from attempt completion. The effective
+lease is at least `OCC_DISPATCH_TIMEOUT + 10 s` (preparation also covers enrichment).
+Provider-only enrichment snapshots are bounded and reused on retry without another
+VT lookup. Original incident logdata is not copied to the envelope.
+
+Delivery is **at-least-once within the configured attempt/deadline limits**, not
+exactly-once: a remote API accepting before a crash, ambiguous network failure,
+or a process pause beyond its lease may cause duplicates. Fencing protects Redis
+state; it cannot revoke a request already accepted by a remote server.
+`OCC_OUTBOX_MAX_ATTEMPTS` includes the initial inline attempt and interrupted
+claims. Durable HTTP uses one request per dispatch call; SMTP/custom plugins may
+still retry internally. Permanent HTTP 4xx except 429 stop immediately; transient errors use backoff
+`1 s, 5 s, 30 s, 5 min, 30 min`, respecting bounded Retry-After.
+
+Exhausted, expired, missing or corrupt deliveries leave the runnable index and get
+an explicit `alert_dead_letter` reason. `OCC_OUTBOX_DELIVERY_RETENTION` is the
+absolute pending deadline and delivered-marker TTL; pending/dead hashes themselves
+do not silently expire. DLQ and preparation-envelope cleanup are not implemented
+by this delivery stage; their retention is a subsequent data-lifecycle milestone.
 
 ```bash
-redis-cli ZRANGE outbox:dead 0 -1          # what was never delivered
-redis-cli HGETALL outbox:alert:<id>        # attempts and the last error
+redis-cli ZRANGE outbox:v2:preparing 0 -1  # preparation/recovery debt
+redis-cli ZRANGE outbox:v2:alerts 0 -1     # ready or in-flight target debts
+redis-cli ZRANGE outbox:v2:dead 0 -1       # terminal failures
+redis-cli HGETALL outbox:v2:alert:<id>     # state, attempts, safe last_error
 ```
 
-`OCC_OUTBOX_ENABLED=false` restores the old best-effort behaviour, where a failed
-delivery is logged and forgotten. `OCC_OUTBOX_POLL_INTERVAL`,
-`OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH` and `OCC_OUTBOX_DELIVERY_RETENTION` tune
-the worker; none of them has to be set to use it.
+**Upgrade/rollback from v0.5.2:** stop all old workers/intake and take a protected
+Redis backup first. Prefer draining old `outbox:alerts` with the old build before
+switching. v0.6 uses only `outbox:v2:*`; legacy pending records are preserved in
+place, reported as `outbox_legacy_quarantined` on startup, and never automatically
+mapped to a destination (the legacy record lacks reliable recipient identity).
+If old debts remain, an operator must reconcile delivery history and explicitly
+choose each recipient before any controlled transfer; automatic transfer/replay
+is not provided by this stage. Do not treat quarantined legacy debts as delivered.
+Do not run mixed old/new ingestion: even with isolated outboxes, they share
+incident merge state. Before rollback, stop all new workers; drain or preserve
+and reconcile v2 debts separately. An old worker cannot process v2 debts.
+
+`OCC_OUTBOX_ENABLED=false` restores best-effort delivery, where failures are logged
+and forgotten. `OCC_OUTBOX_POLL_INTERVAL`, `OCC_OUTBOX_LEASE`, `OCC_OUTBOX_BATCH`
+and `OCC_OUTBOX_DELIVERY_RETENTION` tune the worker. Use consistent destination,
+budget and enrichment configuration across replicas; recovery uses the running
+configuration when completing an undecided preparation.
 
 ### Service messages (off by default)
 
@@ -294,17 +334,30 @@ never speak.
 ### Silent canaries (off by default)
 
 Every other report is triggered by something that just failed. A node that stops
-delivering has no such trigger: the signal is the absence of events. The
-correlator therefore remembers when each node last delivered — one dict write on
-the ingest path, no Redis round trip — and publishes that map once a minute in
-the heartbeat the digest already writes. A check runs every
+delivering has no such trigger: the signal is the absence of events. The receiver
+remembers when each node last delivered — one dict write on the ingest path, no
+Redis round trip — and every replica flushes that map into a durable registry
+(`nodes:v2:last-seen`) once a minute with its counters. A check runs every
 `OCC_WATCH_INTERVAL` from one elected replica and reports a node whose newest
 evidence is older than `OCC_CANARY_SILENT_AFTER`:
 
 ```bash
 OCC_CANARY_SILENT_AFTER=3600         # 0 disables the check (the default)
+OCC_CANARY_EXPECTED_NODES=canary-dmz-1,canary-dmz-2   # inventory, optional
+OCC_CANARY_STARTUP_GRACE=600         # seconds before a never-seen node counts
+OCC_CANARY_REGISTRY_LIMIT=10000      # distinct node IDs remembered (1..10000)
 OCC_WATCH_INTERVAL=300               # seconds between window checks
 ```
+
+Last-seen is durable, not heartbeat-scoped: replicas rotate behind the load
+balancer, and a node must not become unwatched because the replica that saw it
+last went away. `OCC_CANARY_EXPECTED_NODES` adds nodes that are *supposed* to
+deliver: after `OCC_CANARY_STARTUP_GRACE` a node that never appeared at all is
+reported too, because a canary that never came up is exactly the failure a
+last-seen comparison cannot see. A registry at `OCC_CANARY_REGISTRY_LIMIT` refuses
+a new node ID rather than evicting a known one, and says so
+(`opencanary_node_registry_overflow_total`, audit `node_registry_overflow`), so a
+peer inventing IDs cannot hide a real canary.
 
 It needs `OCC_SERVICE_ENABLED=true` and `canary` in `OCC_SERVICE_CATEGORIES`;
 the combinations that would report nothing (no switch, no category, a `critical`
@@ -312,8 +365,8 @@ severity floor) are startup errors rather than a setting that looks enabled. Eac
 node is reported under its own subject (`node:<id>`), so the cooldown mutes the
 repeats per canary, and a mass outage — a partition that silences the whole
 estate — reports the first ten individually and the rest in one summary instead
-of one message per node. After a restart there is no evidence yet, so nothing is
-reported: missing data is not silence.
+of one message per node. Before the grace expires nothing is reported: missing
+evidence is not yet silence.
 
 `lifecycle` messages are `info`, so asking for that category with a `warning`
 floor would filter every start and stop out. The contradiction is a startup error
@@ -356,11 +409,30 @@ OCC_DIGEST_TOP_SOURCES=5          # 0 disables the busiest-sources section
 
 The digest is produced once even when several replicas run: a short lock elects
 the sender and a per-day marker (`digest:sent:<date>`) makes a second attempt a
-no-op. The numbers come from a heartbeat each replica publishes once a minute
-into `stats:instance:<id>` (TTL 5 min), summed at digest time, so the number of
-live replicas is exact and a replica that died simply stops contributing — no
-Redis write happens on the event path. The incident count and the busiest sources
-are read from the `incidents` ZSET for the same window.
+no-op. Every replica flushes its process counters once a minute into
+`stats:v2:minute:<minute>` behind a per-generation checkpoint, so the numbers
+survive a missed heartbeat and a departed replica instead of vanishing with it.
+No Redis write happens on the event path. Buckets are kept for eight days and
+checkpoints for nine; counters are assigned to the minute they were *flushed*, so
+the digest says so in its own text and a crash inside the last minute is the
+documented loss. Live replicas are still counted from the heartbeats
+(`stats:instance:<id>`, TTL 5 min), which is why that count and the counters can
+disagree for a minute after a restart.
+
+`Incidents: N active` counts incidents whose newest event falls in the window;
+`New incidents` counts creations, so an incident merged for two days appears in
+the active count every day and in the new count once. Alert figures are summed per
+dispatcher label and per attempt (`exceptions` are attempts that raised, not
+unique messages); `Accepted durable targets` counts deliveries a target accepted,
+not messages. The busiest-sources list is computed from the newest 1000 incidents
+and labels itself as a sample when the window holds more.
+
+Where it goes: `OCC_DIGEST_CHANNELS`, else `OCC_SERVICE_CHANNELS`, else every
+enabled channel. The message, the day marker and one outbox debt per target are
+committed together, so a channel that is down is retried on its own backoff
+without re-sending the day to the channels that already have it. A restart after
+the scheduled time catches up exactly the latest scheduled occurrence, not every
+day that was missed while the process was down.
 
 ```text
 ℹ️ OpenCanary service: daily digest 2026-10-29
@@ -368,8 +440,11 @@ are read from the `incidents` ZSET for the same window.
 • 🕒 Window: 2026-10-28 03:00:00 UTC - 2026-10-29 03:00:00 UTC
 • 🖥 Replicas: 2
 • 📥 Events: 12840 accepted, 12 rejected, 0 dropped
-• 🚨 Incidents: 47
-• 📤 Alerts: 47 delivered, 0 failed, 0 timed out
+• ♻️ Deduplicated: 310 • Unrouted: 4
+• 🚨 Incidents: 47 active • New incidents: 43
+• 📤 Alerts: 47 delivered, 0 failed, 0 timed out, 0 exceptions (attempts, not unique messages)
+• Accepted durable targets: 47
+• Statistics: flush-minute approximation; unflushed process losses are not included.
 • 🎯 Busiest sources:
   • 74.22.3.1: 9
   • 2001:db8::1: 4
@@ -409,6 +484,46 @@ would index it as an alert:
 A budget that cannot count fails open: the alert is sent and
 `alert_budget_failed` is audited, because a Redis hiccup must not silence a
 canary.
+
+### Retention and recovery (off by default)
+
+An incident store grows forever unless somebody decides otherwise. Retention is
+that decision, and it is off until then:
+
+```bash
+OCC_RETENTION_ENABLED=true
+OCC_RETENTION_DAYS=30
+OCC_RETENTION_INTERVAL=3600
+OCC_RETENTION_BATCH=200
+OCC_DLQ_RETENTION_DAYS=14
+```
+
+One elected replica walks a bounded batch per interval and removes incidents
+older than `OCC_RETENTION_DAYS` together with their index entry, host pointer and
+creation time. It never removes an incident whose delivery is still preparing,
+queued or waiting in the dead letter list: `opencanary_retention_protected_total`
+counts the ones it kept, which is the signal to look at the channel, not at the
+janitor, while `opencanary_retention_removed_total` counts what the pass deleted,
+by scope. Dead letters expire after `OCC_DLQ_RETENTION_DAYS`, which must be
+shorter than the incident retention, so a failed alert cannot pin its incident
+forever. `opencanary_outbox_dead_entries` is how many are currently retained, so
+a number that keeps climbing after a channel recovers means the cause was not
+fixed. The incident-creation index the digest reads is trimmed to its eight-day
+window for the same reason.
+
+Dead letters are inspected and replayed on purpose, never automatically:
+
+```bash
+opencanary-correlator --dlq-list 50            # read-only, newest first
+opencanary-correlator --dlq-replay ENTRY_ID    # requeue exactly one
+opencanary-correlator --retention-run          # one bounded pass now
+```
+
+A replay keeps the delivery identity (so it is the same delivery, not a
+duplicate), resets its attempt counter, and is refused on a second call. Neither
+listing nor replay echoes the stored payload. `docs/operations.md` has the
+runbook: Redis loss/restore, `noeviction`, a slow channel, a broken MMDB file and
+a silent canary.
 
 ## Attacker enrichment (optional)
 
@@ -462,6 +577,13 @@ leaves the host. The reader is an extra (`pip install
 starts normally and only complains when `OCC_GEOIP_CITY_DB` is set. A configured
 path that cannot be opened is a startup error, not a silent gap. Private,
 loopback and invalid addresses are skipped — `10.0.0.5` gets no country.
+
+A reader that raises is reported, not confused with "no data": an
+`enrichment_failed` audit record carries `details.failures` such as
+`["city:ValueError"]`, `opencanary_enrichment_geo_total{result="error"}` counts
+it, and a `geoip` service message names the file to check. The alert still goes
+out with whatever the other database returned, and an address the database does
+not cover stays a silent `no_match`.
 
 **VirusTotal is opt-in and quota-first.** The free public API allows 4 lookups
 per minute, 500 per day and 15.5K per month. Before every request the client
@@ -614,10 +736,28 @@ consoles, so it is deliberately out of scope. Scale Redis vertically or by using
 a single failover endpoint; scale the correlator itself horizontally. Redis
 scripting must be available, as it is on every supported server release.
 
-`GET /healthz` and `GET /readyz` return `200` with `{"status":"ok","redis":true}`,
-or `503` when Redis is unreachable. The path is matched exactly after stripping
-the query string, so `/healthz?x=1` is still a real Redis probe while
-`/healthzfoo` is a 404. Use them for load-balancer and Kubernetes probes.
+`GET /healthz` is liveness: it checks local critical tasks, not Redis or external
+notification providers. `GET /readyz` (and legacy `/health`) additionally requires
+Redis PING, running intake listeners and completed startup; it returns `503` during
+draining. An unexpected consumer, scan-recovery or background-worker exit, or a
+lost listener, is audited and stops the runtime with an error. Provider delivery
+failures do not themselves trigger a restart. Query strings do not change these
+checks; `/healthzfoo` remains a 404.
+
+Health HTTP requests have one 5-second deadline (including Redis/drain), an
+8192-byte header budget and at most 128 active handlers. Oversized headers are
+rejected with 431; over-cap sockets are immediately closed (503 or TCP reset,
+depending on the kernel), without spawning extra refusal tasks.
+
+`OCC_SHUTDOWN_TIMEOUT` sets the total cooperative shutdown budget (default 20 s).
+Receivers drain concurrently for up to 5 s each within half that budget; queued
+and in-flight cancellations are counted and audited (in-flight cancellation does
+not prove an incident was never persisted). Every resource cleanup is attempted,
+and failures are audited separately. Enabled lifecycle stop notices are sent
+before channel clients close; start/stop have distinct suppression keys. Service
+category/severity filters still apply. Compose grants 30 s by default; keep
+`OCC_STOP_GRACE_PERIOD` greater than `OCC_SHUTDOWN_TIMEOUT`. Blocking synchronous
+plugins or code that suppresses cancellation cannot be forcibly bounded by asyncio.
 
 `GET /metrics` (same listener) exports Prometheus text: event outcomes, queue
 depth, active connections and rejections, rule failures, alert delivery results
@@ -820,6 +960,30 @@ private interface behind it; the tunnel is the only thing that reaches it.
 
 Whichever you choose, do not expose the intake ports directly to the internet.
 Restrict them to the tunnel or canary network as described above.
+
+### Correlation identity and intake limits
+
+These are contract decisions, not defects left for later:
+
+- **The dedup fingerprint has no event timestamp.** Two genuine events with the
+  same `node_id`, `src_host`, ports, `logtype` and `logdata` inside
+  `OCC_DEDUP_TTL` (60 s) count as one, so a retransmitted log line cannot inflate
+  an incident. `logtype` is part of the fingerprint, so MySQL and RDP from the
+  same host stay separate. If you need per-event identity instead, set
+  `OCC_DEDUP_TTL=0` and accept repeats.
+- **Incident identity is `logtype + src_host`, not per node.** The incident key,
+  its lock and the latest pointer carry no `node_id` or `dst_host`. One attacker
+  IP hitting two canaries therefore becomes one incident, attributed to the node
+  that created it, and a per-node notification budget applies to that node. The
+  layout is the legacy contract an external console reads; changing it requires a
+  versioned namespace and a migration, not a silent key change.
+- **Intake is best-effort until the incident is written.** A TCP ACK is not a
+  durable ACK: a bounded in-memory queue, `SIGKILL`, or an unavailable Redis can
+  lose events between receipt and persistence. The accounting is
+  `opencanary_events_dropped_total{reason}` (for example `queue_full`) plus the
+  `ingestion.dropped` and `ingestion.rejected` service messages. No WAL and no
+  end-to-end acknowledgement is claimed, because stock `SocketJSONHandler` and
+  `SyslogHandler` provide neither.
 
 ## Quality gates
 

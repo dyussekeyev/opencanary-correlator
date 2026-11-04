@@ -83,6 +83,11 @@ class EventPipeline:
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Consumers that must remain alive while intake is ready."""
+        return tuple(self._tasks)
+
+    @property
     def concurrency(self) -> int:
         """Number of consumer lanes."""
         return self._concurrency
@@ -116,6 +121,8 @@ class EventPipeline:
                 timeout=drain_timeout,
             )
         except TimeoutError:
+            pass
+        finally:
             lost = self.pending
             if lost:
                 self.stats.dropped += lost
@@ -129,11 +136,12 @@ class EventPipeline:
             for queue in self._queues:
                 while not queue.empty():
                     queue.get_nowait()
+                    queue.task_done()
             metrics.EVENT_QUEUE_DEPTH.set(self.pending)
-        for task in self._tasks:
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks = []
+            for task in self._tasks:
+                task.cancel()
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            self._tasks = []
 
     def record_rejection(self) -> None:
         """Count a payload that failed validation before it reached the queue."""
@@ -204,6 +212,14 @@ class EventPipeline:
                     continue
                 await self._sink.handle_event(event)
             except asyncio.CancelledError:
+                self.stats.dropped += 1
+                metrics.EVENTS_TOTAL.labels(result="dropped").inc()
+                metrics.EVENTS_DROPPED.labels(reason="shutdown").inc()
+                self._audit.emit(
+                    "event_dropped",
+                    "warning",
+                    {"reason": "shutdown", "count": 1, "in_flight": True},
+                )
                 raise
             except Exception as exc:
                 self.stats.dropped += 1

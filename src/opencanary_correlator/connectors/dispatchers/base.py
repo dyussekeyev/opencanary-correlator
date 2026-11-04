@@ -10,16 +10,20 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import random
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from redis.exceptions import RedisError
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
+from opencanary_correlator.storage.keys import delivery_target_id
 from opencanary_correlator.storage.redis_store import RedisStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -112,6 +116,7 @@ class HTTPDispatcher(BaseDispatcher):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._url = url
+        self.delivery_target_id = delivery_target_id(self.name, url)
         self._client = client if client is not None else httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self._retry = retry or RetryPolicy()
@@ -198,14 +203,22 @@ class HTTPDispatcher(BaseDispatcher):
         """POST the incident payload with retries, never raising."""
         return await self._post(self.build_payload(incident))
 
-    async def _post(self, payload: Mapping[str, Any]) -> DispatchResult:
+    async def dispatch_once(self, incident: IncidentLike) -> DispatchResult:
+        """Let the durable scheduler own retries and Retry-After delays."""
+        return await self._post(self.build_payload(incident), attempts=1)
+
+    async def _post(
+        self, payload: Mapping[str, Any], *, attempts: int | None = None
+    ) -> DispatchResult:
         """Deliver one already-rendered body with retries, never raising."""
         if not await self._breaker_allows():
             return DispatchResult(dispatcher=self.name, status="skipped", detail="circuit_open")
 
         detail = "no_attempt"
-        for attempt in range(1, self._retry.attempts + 1):
-            retry_after: float | None = None
+        retry_after: float | None = None
+        max_attempts = self._retry.attempts if attempts is None else attempts
+        for attempt in range(1, max_attempts + 1):
+            retry_after = None
             try:
                 response = await self._client.post(self._url, json=payload, headers=self._headers)
             except httpx.HTTPError as exc:
@@ -216,14 +229,20 @@ class HTTPDispatcher(BaseDispatcher):
                     return DispatchResult(dispatcher=self.name, status="success")
                 detail = f"http_{response.status_code}"
                 if response.status_code != 429 and not 500 <= response.status_code < 600:
-                    return DispatchResult(dispatcher=self.name, status="error", detail=detail)
-                retry_after = self._parse_retry_after(response)
+                    return DispatchResult(
+                        dispatcher=self.name, status="error", detail=detail, retryable=False
+                    )
+                retry_after = self._parse_retry_after(
+                    response, maximum=3600.0 if attempts == 1 else _MAX_RETRY_AFTER_SECONDS
+                )
 
-            if attempt < self._retry.attempts:
+            if attempt < max_attempts:
                 await self._sleep(self._delay(attempt, retry_after))
 
         await self._record_breaker(failed=True)
-        return DispatchResult(dispatcher=self.name, status="error", detail=detail)
+        return DispatchResult(
+            dispatcher=self.name, status="error", detail=detail, retry_after=retry_after
+        )
 
     def _delay(self, attempt: int, retry_after: float | None) -> float:
         if retry_after is not None:
@@ -234,15 +253,25 @@ class HTTPDispatcher(BaseDispatcher):
         return float(delay)
 
     @staticmethod
-    def _parse_retry_after(response: httpx.Response) -> float | None:
+    def _parse_retry_after(
+        response: httpx.Response, *, maximum: float = _MAX_RETRY_AFTER_SECONDS
+    ) -> float | None:
         value = response.headers.get("Retry-After")
         if value is None:
             return None
         try:
             seconds = float(value)
         except ValueError:
+            try:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    return None
+                seconds = (date - datetime.now(UTC)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                return None
+        if not math.isfinite(seconds):
             return None
-        return max(0.0, min(seconds, _MAX_RETRY_AFTER_SECONDS))
+        return max(0.0, min(seconds, maximum))
 
 
 __all__ = [

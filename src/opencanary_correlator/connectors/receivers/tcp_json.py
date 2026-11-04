@@ -8,21 +8,13 @@ length prefix, no pickle, no handshake, and no changes on the honeypot side.
 
 from __future__ import annotations
 
-import json
-from typing import NoReturn
-
 from pydantic import ValidationError
 
 from opencanary_correlator.connectors.receivers._pipeline import schema_error_details
 from opencanary_correlator.connectors.receivers._tcp import StreamProtocol, TCPStreamReceiver
-from opencanary_correlator.schemas import CanaryEvent
+from opencanary_correlator.schemas import CanaryEvent, load_event_json
 
 CANARY_ERROR_PREFIX = "[ERR] "
-
-
-def _reject_json_constant(value: str) -> NoReturn:
-    """Reject NaN/Infinity, which Python's json module accepts by default."""
-    raise ValueError(f"non-finite JSON constant: {value}")
 
 
 class TCPJSONProtocol(StreamProtocol):
@@ -56,8 +48,8 @@ class TCPJSONReceiver(TCPStreamReceiver):
             return None
 
         try:
-            raw = json.loads(text, parse_constant=_reject_json_constant)
-        except (json.JSONDecodeError, ValueError) as exc:
+            raw = load_event_json(text)
+        except (ValueError, RecursionError) as exc:
             self.audit_rejection(
                 "malformed_json",
                 peer_ip,

@@ -51,6 +51,50 @@ def make_event(src_host: str, src_port: int) -> CanaryEvent:
     )
 
 
+async def test_shutdown_counts_cancelled_in_flight_event(audit: Any) -> None:
+    entered = asyncio.Event()
+
+    class BlockedSink:
+        async def handle_event(self, event: CanaryEvent) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+    pipeline = EventPipeline(sink=BlockedSink(), audit=audit, queue_size=2, concurrency=1)
+    await pipeline.start()
+    pipeline.submit(make_event("10.0.0.5", 1))
+    await asyncio.wait_for(entered.wait(), 1)
+    before = drops("shutdown")
+    await pipeline.stop(drain_timeout=0.01)
+    assert pipeline.stats.dropped == 1
+    assert drops("shutdown") == before + 1
+    await asyncio.wait_for(pipeline._queues[0].join(), 1)
+
+
+async def test_cancelled_stop_accounts_backlog_and_closes_consumers(audit: Any) -> None:
+    entered = asyncio.Event()
+
+    class BlockedSink:
+        async def handle_event(self, event: CanaryEvent) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+    pipeline = EventPipeline(sink=BlockedSink(), audit=audit, queue_size=2, concurrency=1)
+    await pipeline.start()
+    pipeline.submit(make_event("10.0.0.5", 1))
+    pipeline.submit(make_event("10.0.0.5", 2))
+    await entered.wait()
+    stop = asyncio.create_task(pipeline.stop())
+    await asyncio.sleep(0)
+    stop.cancel()
+    import pytest
+
+    with pytest.raises(asyncio.CancelledError):
+        await stop
+    assert pipeline.stats.dropped == 2
+    assert pipeline.critical_tasks == ()
+    await asyncio.wait_for(pipeline._queues[0].join(), 1)
+
+
 async def test_single_lane_delivers_everything_in_order(audit: Any) -> None:
     sink = RecordingSink()
     pipeline = EventPipeline(sink=sink, audit=audit, queue_size=100, concurrency=1)
@@ -148,11 +192,12 @@ async def test_a_backlog_cancelled_at_shutdown_is_counted_and_audited(
     records = [
         json.loads(line) for line in audit_stream.getvalue().splitlines() if "event_dropped" in line
     ]
-    assert len(records) == 1
-    assert records[0]["details"]["reason"] == "shutdown"
-    assert records[0]["details"]["count"] >= 1
-    assert pipeline.stats.dropped == records[0]["details"]["count"]
-    assert drops("shutdown") - before == records[0]["details"]["count"]
+    assert records
+    assert all(record["details"]["reason"] == "shutdown" for record in records)
+    lost = sum(record["details"]["count"] for record in records)
+    assert lost == 5  # queued and in-flight, not just the remaining queue
+    assert pipeline.stats.dropped == lost
+    assert drops("shutdown") - before == lost
     assert pipeline.pending == 0
 
 

@@ -148,12 +148,14 @@ class RedisLogHandler(logging.Handler):
         """Flush what fits in the timeout, then cancel the drain task."""
         if self._task is None:
             return
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(self._queue.join(), timeout=self._shutdown_timeout)
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
-        self._task = None
+        try:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._queue.join(), timeout=self._shutdown_timeout)
+        finally:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
 
     async def _drain(self) -> None:
         while True:

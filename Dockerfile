@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Digests resolved 2026-10-24 from the python:3.12-slim-bookworm multi-arch index.
-FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS builder
+# Digests resolved 2026-11-04 from the python:3.12-slim-bookworm multi-arch
+# index. The refresh carries openssl/libssl3 3.0.22-1~deb12u2, the fix for
+# CVE-2026-84782 that the previous pin (deb12u1) failed the container scan on.
+FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /uvx /bin/
 
@@ -20,7 +22,7 @@ COPY src ./src
 # mounting a DB-IP/GeoLite2 file, without which it is never imported.
 RUN uv sync --frozen --no-dev --no-editable --extra geo
 
-FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS runtime
+FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS runtime
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

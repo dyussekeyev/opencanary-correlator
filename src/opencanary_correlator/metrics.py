@@ -38,6 +38,9 @@ EVENT_QUEUE_DEPTH = Gauge(
     "opencanary_event_queue_depth",
     "Events waiting in the bounded receiver queue",
 )
+NODE_REGISTRY_OVERFLOW = Counter(
+    "opencanary_node_registry_overflow_total", "Node bookkeeping refused at capacity", ["scope"]
+)
 ACTIVE_CONNECTIONS = Gauge(
     "opencanary_active_connections",
     "Currently open receiver connections",
@@ -72,6 +75,29 @@ OUTBOX_DEAD = Counter(
     "Alert deliveries buried in the dead letter list",
     ["channel"],
 )
+OUTBOX_DEAD_ENTRIES = Gauge(
+    "opencanary_outbox_dead_entries",
+    "Dead letters currently retained for an operator",
+)
+OUTBOX_OLDEST_PENDING = Gauge(
+    "opencanary_outbox_oldest_pending_age_seconds",
+    "Age of the oldest pending delivery, measured from its next attempt time",
+)
+OUTBOX_TERMINAL = Counter(
+    "opencanary_outbox_terminal_total",
+    "Deliveries settled in a terminal state, by reason",
+    ["reason"],
+)
+RETENTION_REMOVED = Counter(
+    "opencanary_retention_removed_total",
+    "Expired objects deleted by the retention janitor",
+    ["scope"],
+)
+RETENTION_PROTECTED = Counter(
+    "opencanary_retention_protected_total",
+    "Expired incidents kept because a delivery still referenced them",
+    ["scope"],
+)
 ALERTS_TOTAL = Counter(
     "opencanary_alerts_total",
     "Alert delivery attempts, by dispatcher and outcome",
@@ -91,6 +117,11 @@ ENRICHMENT_REQUESTS = Counter(
     "opencanary_enrichment_requests_total",
     "Actual enrichment HTTP attempts by outcome",
     ["provider", "outcome"],
+)
+ENRICHMENT_GEO = Counter(
+    "opencanary_enrichment_geo_total",
+    "Geo lookups by outcome: hit, no_match or a database read failure",
+    ["result"],
 )
 ENRICHMENT_SKIPPED = Counter(
     "opencanary_enrichment_skipped_total",

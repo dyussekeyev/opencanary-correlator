@@ -27,6 +27,7 @@ async def deliver(
     *,
     audit: AuditLogger,
     deadline: float,
+    durable: bool = False,
 ) -> DispatchResult | None:
     """Deliver one incident, returning the outcome or None on timeout/exception.
 
@@ -36,7 +37,8 @@ async def deliver(
     started = time.perf_counter()
 
     try:
-        result = await asyncio.wait_for(dispatcher.dispatch(incident), timeout=float(deadline))
+        attempt = dispatcher.dispatch_once(incident) if durable else dispatcher.dispatch(incident)
+        result = await asyncio.wait_for(attempt, timeout=float(deadline))
     except TimeoutError:
         metrics.ALERTS_TOTAL.labels(dispatcher=dispatcher.name, status="timeout").inc()
         audit.emit(

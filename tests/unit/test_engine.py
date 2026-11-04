@@ -377,18 +377,18 @@ async def test_a_lock_timeout_does_not_confirm_the_dedup_claim(
     engine = make_engine(store, settings_factory(), audit, clock, [dispatcher])
     event = login_event(event_factory)
 
-    real_lock = store.lock
+    real_lock = store.owned_lock
     state = {"timeout": True}
 
     @contextlib.asynccontextmanager
-    async def flaky_lock(key: str, **kwargs: Any) -> AsyncIterator[bool]:
+    async def flaky_lock(key: str, **kwargs: Any) -> AsyncIterator[str | None]:
         if state["timeout"]:
-            yield False
+            yield None
             return
         async with real_lock(key, **kwargs) as acquired:
             yield acquired
 
-    monkeypatch.setattr(store, "lock", flaky_lock)
+    monkeypatch.setattr(store, "owned_lock", flaky_lock)
 
     await engine.handle_event(event)
 

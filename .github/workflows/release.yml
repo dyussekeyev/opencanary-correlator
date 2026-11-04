@@ -1,5 +1,10 @@
 name: Release
 
+# A tag is a publication request, not a test run. This workflow therefore never
+# re-runs the test suite: it waits for the CI workflow on the same commit and
+# refuses to publish without a green run (`tools/release_guard.py ci`). Tag
+# pushes are included in `ci.yml` on purpose, so the run it waits for is the same
+# one a branch push would produce.
 on:
   push:
     tags: ["v*"]
@@ -11,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # Reading the CI run of the tagged commit is what the gate is built on.
+  actions: read
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
@@ -21,17 +28,64 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  artifacts:
-    name: Build and attach wheel and sdist
+  verify:
+    name: CI is green for the tagged commit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      - name: Resolve the tagged commit
+        id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Polls instead of trusting ordering: a tag push starts both workflows at
+      # once, so at the first attempt CI may still be queued or running.
+      - name: Wait for a successful CI run of this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          sha="$(git rev-parse HEAD)"
+          for attempt in $(seq 1 90); do
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=20" \
+              > "$RUNNER_TEMP/runs.json" 2>/dev/null
+            python tools/release_guard.py ci --runs "$RUNNER_TEMP/runs.json" --sha "$sha"
+            code=$?
+            if [ "$code" -eq 0 ]; then
+              echo "CI is green for $sha"
+              exit 0
+            fi
+            if [ "$code" -ne 3 ]; then
+              exit "$code"
+            fi
+            echo "attempt $attempt: CI has not finished for $sha"
+            sleep 20
+          done
+          echo "::error::no green CI run appeared for $sha within 30 minutes" >&2
+          exit 1
+
+  artifacts:
+    name: Build and attach wheel and sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
 
@@ -67,6 +121,11 @@ jobs:
       - name: Check package metadata
         run: twine check dist/*
 
+      # Consumers verify what they downloaded; a manifest generated from the
+      # uploaded files is the only one that cannot drift from them.
+      - name: Write the checksum manifest
+        run: python tools/release_guard.py checksums --dist dist --output dist/SHA256SUMS
+
       - name: Install the wheel and smoke the CLI
         run: |
           python -m venv "$RUNNER_TEMP/fresh"
@@ -91,23 +150,48 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-            # Re-running after a changelog fix corrects the body instead of
-            # leaving the previous one in place. Drafts stay drafts.
-            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          if gh release view "$TAG" --json isDraft,tagName,assets > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            mode=$(python tools/release_guard.py plan --release "$RUNNER_TEMP/release.json" --tag "$TAG") || exit 1
           else
-            echo "::warning::no release exists for $TAG yet; creating a draft for review"
-            gh release create "$TAG" --draft --notes-file "$NOTES_FILE" \
-              --verify-tag --title "$TAG" dist/*
+            mode=$(python tools/release_guard.py plan --tag "$TAG") || exit 1
           fi
+          echo "release mode: $mode"
+          case "$mode" in
+            create-draft)
+              gh release create "$TAG" --draft --notes-file "$NOTES_FILE" \
+                --verify-tag --title "$TAG" dist/*
+              ;;
+            replace-draft)
+              # A draft was never published: replacing its assets is what a
+              # re-run is for, and the body is refreshed with them.
+              gh release upload "$TAG" dist/* --clobber
+              gh release edit "$TAG" --notes-file "$NOTES_FILE"
+              ;;
+            *)
+              # `plan` already refuses a published release; this is the belt to
+              # its braces, so a future mode cannot silently upload by default.
+              echo "::error::unexpected release mode: $mode" >&2
+              exit 1
+              ;;
+          esac
           gh release view "$TAG" --json assets -q '.assets[].name'
           body_chars=$(gh release view "$TAG" --json body -q '.body | length')
           echo "release body: ${body_chars} characters"
 
+      # Downloads what GitHub actually serves, so a truncated or mismatched
+      # upload fails here instead of at a consumer's checksum check.
+      - name: Verify the published assets against the manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/verify"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/verify" --clobber
+          cd "$RUNNER_TEMP/verify"
+          sha256sum -c SHA256SUMS
+
       - name: Keep the build output for inspection
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist-${{ inputs.tag || github.ref_name }}
           path: dist/

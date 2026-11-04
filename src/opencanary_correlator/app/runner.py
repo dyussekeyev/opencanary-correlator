@@ -8,11 +8,12 @@ import logging
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from pydantic import ValidationError
 
 from opencanary_correlator import __version__
+from opencanary_correlator.app.admin import run_admin
 from opencanary_correlator.app.channels import build_dispatchers
 from opencanary_correlator.app.describe import describe_settings, log_secrets
 from opencanary_correlator.app.parser import CorrelatorStartupError, build_parser, load_settings
@@ -30,6 +31,7 @@ from opencanary_correlator.core.digest import DigestScheduler
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import IncidentRepository
 from opencanary_correlator.core.outbox import AlertOutbox
+from opencanary_correlator.core.retention import RetentionJanitor
 from opencanary_correlator.core.rules import build_rules
 from opencanary_correlator.core.service_messages import (
     ServiceKind,
@@ -117,11 +119,12 @@ async def run_correlator(
     outbox = (
         AlertOutbox(store, active_dispatchers, settings, audit) if settings.outbox_enabled else None
     )
-    notifier = ServiceNotifier(store, active_dispatchers, settings, audit)
+    notice_outbox = outbox or AlertOutbox(store, active_dispatchers, settings, audit)
+    notifier = ServiceNotifier(store, active_dispatchers, settings, audit, durable=True)
     _require_configured_service_channels(settings, active_dispatchers)
     # One registry for every listener: a canary is the same node whichever
     # transport delivered its event, and the silence check needs all of them.
-    nodes = NodeRegistry()
+    nodes = NodeRegistry(limit=settings.canary_registry_limit)
     stats = StatsReporter(store, audit, nodes=nodes)
     digest = DigestScheduler(store, notifier, settings, audit) if settings.digest_enabled else None
     # The window checks (`core.watch`): silence and the ingestion rate. The task
@@ -133,6 +136,9 @@ async def run_correlator(
         or settings.service_rejections_threshold > 0
     )
     watch = HealthWatch(store, notifier, settings, audit) if window_checks else None
+    # Cleanup is opt-in and never a readiness dependency: a janitor that cannot
+    # run must not take the correlator out of the load balancer.
+    retention = RetentionJanitor(store, settings, audit) if settings.retention_enabled else None
     repository = IncidentRepository(
         store,
         settings,
@@ -142,7 +148,7 @@ async def run_correlator(
     # The budget rations notifications, so it needs the channels it summarises
     # through; with the budget off, `None` keeps the old behaviour exactly.
     budget = (
-        AlertBudget(store, active_dispatchers, settings, audit)
+        AlertBudget(store, active_dispatchers, settings, audit, notifier=notifier)
         if settings.alert_budget_enabled
         else None
     )
@@ -180,15 +186,51 @@ async def run_correlator(
 
     started: list[BaseReceiver] = []
     began = time.monotonic()
+    scan_recovery: asyncio.Task[None] | None = None
+    critical: list[asyncio.Task[None]] = []
+    running = False
+    draining = False
+
+    def live() -> bool:
+        return draining or not any(task.done() for task in critical)
+
+    def ready() -> bool:
+        return running and live() and all(receiver.is_running for receiver in receivers)
+
+    if isinstance(health, HealthServer):
+        health.set_runtime_checks(live, ready)
+
+    async def supervise() -> None:
+        while True:
+            failed = next((task for task in critical if task.done()), None)
+            listener_failed = not all(receiver.is_running for receiver in started)
+            if isinstance(health, HealthServer):
+                listener_failed = listener_failed or not health.is_running
+            if failed is not None or listener_failed:
+                name = failed.get_name() if failed is not None else "listener"
+                error = None if failed is None or failed.cancelled() else failed.exception()
+                audit.emit(
+                    "critical_task_failed",
+                    "error",
+                    {
+                        "task": name,
+                        "error_type": type(error).__name__ if error else "unexpected_exit",
+                    },
+                )
+                raise RuntimeError(f"critical runtime component stopped: {name}") from error
+            await asyncio.sleep(0.05)
+
+    supervisor: asyncio.Task[None] | None = None
+    stop_waiter: asyncio.Task[bool] | None = None
     try:
         await log_handler.start()
         for receiver in receivers:
-            await receiver.start()
             started.append(receiver)
+            await receiver.start()
         if health is not None:
             await health.start()
-        if outbox is not None:
-            await outbox.start()
+        await notice_outbox.start()
+        scan_recovery = asyncio.create_task(engine.recover_scans(), name="scan-recovery")
         await stats.start()
         if digest is not None:
             await digest.start()
@@ -196,6 +238,18 @@ async def run_correlator(
             await watch.start()
         if budget is not None:
             await budget.start()
+        if retention is not None:
+            await retention.start()
+        critical = [task for receiver in receivers for task in receiver.critical_tasks]
+        critical.append(scan_recovery)
+        critical.extend(
+            task
+            for component in (notice_outbox, stats, digest, watch, budget)
+            if component is not None
+            for task in component.critical_tasks
+        )
+        running = True
+        supervisor = asyncio.create_task(supervise(), name="runtime-supervisor")
         audit.emit(
             "startup",
             "info",
@@ -213,43 +267,109 @@ async def run_correlator(
                 f"Receivers: {', '.join(receiver.name for receiver in receivers)}",
                 f"Channels: {', '.join(dispatcher.name for dispatcher in active_dispatchers)}",
             ),
-            subject="lifecycle",
+            subject="started",
         )
-        await stop.wait()
+        stop_waiter = asyncio.create_task(stop.wait(), name="runtime-stop")
+        done, _ = await asyncio.wait((stop_waiter, supervisor), return_when=asyncio.FIRST_COMPLETED)
+        if supervisor in done:
+            await supervisor
     except Exception as exc:
-        audit.emit("startup_failed", "error", {"error_type": type(exc).__name__})
+        audit.emit(
+            "runtime_failed" if running else "startup_failed",
+            "error",
+            {"error_type": type(exc).__name__},
+        )
         raise
     finally:
-        for receiver in reversed(started):
-            await receiver.stop()
-        if health is not None:
-            await health.stop()
-        if outbox is not None:
-            await outbox.stop()
-        if digest is not None:
-            await digest.stop()
-        if watch is not None:
-            await watch.stop()
-        if budget is not None:
-            await budget.stop()
-        await stats.stop()
+        running = False
+        draining = True
+        if isinstance(health, HealthServer):
+            health.draining = True
+        for task in (supervisor, stop_waiter):
+            if task is not None:
+                task.cancel()
         await asyncio.gather(
-            *(dispatcher.aclose() for dispatcher in active_dispatchers),
+            *(task for task in (supervisor, stop_waiter) if task is not None),
             return_exceptions=True,
         )
-        if enricher is not None:
-            await enricher.aclose()
-        package_logger.removeHandler(log_handler)
-        await log_handler.stop()
-        uptime = round(time.monotonic() - began, 1)
-        await notifier.notify(
-            ServiceKind.LIFECYCLE_STOPPED,
-            title="correlator stopped",
-            lines=(f"Version {__version__}", f"Uptime: {uptime} s"),
-            subject="lifecycle",
+        # All cleanup operations are started, even if another raises or hangs.
+        # Reserve half the single deadline for draining producers and half for
+        # notice/client/pool closure. Cancellation remains cooperative asyncio.
+        deadline = asyncio.get_running_loop().time() + settings.shutdown_timeout
+
+        async def cleanup(
+            name: str, operation: Callable[[], Awaitable[object]], budget: float
+        ) -> None:
+            try:
+                async with asyncio.timeout(max(0.001, budget)):
+                    await operation()
+            except Exception as exc:
+                audit.emit(
+                    "cleanup_failed",
+                    "error",
+                    {
+                        "resource": name,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+        async def cancel_scan() -> None:
+            if scan_recovery is not None:
+                scan_recovery.cancel()
+                await asyncio.gather(scan_recovery, return_exceptions=True)
+
+        stops: list[tuple[str, Callable[[], Awaitable[object]]]] = [
+            (receiver.name, receiver.stop) for receiver in reversed(started)
+        ]
+        stops.append(("scan-recovery", cancel_scan))
+        stops.extend(
+            (name, component.stop)
+            for name, component in (
+                ("outbox", notice_outbox),
+                ("digest", digest),
+                ("watch", watch),
+                ("budget", budget),
+                ("retention", retention),
+                ("stats", stats),
+            )
+            if component is not None
         )
+        await asyncio.gather(
+            *(cleanup(name, operation, settings.shutdown_timeout / 2) for name, operation in stops)
+        )
+        # Even a broken stop implementation cannot orphan a supervised worker.
+        for task in critical:
+            task.cancel()
+        await asyncio.gather(*critical, return_exceptions=True)
+
+        def remaining() -> float:
+            return max(0.001, deadline - asyncio.get_running_loop().time())
+
+        await cleanup(
+            "stop-notice",
+            lambda: notifier.notify(
+                ServiceKind.LIFECYCLE_STOPPED,
+                title="correlator stopped",
+                lines=(f"Version {__version__}", f"Uptime: {round(time.monotonic() - began, 1)} s"),
+                subject="stopped",
+            ),
+            remaining() / 2,
+        )
+        await cleanup("stop-notice-attempt", notice_outbox.run_once, remaining() / 2)
+        closes: list[tuple[str, Callable[[], Awaitable[object]]]] = [
+            (dispatcher.target_id, dispatcher.aclose) for dispatcher in active_dispatchers
+        ]
+        if enricher is not None:
+            closes.append(("enricher", enricher.aclose))
+        if health is not None:
+            closes.append(("health", health.stop))
+        package_logger.removeHandler(log_handler)
+        await asyncio.gather(
+            *(cleanup(name, operation, remaining() / 2) for name, operation in closes)
+        )
+        await cleanup("log-handler", log_handler.stop, remaining() / 2)
         if owns_store:
-            await store.aclose()
+            await cleanup("redis", store.aclose, remaining())
         audit.emit("shutdown", "info", {"receivers": len(started)})
 
 
@@ -278,6 +398,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check_config:
         print(json.dumps(describe_settings(settings), indent=2))
         return 0
+
+    if args.retention_run or args.dlq_list is not None or args.dlq_replay is not None:
+        return asyncio.run(
+            run_admin(
+                settings,
+                dlq_list=args.dlq_list,
+                dlq_replay=args.dlq_replay,
+                retention_run=args.retention_run,
+            )
+        )
 
     try:
         asyncio.run(run_correlator(settings))

@@ -31,6 +31,11 @@ from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
+from opencanary_correlator.core.service_messages import (
+    ServiceKind,
+    ServiceMessage,
+    ServiceNotifier,
+)
 from opencanary_correlator.redaction import sanitize_text
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -111,12 +116,14 @@ class AlertBudget:
         audit: AuditLogger,
         *,
         clock: Callable[[], float] = time.time,
+        notifier: ServiceNotifier | None = None,
     ) -> None:
         self._store = store
         self._dispatchers = list(dispatchers)
         self._settings = settings
         self._audit = audit
         self._clock = clock
+        self._notifier = notifier
         self._task: asyncio.Task[None] | None = None
 
     # --- Reservation --------------------------------------------------------
@@ -149,6 +156,11 @@ class AlertBudget:
 
     # --- Summary worker -----------------------------------------------------
 
+    @property
+    def critical_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Background task supervised by the runtime."""
+        return (self._task,) if self._task is not None else ()
+
     async def start(self) -> None:
         """Start the loop that delivers closed-window summaries."""
         if self._task is None:
@@ -168,6 +180,31 @@ class AlertBudget:
         due = await self._store.due_budget_summaries(now=now, limit=SUMMARY_BATCH)
         delivered = 0
         for summary_key in due:
+            if self._notifier is not None:
+                pending = {
+                    node: int(value)
+                    for node, value in (await self._store.hgetall(summary_key)).items()
+                }
+                if not pending:
+                    continue
+                summary = self._summary(summary_key, pending)
+                queued = await self._notifier.enqueue(
+                    ServiceMessage(
+                        kind=ServiceKind.BUDGET_SUMMARY,
+                        title="alert budget",
+                        lines=(render_budget_summary(summary),),
+                    ),
+                    occurrence=f"summary:{summary_key}",
+                    source_summary=summary_key,
+                    channels=tuple({dispatcher.name for dispatcher in self._dispatchers}),
+                )
+                delivered += int(queued)
+                if not queued:
+                    # The occurrence is already committed (a retry, or a
+                    # competing replica won the script), so the source summary
+                    # is acknowledged here instead of being re-read forever.
+                    await self._store.take_budget_summary(summary_key)
+                continue
             counts = await self._store.take_budget_summary(summary_key)
             if not counts:
                 continue

@@ -69,6 +69,49 @@ before a push that touches Python, tests or dependencies.
 
 The first run was red and found two defects that local Windows runs could not see: `setup-python` cached pip while uv installs the packages, so its post-job step failed an otherwise green lint job, and the UDP receiver asserted `isinstance(transport, asyncio.DatagramTransport)`, which is false for the POSIX selector transport (it implements the datagram API without inheriting the class) and failed all five syslog UDP tests. Both are fixed; the POSIX failure was reproduced and the fix confirmed in a `python:3.11-slim` container before pushing.
 
+## Release qualification
+
+A tag is a publication request, not a second test run. `ci.yml` runs on
+`v*` tags, and `release.yml` waits for the CI run of the tagged commit through
+the Actions API (`tools/release_guard.py ci`), polling for up to 30 minutes. A
+missing, unfinished or failed run stops the release before anything is built; a
+fixed commit needs a new tag rather than a re-run that publishes around a red
+suite. The same rule applies to a manual `workflow_dispatch` release of an
+existing tag.
+
+| Rule | Implementation |
+|---|---|
+| CI is a prerequisite | `verify` job in `release.yml`; only `ci.yml` runs count |
+| Published assets are immutable | `tools/release_guard.py plan` refuses to upload to a non-draft release; a fix is a new version |
+| Drafts are replaceable | a draft was never published, so a re-run replaces its assets and refreshes the body |
+| Consumers can verify | `SHA256SUMS` is generated from the built files and checked after downloading the published assets |
+| Actions cannot move | every `uses:` is pinned by commit SHA with its tag in a comment; `.github/dependabot.yml` proposes weekly updates for actions and docker digests |
+| The image is inventoried | the `container-scan` job builds it, writes a CycloneDX SBOM and fails on fixable HIGH/CRITICAL findings |
+| Recovery is qualified | the `qualification` job runs the opt-in real-Redis, two-replica, restart and POSIX-signal tests; the compose smoke stops the correlator with SIGTERM and requires exit code 0, one incident and health after restart |
+
+Provenance limits: this repository publishes Python packages and a Dockerfile,
+not a registry image, so there is no image attestation to produce and none is
+claimed. Wheel and sdist integrity rests on the checksum manifest and on the
+build running from the pinned, locked environment in CI.
+
+The Windows job stays required for merge: it covers CRLF in alerts and logs, the
+pidfile handling and the Windows datagram transport that the Linux matrix cannot
+exercise. It is not a separate release gate, because the release gate is the
+whole CI workflow, which includes it. Required status checks and branch
+protection are GitHub repository settings; changing them needs separate
+authorization for a GitHub write and was not done here.
+
+Qualification figures (benchmark job, latency probe, memory) are reported in the
+job summary and never used as pass/fail thresholds: repeated runs of one commit
+on shared runners differ by more than the effects being measured. The numbers
+recorded in this file are local or CI observations of specific runs, not
+guarantees.
+
+**Status of this change:** the workflows and `tools/release_guard.py` are
+implemented and the rules are unit-tested locally; the release path itself has
+not been observed in a GitHub Actions run, because pushing a tag, enabling
+branch protection or publishing a release is outside this task.
+
 ## Compatibility proof
 
 `tests/integration/test_tcp_json_receiver.py` and `tests/integration/test_end_to_end.py`
@@ -186,13 +229,16 @@ leaking between runs. The list stays separate from the audit stream on stdout.
 
 ## Health endpoint
 
-`/healthz` and `/readyz` return `200 {"status":"ok","redis":true}` while Redis
-answers PING, `503 {"status":"degraded"}` when it does not, and the listener is
-bound and closed with the runtime. Verified over a real socket in
-`tests/integration/test_end_to_end.py`.
+`/healthz` reports local critical-task liveness independently of Redis.
+`/readyz` and `/health` additionally require Redis, runtime startup, listeners and
+non-draining state. The listener is bound and closed with the runtime; the
+readiness response is checked over a real socket in
+`tests/integration/test_end_to_end.py`. Unit regressions cover critical consumer
+exit, independent cleanup after errors/timeouts, lifecycle notice before client
+closure, queued/in-flight cancellation, total HTTP deadline and oversized headers.
 
 The request target is parsed with `urlsplit` and the resulting path is compared
-exactly against the health paths: `/healthz?x=1` and `/readyz?verbose` still ping
+exactly against the health paths: `/health?x=1` and `/readyz?verbose` still ping
 Redis and return 503 when it is down, while `/healthzfoo`, `/readyzbar` and
 `/healthz/` return 404. A malformed absolute-form target is also a 404 rather
 than a listener exception.

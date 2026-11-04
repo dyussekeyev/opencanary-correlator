@@ -78,10 +78,44 @@ def test_a_record_that_is_not_a_mapping_is_ignored() -> None:
     assert lookup.lookup("74.22.3.178") is None
 
 
-def test_a_corrupt_database_does_not_break_the_alert() -> None:
+def test_lookup_stays_fail_soft_when_every_reader_raises() -> None:
     lookup = GeoLookup(FakeReader(CITY_RECORD, fail=True), FakeReader(ASN_RECORD, fail=True))
 
     assert lookup.lookup("74.22.3.178") is None
+
+
+def test_a_corrupt_city_database_is_reported_separately_from_no_data() -> None:
+    lookup = GeoLookup(FakeReader(CITY_RECORD, fail=True), FakeReader(ASN_RECORD))
+
+    inspection = lookup.inspect("74.22.3.178")
+
+    # The healthy ASN database still contributes its network data, and the
+    # failure names the provider an operator has to check.
+    assert inspection.failed == ("city:RuntimeError",)
+    assert inspection.info is not None
+    assert inspection.info.asn == 202425
+    assert inspection.info.country_code == ""
+
+
+def test_a_corrupt_asn_database_is_reported_separately_from_no_data() -> None:
+    lookup = GeoLookup(FakeReader(CITY_RECORD), FakeReader(ASN_RECORD, fail=True))
+
+    inspection = lookup.inspect("74.22.3.178")
+
+    assert inspection.failed == ("asn:RuntimeError",)
+    assert inspection.info is not None
+    assert inspection.info.country_code == "NL"
+    assert inspection.info.asn is None
+
+
+def test_an_unknown_address_is_not_a_reader_failure() -> None:
+    """An address the database does not cover is normal traffic, not breakage."""
+    lookup = GeoLookup(FakeReader(None), FakeReader({}))
+
+    inspection = lookup.inspect("74.22.3.178")
+
+    assert inspection.failed == ()
+    assert inspection.info is None
 
 
 def test_the_asn_database_alone_still_reports_the_network() -> None:

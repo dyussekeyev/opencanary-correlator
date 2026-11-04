@@ -21,7 +21,7 @@ from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import Incident, IncidentLockTimeoutError
 from opencanary_correlator.core.outbox import AlertOutbox
-from opencanary_correlator.core.rules import Rule
+from opencanary_correlator.core.rules import HostPortScanRule, Rule
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceNotifier
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
 from opencanary_correlator.enrichment.service import IncidentEnricher
@@ -64,6 +64,8 @@ class CorrelationEngine:
         self._failed_alerts_in_a_row = 0
         # Without a budget every incident notifies, as before.
         self._budget = budget
+        if self._outbox is not None:
+            self._outbox.set_enricher(enricher)
 
     @property
     def rule_names(self) -> tuple[str, ...]:
@@ -156,8 +158,30 @@ class CorrelationEngine:
             return
 
         if incidents:
-            await self._enrich(incidents)
+            if self._outbox is None:
+                await self._enrich(incidents)
             await self._dispatch(incidents)
+
+    async def recover_scans(self) -> None:
+        """Recover threshold snapshots independently of new network traffic."""
+        while True:
+            for rule in self._rules:
+                if not isinstance(rule, HostPortScanRule):
+                    continue
+                try:
+                    incidents = await rule.recover()
+                    if self._outbox is None:
+                        await self._enrich(incidents)
+                    await self._dispatch(incidents)
+                except Exception as exc:
+                    self._audit.emit(
+                        "scan_recovery_failed",
+                        "error",
+                        {
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+            await asyncio.sleep(5)
 
     async def _confirm_claim(self, fingerprint: str, token: str, event: CanaryEvent) -> None:
         """Extend the dedup claim now that the event has been correlated.
@@ -200,10 +224,9 @@ class CorrelationEngine:
     async def _dispatch(self, incidents: Sequence[Incident]) -> None:
         """Notify every channel about the incidents the budget allowed.
 
-        The budget is consulted before the first attempt, so a withheld alert
-        costs nothing but its outbox entries, which are withdrawn here. Incidents
-        themselves are never withheld: they are stored and visible in the console
-        either way, and the window's refusals are summarised when it closes.
+        With an outbox, recoverable preparation commits budget and ready state
+        before any attempt; suppressed debts remain non-runnable. Without it,
+        the legacy inline budget is consulted here. Incidents are always stored.
 
         The fan-out stays per incident so the engine can tell "one channel failed"
         from "this alert reached nobody". The second case repeated a few times in
@@ -211,7 +234,10 @@ class CorrelationEngine:
         then storing attacks nobody is being told about.
         """
         for incident in incidents:
-            if not await self._notification_allowed(incident):
+            if self._outbox is not None:
+                if not await self._outbox.prepare(incident):
+                    continue
+            elif not await self._notification_allowed(incident):
                 await self._suppress(incident)
                 continue
             if not self._dispatchers:
@@ -243,8 +269,6 @@ class CorrelationEngine:
 
     async def _suppress(self, incident: Incident) -> None:
         """Drop the notification: withdraw its deliveries and record the refusal."""
-        if self._outbox is not None:
-            await self._outbox.cancel(incident.key)
         self._audit.emit(
             "alert_suppressed",
             "warning",
@@ -275,18 +299,16 @@ class CorrelationEngine:
         )
 
     async def _deliver(self, dispatcher: BaseDispatcher, incident: Incident) -> bool:
-        """Try one channel now, then tell the outbox what happened.
-
-        The attempt stays inline so a healthy deployment notifies immediately;
-        the outbox only matters when it fails, which is when the entry it already
-        holds is rescheduled instead of the alert being dropped on the floor.
-        """
-        result = await deliver(
-            dispatcher,
-            incident,
-            audit=self._audit,
-            deadline=float(self._settings.dispatch_timeout),
-        )
+        """Use the common fenced attempt path, or legacy best-effort delivery."""
+        if self._outbox is not None:
+            result = await self._outbox.deliver_inline(incident, dispatcher)
+        else:
+            result = await deliver(
+                dispatcher,
+                incident,
+                audit=self._audit,
+                deadline=float(self._settings.dispatch_timeout),
+            )
         if result is not None and result.status == "skipped" and result.detail == "circuit_open":
             # The breaker stopped the attempt, so this is where an operator learns
             # that the endpoint they configured is not being used at all.
@@ -299,16 +321,7 @@ class CorrelationEngine:
                 ),
                 subject=f"channel:{dispatcher.name}",
             )
-        if self._outbox is None:
-            return result is not None and result.status == "success"
-        if result is None:
-            error = "timeout"
-        elif result.status != "success":
-            error = result.status
-        else:
-            error = None
-        await self._outbox.settle(incident.key, dispatcher.name, error=error)
-        return error is None
+        return result is not None and result.status == "success"
 
     async def _notify(
         self,

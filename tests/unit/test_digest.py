@@ -49,6 +49,36 @@ def make_notifier(store: Any, settings: Any, audit: Any, dispatchers: list[BaseD
     return ServiceNotifier(store, dispatchers, settings, audit)
 
 
+async def test_history_survives_heartbeat_loss_and_flush_replay(store: Any) -> None:
+    await store.flush_statistics("generation-a", {"events_accepted": 10}, now=NOW - 120)
+    await store.flush_statistics("generation-a", {"events_accepted": 10}, now=NOW - 120)
+    await store.flush_statistics("generation-a", {"events_accepted": 15}, now=NOW)
+    await store.flush_statistics("generation-b", {"events_accepted": 3}, now=NOW)
+    data = await collect_digest(store, now=NOW + 60, top_sources=0)
+    assert data.events["accepted"] == 18
+    tomorrow = await collect_digest(store, now=NOW + 86400 + 60, top_sources=0)
+    assert tomorrow.events["accepted"] == 0
+
+
+async def test_default_digest_routing_reaches_all_channels(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    dispatcher = RecordingDispatcher()
+    scheduler = make_scheduler(store, digest_settings(settings_factory), audit, dispatcher)
+    assert await scheduler.run_once()
+    assert len(dispatcher.messages) == 1
+
+
+def test_alert_snapshot_sums_dispatcher_labels(store: Any, audit: Any) -> None:
+    from opencanary_correlator import metrics
+
+    reporter = StatsReporter(store, audit)
+    before = reporter.snapshot()["alerts_success"]
+    metrics.ALERTS_TOTAL.labels(dispatcher="telegram", status="success").inc(2)
+    metrics.ALERTS_TOTAL.labels(dispatcher="smtp", status="success").inc(3)
+    assert reporter.snapshot()["alerts_success"] == int(before) + 5
+
+
 # --- Scheduling arithmetic --------------------------------------------------
 
 
@@ -89,13 +119,19 @@ async def test_a_beat_publishes_the_counters_with_a_ttl(store: Any, audit: Any) 
     assert 0 < ttl <= 300
 
 
-async def test_two_replicas_are_summed_and_an_expired_one_is_excluded(
+async def test_two_generations_are_summed_and_history_outlives_a_replica(
     store: Any, audit: Any
 ) -> None:
     first = StatsReporter(store, audit, instance_id="replica-a", clock=lambda: NOW)
     second = StatsReporter(store, audit, instance_id="replica-b", clock=lambda: NOW)
     await store.write_heartbeat(first.key, {"events_accepted": 10, "alerts_success": 2}, ttl=300)
     await store.write_heartbeat(second.key, {"events_accepted": 5, "alerts_success": 3}, ttl=300)
+    await store.flush_statistics(
+        "replica-a", {"events_accepted": 10, "alerts_success": 2}, now=NOW - 60
+    )
+    await store.flush_statistics(
+        "replica-b", {"events_accepted": 5, "alerts_success": 3}, now=NOW - 60
+    )
 
     data = await collect_digest(store, now=NOW, top_sources=0)
 
@@ -103,12 +139,14 @@ async def test_two_replicas_are_summed_and_an_expired_one_is_excluded(
     assert data.events["accepted"] == 15
     assert data.alerts["success"] == 5
 
-    # A replica that stopped heartbeating lets its key expire; here it is deleted.
+    # The replica leaves, so it is no longer live; what it flushed is history
+    # and must still be reported for the window it covers (F07).
     await store.delete(second.key)
+    await store.client.delete("stats:v2:checkpoint:replica-b")
     data = await collect_digest(store, now=NOW, top_sources=0)
 
     assert data.replicas == 1
-    assert data.events["accepted"] == 10
+    assert data.events["accepted"] == 15
 
 
 async def test_a_replica_that_cannot_heartbeat_does_not_crash(
@@ -205,6 +243,32 @@ async def test_one_digest_per_day(
     assert await store.exists(keys.digest_sent_key(day))
 
 
+async def test_a_restart_catches_up_only_the_latest_occurrence(
+    store: Any, settings_factory: Any, audit: Any
+) -> None:
+    """A process that was down over the scheduled time sends one digest, not one per missed day."""
+    dispatcher = RecordingDispatcher()
+    settings = digest_settings(settings_factory, digest_channels=["slack"])
+    notifier = make_notifier(store, settings, audit, [dispatcher])
+
+    first = DigestScheduler(store, notifier, settings, audit, clock=lambda: NOW)
+    assert await first.run_once() is True
+
+    # Restarted later the same day: the marker already covers this occurrence.
+    restarted = DigestScheduler(store, notifier, settings, audit, clock=lambda: NOW + 3600)
+    assert await restarted.run_once() is False
+
+    # Restarted a day later: exactly the newest occurrence is caught up, once.
+    overnight = DigestScheduler(store, notifier, settings, audit, clock=lambda: NOW + 86400)
+    assert await overnight.run_once() is True
+    assert await overnight.run_once() is False
+
+    assert len(dispatcher.messages) == 2
+    assert {message.subject for message in dispatcher.messages} == {
+        datetime.fromtimestamp(moment, tz=UTC).strftime("%Y-%m-%d") for moment in (NOW, NOW + 86400)
+    }
+
+
 async def test_two_replicas_electing_at_the_same_second_send_one_message(
     store: Any, settings_factory: Any, audit: Any
 ) -> None:
@@ -292,6 +356,9 @@ def test_the_digest_reports_the_window_and_the_sources(store: Any, audit: Any) -
             keys.stats_instance_key("a"),
             {"events_accepted": 120, "alerts_success": 7},
             ttl=300,
+        )
+        await store.flush_statistics(
+            "a", {"events_accepted": 120, "alerts_success": 7}, now=NOW - 60
         )
         return await collect_digest(store, now=NOW, top_sources=5)
 

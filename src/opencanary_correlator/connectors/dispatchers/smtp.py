@@ -22,6 +22,7 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
 )
 from opencanary_correlator.connectors.dispatchers.base import RetryPolicy
 from opencanary_correlator.redaction import sanitize_text
+from opencanary_correlator.storage.keys import delivery_target_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from opencanary_correlator.core.service_messages import ServiceMessage
@@ -58,6 +59,9 @@ class SmtpDispatcher(BaseDispatcher):
         send: SendFunction = aiosmtplib.send,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self.delivery_target_id = delivery_target_id(
+            self.name, host, str(port), sender, *sorted(set(recipients))
+        )
         self._host = host
         self._port = port
         self._sender = sender

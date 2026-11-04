@@ -301,9 +301,9 @@ async def test_capped_merge_writes_only_the_counters(
     captured: list[dict[str, str]] = []
     original = store.save_incident
 
-    async def spy(key: Any, fields: Any, *, score: Any, pointer_key: Any = None) -> None:
+    async def spy(key: Any, fields: Any, **kwargs: Any) -> int:
         captured.append(dict(fields))
-        await original(key, fields, score=score, pointer_key=pointer_key)
+        return await original(key, fields, **kwargs)
 
     monkeypatch.setattr(store, "save_incident", spy)
     await repository.record("ftp.login_attempt", event)
@@ -330,10 +330,10 @@ async def test_a_lock_timeout_raises_instead_of_answering_a_merge(
     event = CanaryEvent.model_validate(event_factory())
 
     @contextlib.asynccontextmanager
-    async def not_acquired(_key: str, **_kwargs: Any) -> AsyncIterator[bool]:
-        yield False
+    async def not_acquired(_key: str, **_kwargs: Any) -> AsyncIterator[str | None]:
+        yield None
 
-    monkeypatch.setattr(store, "lock", not_acquired)
+    monkeypatch.setattr(store, "owned_lock", not_acquired)
 
     with pytest.raises(IncidentLockTimeoutError) as raised:
         await repository.record("ftp.login_attempt", event)
@@ -459,6 +459,57 @@ async def test_create_keeps_scan_logdata_exact(
     fields = await store.hgetall(created.key)
 
     assert json.loads(fields["logdata"]) == list(range(1, 301))
+
+
+async def test_stale_owner_cannot_commit_create_or_merge(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any, monkeypatch: Any
+) -> None:
+    from opencanary_correlator.storage.keys import incident_lock_key
+
+    repository = IncidentRepository(store, settings_factory(), audit, clock=clock)
+    event = CanaryEvent.model_validate(event_factory())
+    original = store.save_new_incident
+
+    async def replaced_owner(*args: Any, **kwargs: Any) -> int:
+        await store.client.set(incident_lock_key("ftp.login_attempt", event.src_host), "new-owner")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "save_new_incident", replaced_owner)
+    with pytest.raises(IncidentLockTimeoutError):
+        await repository.record("ftp.login_attempt", event)
+    assert await store.zrangebyscore(KEY_INCIDENTS, "-inf", "+inf") == []
+    await store.delete(incident_lock_key("ftp.login_attempt", event.src_host))
+    monkeypatch.setattr(store, "save_new_incident", original)
+    created = await repository.record("ftp.login_attempt", event)
+    before = await store.hgetall(created.key)
+    merge = store.save_incident
+
+    async def stale_merge(*args: Any, **kwargs: Any) -> int:
+        await store.client.set(incident_lock_key("ftp.login_attempt", event.src_host), "next-owner")
+        return await merge(*args, **kwargs)
+
+    monkeypatch.setattr(store, "save_incident", stale_merge)
+    with pytest.raises(IncidentLockTimeoutError):
+        await repository.record("ftp.login_attempt", event)
+    assert await store.hgetall(created.key) == before
+
+
+async def test_cross_node_merge_remains_legacy_global_per_source(
+    repository: Any, store: Any, event_factory: Any
+) -> None:
+    first = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+    assert (
+        await repository.record(
+            "ftp.login_attempt",
+            CanaryEvent.model_validate(event_factory(node_id="canary-2", dst_host="10.0.0.3")),
+        )
+        is None
+    )
+    fields = await store.hgetall(first.key)
+    assert fields["node_id"] == "canary-1"
+    assert fields["events_count"] == "2"
 
 
 async def seed_index(store: Any, *, count: int, score: float) -> None:

@@ -267,6 +267,191 @@ async def test_provider_pause_is_atomic_on_real_redis(replica_stores: Any) -> No
         await first.delete(key)
 
 
+async def test_outbox_fencing_on_real_redis(replica_stores: Any) -> None:
+    """A reclaimed lease rejects ALL stale transitions, even after settlement."""
+    first, second = replica_stores
+    entry_id = f"test:{uuid.uuid4().hex}#target"
+    try:
+        await first.enqueue_alert(entry_id, incident_key="test", channel="target", score=100)
+        owner = await first.claim_alert(entry_id, now=100, lease=1, max_attempts=8)
+        assert await second.claim_alert(entry_id, now=100, lease=1, max_attempts=8) == ""
+        recovered = await second.claim_alert(entry_id, now=102, lease=60, max_attempts=8)
+        assert recovered != owner
+        for state in ("ready", "dead", "delivered"):
+            assert not await first.transition_alert(entry_id, owner=owner, now=102, state=state)
+        assert await second.transition_alert(entry_id, owner=recovered, now=102, state="delivered")
+        assert not await first.transition_alert(entry_id, owner=owner, now=102, state="ready")
+        assert await first.read_alert(entry_id) is None
+        assert await first.exists(keys.delivered_key(entry_id))
+    finally:
+        await first.delete(keys.outbox_alert_key(entry_id), keys.delivered_key(entry_id))
+        await first.client.zrem(keys.OUTBOX_INDEX, entry_id)
+        await first.client.zrem(keys.OUTBOX_DEAD, entry_id)
+
+
+async def test_outbox_multi_target_recovery_on_real_redis(
+    replica_stores: Any, real_settings: Any, event_factory: Any
+) -> None:
+    """Inline and another replica cannot race; only the failed target retries."""
+    from opencanary_correlator.core.outbox import AlertOutbox
+    from opencanary_correlator.enrichment.models import Enrichment, GeoInfo
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    target = uuid.uuid4().hex
+    moment = [1700000000.0]
+    audit = AuditLogger("outbox-test", stream=io.StringIO())
+
+    class Gated(RecordingDispatcher):
+        async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+            entered.set()
+            await release.wait()
+            return await super().dispatch(incident)
+
+    class Failed(RecordingDispatcher):
+        async def dispatch(self, incident: IncidentLike) -> DispatchResult:
+            return DispatchResult(dispatcher=self.name, status="error", detail="http_503")
+
+    good, bad, recovered = Gated(), Failed(), RecordingDispatcher()
+    good.delivery_target_id = f"recording:{target}:good"
+    bad.delivery_target_id = recovered.delivery_target_id = f"recording:{target}:bad"
+    first, second = replica_stores
+    outbox = AlertOutbox(first, [good, bad], real_settings, audit, clock=lambda: moment[0])
+    worker = AlertOutbox(second, [good, recovered], real_settings, audit, clock=lambda: moment[0])
+    host = f"2001:db8::{target[:4]}:{target[4:8]}"
+    repository = IncidentRepository(
+        first, real_settings, audit, clock=lambda: moment[0], alert_channels=outbox.channels
+    )
+    incident = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory(src_host=host))
+    )
+    assert incident is not None
+    incident.enrichment = Enrichment(geo=GeoInfo(country_code="NL", asn=123))
+    task = None
+    try:
+        assert await outbox.prepare(incident)
+        task = asyncio.create_task(outbox.deliver_inline(incident, good))
+        await asyncio.wait_for(entered.wait(), 2)
+        await outbox.deliver_inline(incident, bad)
+        assert await asyncio.wait_for(worker.run_once(), 2) == 0
+        release.set()
+        await task
+        moment[0] += 2
+        assert await worker.run_once() == 1
+        assert len(good.incidents) == len(recovered.incidents) == 1
+        assert recovered.incidents[0].enrichment.geo.asn == 123
+    finally:
+        release.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        for target_id in outbox.channels:
+            entry = keys.outbox_entry_id(incident.key, target_id)
+            await first.delete(keys.outbox_alert_key(entry), keys.delivered_key(entry))
+            await first.client.zrem(keys.OUTBOX_INDEX, entry)
+            await first.client.zrem(keys.OUTBOX_DEAD, entry)
+        await first.client.zrem(keys.OUTBOX_PREPARING, incident.key)
+        await first.delete(
+            keys.outbox_envelope_key(incident.key),
+            keys.incident_latest_key("ftp.login_attempt", host),
+        )
+        await cleanup_host(first, host)
+
+
+async def test_incident_commit_rejects_expired_owner_on_real_redis(replica_stores: Any) -> None:
+    first, second = replica_stores
+    suffix = uuid.uuid4().hex
+    lock = f"test:incident-lock:{suffix}"
+    incident = f"incident:ftplogin:test-{suffix}:1"
+    pointer = f"test:pointer:{suffix}"
+    try:
+        async with first.owned_lock(lock, ttl_ms=20) as stale:
+            assert stale
+            await asyncio.sleep(0.05)
+            async with second.owned_lock(lock, ttl_ms=5000) as owner:
+                assert owner and owner != stale
+                assert (
+                    await second.save_new_incident(
+                        incident,
+                        {"node_id": "n", "events_count": "2"},
+                        score=1,
+                        pointer_key=pointer,
+                        lock_key=lock,
+                        lock_token=owner,
+                    )
+                    == 1
+                )
+                assert (
+                    await first.save_incident(
+                        incident,
+                        {"events_count": "1"},
+                        score=1,
+                        pointer_key=pointer,
+                        lock_key=lock,
+                        lock_token=stale,
+                    )
+                    == 0
+                )
+                assert (
+                    await first.save_new_incident(
+                        incident,
+                        {"node_id": "old", "events_count": "1"},
+                        score=1,
+                        pointer_key=pointer,
+                        lock_key=lock,
+                        lock_token=stale,
+                        alert_channels=("wrong-target",),
+                    )
+                    == 0
+                )
+                assert (await first.hgetall(incident))["events_count"] == "2"
+                assert not await first.exists(keys.outbox_envelope_key(incident))
+    finally:
+        await first.delete(lock, incident, pointer)
+        await first.client.zrem(KEY_INCIDENTS, incident)
+
+
+async def test_scan_snapshot_atomic_ack_and_recovery_on_real_redis(
+    replica_stores: Any, real_settings: Any, event_factory: Any
+) -> None:
+    from opencanary_correlator.core.rules.portscan import HostPortScanRule
+
+    first, second = replica_stores
+    host = f"2001:db8::{uuid.uuid4().hex[:8]}"
+    event = CanaryEvent.model_validate(event_factory(src_host=host, logtype=5001, dst_port=22))
+    key = keys.host_scan_key(host, event.dst_host)
+    audit = AuditLogger("scan-test", stream=io.StringIO())
+    repository = IncidentRepository(second, real_settings, audit)
+    pending = None
+    try:
+        assert (
+            await first.snapshot_scan(
+                key, member="21", ttl=50, threshold=2, event=event.model_dump_json(), now=1
+            )
+            is None
+        )
+        assert 0 < await first.client.pttl(key) <= 50000
+        pending = await first.snapshot_scan(
+            key, member="22", ttl=50, threshold=2, event=event.model_dump_json(), now=1
+        )
+        assert pending and await first.client.pttl(pending) == -1
+        await first.sadd_with_fixed_expire(key, "23", ttl=50)
+        rule = HostPortScanRule(store=second, repository=repository, settings=real_settings)
+        incidents = await rule.recover()
+        matching = [i for i in incidents if i.src_host == host]
+        assert len(matching) == 1
+        assert json.loads(matching[0].logdata) == [21, 22]
+        assert await first.smembers(key) == {"23"}
+        assert not await first.exists(pending)
+        assert await rule.recover() == []
+    finally:
+        await first.delete(
+            key, key + ":pending", keys.incident_latest_key("scans.host_portscan", host)
+        )
+        if pending:
+            await first.delete(pending, pending + ":event", pending + ":pointer")
+            await first.client.zrem(keys.SCAN_PENDING_INDEX, pending)
+        await cleanup_host(first, host)
+
+
 @pytest.mark.linux
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics required")
 async def test_sigterm_stops_the_cli_cleanly(

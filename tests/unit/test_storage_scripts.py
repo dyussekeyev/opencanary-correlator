@@ -39,12 +39,16 @@ async def test_release_lock_on_missing_key_is_a_noop(fake_redis: Any) -> None:
 async def test_save_incident_writes_hash_index_and_host_pointer(fake_redis: Any) -> None:
     result = await fake_redis.eval(
         SAVE_INCIDENT_LUA,
-        3,
+        6,
         "incident:ftplogin:10.0.0.5:1",
         "incidents:index",
         "pointer:10.0.0.5",
+        "",
+        "",
+        "scan:v2:pending",
         "1700000000",
         "incident:ftplogin:10.0.0.5:1",
+        "",
         "node_id",
         "canary-1",
         "src_host",
@@ -66,11 +70,16 @@ async def test_save_incident_writes_hash_index_and_host_pointer(fake_redis: Any)
 async def test_save_incident_without_pointer_key_skips_host_pointer(fake_redis: Any) -> None:
     result = await fake_redis.eval(
         SAVE_INCIDENT_LUA,
-        2,
+        6,
         "incident:scan:10.0.0.9:2",
         "incidents:index",
+        "",
+        "",
+        "",
+        "scan:v2:pending",
         "10",
         "incident:scan:10.0.0.9:2",
+        "",
         "src_host",
         "10.0.0.9",
     )
@@ -86,11 +95,16 @@ async def test_save_incident_merges_fields_into_existing_hash(fake_redis: Any) -
 
     await fake_redis.eval(
         SAVE_INCIDENT_LUA,
-        2,
+        6,
         "incident:x:1",
         "incidents:index",
+        "",
+        "",
+        "",
+        "scan:v2:pending",
         "5",
         "incident:x:1",
+        "",
         "count",
         "2",
     )

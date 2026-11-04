@@ -32,6 +32,8 @@ CLOSE_REASON_PARTIAL_LINE_TIMEOUT: Final[str] = "partial_line_timeout"
 CLOSE_REASON_CONNECTION_LIMIT: Final[str] = "connection_limit"
 CLOSE_REASON_RATE_LIMITED: Final[str] = "connection_rate_limited"
 CLOSE_REASON_PEER_CLOSED: Final[str] = "peer_closed"
+CLOSE_REASON_ADMISSION_TIMEOUT: Final[str] = "admission_timeout"
+CLOSE_REASON_ADMISSION_BUFFER: Final[str] = "admission_buffer_limit"
 
 
 class StreamProtocol(asyncio.Protocol):
@@ -43,6 +45,11 @@ class StreamProtocol(asyncio.Protocol):
         self._transport: asyncio.BaseTransport | None = None
         self._timeout_handle: asyncio.TimerHandle | None = None
         self._closed = False
+        self._receiver_rejected = False
+        self._paused = False
+        self._admission_handle: asyncio.TimerHandle | None = None
+        self._held_payloads: list[bytes] = []
+        self._held_bytes = 0
         # Without a limiter there is nothing to wait for, so the connection is
         # usable from its first byte, exactly as before.
         self._admitted = not receiver.needs_admission
@@ -61,21 +68,41 @@ class StreamProtocol(asyncio.Protocol):
         if isinstance(peername, tuple) and peername:
             self.peer_ip = str(peername[0])
         self._receiver.connection_made(self)
+        if not self._admitted and not self._closed:
+            self._admission_handle = asyncio.get_running_loop().call_later(
+                self._receiver.partial_line_timeout, self._admission_timeout
+            )
 
     def data_received(self, data: bytes) -> None:
         """Buffer incoming bytes, extract complete frames and dispatch them."""
         if self._closed:
+            return
+        if not self._admitted and (
+            self._held_bytes + len(self._buffer) + len(data)
+            > self._receiver.max_line_bytes * 8 + 88
+        ):
+            self.close(CLOSE_REASON_ADMISSION_BUFFER)
             return
         self._buffer.extend(data)
         if not self._admitted:
             # The per-peer budget has not answered yet. Hold the bytes rather
             # than parsing them: an unadmitted peer must not reach the pipeline,
             # and a `SocketJSONHandler` that writes on connect must not lose its
-            # first event if the answer is "yes". The buffer stays a single
-            # frame long here, which is what an oversized line would cost anyway.
-            if len(self._buffer) > self._receiver.max_line_bytes:
+            # first event if the answer is "yes". Framing remains per-line;
+            # held frames have separate total byte/frame bounds and backpressure.
+            payloads, overflow = self.extract_payloads()
+            self._held_payloads.extend(payloads)
+            self._held_bytes += sum(len(payload) + 1 for payload in payloads)
+            if overflow:
                 self.close(CLOSE_REASON_LINE_TOO_LARGE)
                 return
+            if len(self._held_payloads) > 256:
+                self.close(CLOSE_REASON_ADMISSION_BUFFER)
+                return
+            if self._held_bytes + len(self._buffer) >= self._receiver.max_line_bytes:
+                if isinstance(self._transport, asyncio.ReadTransport):
+                    self._transport.pause_reading()
+                    self._paused = True
             self._arm_timeout()
             return
         self._drain()
@@ -94,10 +121,18 @@ class StreamProtocol(asyncio.Protocol):
         away does not unframe what already arrived. Only a connection the limiter
         refused is discarded, and that path never reaches here.
         """
-        if self._admitted:
+        if self._admitted or self._receiver_rejected:
             return
         self._admitted = True
+        self._cancel_admission_timeout()
+        payloads, self._held_payloads = self._held_payloads, []
+        self._held_bytes = 0
+        for payload in payloads:
+            self._receiver.payload_received(self, payload)
         self._drain()
+        if self._paused and not self._closed and isinstance(self._transport, asyncio.ReadTransport):
+            self._transport.resume_reading()
+            self._paused = False
 
     def _drain(self) -> None:
         """Extract every complete frame from the buffer and dispatch it."""
@@ -142,10 +177,15 @@ class StreamProtocol(asyncio.Protocol):
 
     def close(self, reason: str) -> None:
         """Close the connection and audit why."""
-        if self._closed:
+        if self._receiver_rejected:
             return
+        self._receiver_rejected = True
         self._closed = True
         self._cancel_timeout()
+        self._cancel_admission_timeout()
+        self._held_payloads.clear()
+        self._held_bytes = 0
+        self._buffer.clear()
         self._receiver.connection_closed(self, reason)
         if self._transport is not None:
             self._transport.close()
@@ -166,6 +206,18 @@ class StreamProtocol(asyncio.Protocol):
         self._timeout_handle = loop.call_later(
             self._receiver.partial_line_timeout, self._on_timeout
         )
+
+    def _admission_timeout(self) -> None:
+        self._admission_handle = None
+        # A peer FIN does not invalidate complete frames, but it cannot cancel
+        # the total admission deadline either.
+        if not self._admitted and not self._receiver_rejected:
+            self.close(CLOSE_REASON_ADMISSION_TIMEOUT)
+
+    def _cancel_admission_timeout(self) -> None:
+        if self._admission_handle is not None:
+            self._admission_handle.cancel()
+            self._admission_handle = None
 
     def _cancel_timeout(self) -> None:
         if self._timeout_handle is not None:

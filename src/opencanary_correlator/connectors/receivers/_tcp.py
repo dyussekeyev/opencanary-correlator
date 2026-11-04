@@ -110,8 +110,10 @@ class TCPStreamReceiver(NetworkReceiver):
             await server.wait_closed()
         for protocol in list(self._connections):
             protocol.close("shutdown")
-        for task in list(self._admission_tasks):
+        admission = tuple(self._admission_tasks)
+        for task in admission:
             task.cancel()
+        await asyncio.gather(*admission, return_exceptions=True)
         self._admission_tasks.clear()
         metrics.ACTIVE_CONNECTIONS.labels(receiver=self.name).set(0)
         await self._pipeline.stop()
@@ -161,7 +163,13 @@ class TCPStreamReceiver(NetworkReceiver):
     async def _admit(self, protocol: StreamProtocol) -> None:
         assert self._rate_limiter is not None  # noqa: S101 - guarded by the caller
         try:
-            allowed = await self._rate_limiter.allow_connection(protocol.peer_ip)
+            allowed = await asyncio.wait_for(
+                self._rate_limiter.allow_connection(protocol.peer_ip),
+                timeout=self.partial_line_timeout,
+            )
+        except TimeoutError:
+            protocol._admission_timeout()
+            return
         except Exception as exc:
             metrics.CONNECTION_REJECTIONS.labels(receiver=self.name, reason="limiter_error").inc()
             self._audit.emit(
@@ -220,6 +228,13 @@ class TCPStreamReceiver(NetworkReceiver):
             "warning",
             {"receiver": self.name, "reason": reason, "peer": protocol.peer_ip},
         )
+        if reason in {
+            "partial_line_timeout",
+            "admission_timeout",
+            "admission_buffer_limit",
+            "line_too_large",
+        }:
+            metrics.CONNECTION_REJECTIONS.labels(receiver=self.name, reason=reason).inc()
 
     # --- Payload handling ---------------------------------------------------
 

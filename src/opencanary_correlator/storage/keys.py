@@ -21,19 +21,30 @@ INCIDENT_LOCK_PREFIX = "incident-lock:"
 INCIDENT_LATEST_PREFIX = "incident-latest:"
 ENRICHMENT_PREFIX = "enrichment:"
 QUOTA_PREFIX = "quota:"
+SCAN_PENDING_INDEX = "scan:v2:pending"
 
 #: ZSET of pending alert deliveries, scored by their next attempt.
-OUTBOX_INDEX = "outbox:alerts"
-OUTBOX_ENTRY_PREFIX = "outbox:alert:"
+LEGACY_OUTBOX_INDEX = "outbox:alerts"
+OUTBOX_INDEX = "outbox:v2:alerts"
+OUTBOX_ENTRY_PREFIX = "outbox:v2:alert:"
+OUTBOX_PREPARING = "outbox:v2:preparing"
+OUTBOX_ENVELOPE_PREFIX = "outbox:v2:envelope:"
 #: Deliveries that exhausted their attempts, kept for an operator to inspect.
-OUTBOX_DEAD = "outbox:dead"
-DELIVERED_PREFIX = "outbox:delivered:"
+OUTBOX_DEAD = "outbox:v2:dead"
+DELIVERED_PREFIX = "outbox:v2:delivered:"
 
 #: ZSET of alert-budget summaries, scored by the end of their window.
 BUDGET_SUMMARIES = "budget:summaries"
 
 #: Lock that elects the replica running one health-watch interval.
 WATCH_LOCK_PREFIX = "health-watch:"
+
+#: ZSET of incident creation times, read by the digest and pruned by retention.
+INCIDENTS_CREATED = "stats:v2:incidents-created"
+#: Durable last-seen time per canary node, merged from every replica's flush.
+NODES_LAST_SEEN = "nodes:v2:last-seen"
+#: Lock that elects the replica running one retention pass.
+RETENTION_LOCK = "retention:lock"
 
 
 def device_hash(node_id: str) -> str:
@@ -139,6 +150,19 @@ def budget_summary_key(stamp: int) -> str:
     return f"budget:suppressed:{stamp}"
 
 
+def delivery_target_id(channel: str, *identity: str) -> str:
+    """Hash a destination without storing URLs, tokens or recipient addresses."""
+    import json
+
+    payload = json.dumps([channel, *identity], ensure_ascii=True, separators=(",", ":"))
+    return f"{channel}:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+def outbox_envelope_key(incident_key: str) -> str:
+    """Durable preparation state shared by an incident's delivery targets."""
+    return f"{OUTBOX_ENVELOPE_PREFIX}{incident_key}"
+
+
 def outbox_entry_id(incident_key: str, channel: str) -> str:
     """Deterministic id of one delivery.
 
@@ -216,12 +240,15 @@ __all__ = [
     "DIGEST_LOCK_PREFIX",
     "DIGEST_SENT_PREFIX",
     "ENRICHMENT_PREFIX",
+    "INCIDENTS_CREATED",
     "INCIDENT_LATEST_PREFIX",
     "INCIDENT_LOCK_PREFIX",
+    "NODES_LAST_SEEN",
     "OUTBOX_DEAD",
     "OUTBOX_ENTRY_PREFIX",
     "OUTBOX_INDEX",
     "QUOTA_PREFIX",
+    "RETENTION_LOCK",
     "STATS_INSTANCE_PREFIX",
     "WATCH_LOCK_PREFIX",
     "budget_global_key",

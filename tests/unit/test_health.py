@@ -53,7 +53,7 @@ async def test_health_server_defaults_to_all_interfaces(monkeypatch: Any, fake_r
     captured: dict[str, object] = {}
 
     async def fake_start_server(
-        handler: Any, host: str | None = None, port: int | None = None
+        handler: Any, host: str | None = None, port: int | None = None, **kwargs: Any
     ) -> DummyListener:
         captured.update(host=host, port=port)
         return DummyListener()
@@ -70,7 +70,7 @@ async def test_health_server_binds_the_configured_host(monkeypatch: Any, fake_re
     captured: dict[str, object] = {}
 
     async def fake_start_server(
-        handler: Any, host: str | None = None, port: int | None = None
+        handler: Any, host: str | None = None, port: int | None = None, **kwargs: Any
     ) -> DummyListener:
         captured.update(host=host, port=port)
         return DummyListener()
@@ -83,6 +83,51 @@ async def test_health_server_binds_the_configured_host(monkeypatch: Any, fake_re
     assert captured == {"host": "127.0.0.1", "port": 9090}
 
 
+async def test_healthz_is_live_without_redis() -> None:
+    server = await start_server(DeadStore())
+    try:
+        assert (await http_get(server.bound_port, "/healthz")).startswith(b"HTTP/1.1 200")
+        assert (await http_get(server.bound_port, "/readyz")).startswith(b"HTTP/1.1 503")
+    finally:
+        await server.stop()
+
+
+async def test_readiness_tracks_draining_and_critical_tasks(fake_redis: Any) -> None:
+    server = await start_server(RedisStore(fake_redis))
+    healthy = True
+    server.set_runtime_checks(lambda: healthy, lambda: healthy)
+    try:
+        assert (await http_get(server.bound_port, "/readyz")).startswith(b"HTTP/1.1 200")
+        healthy = False
+        assert (await http_get(server.bound_port, "/readyz")).startswith(b"HTTP/1.1 503")
+        assert (await http_get(server.bound_port, "/healthz")).startswith(b"HTTP/1.1 503")
+        healthy = True
+        server.draining = True
+        assert (await http_get(server.bound_port, "/readyz")).startswith(b"HTTP/1.1 503")
+        assert (await http_get(server.bound_port, "/healthz")).startswith(b"HTTP/1.1 200")
+    finally:
+        await server.stop()
+
+
+async def test_header_deadline_is_total(monkeypatch: Any, fake_redis: Any) -> None:
+    from opencanary_correlator import health
+
+    monkeypatch.setattr(health, "_REQUEST_TIMEOUT", 0.08)
+    server = await start_server(fake_redis)
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+    try:
+        writer.write(b"GET /healthz HTTP/1.1\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.write(b"X: a\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(), 0.06) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await server.stop()
+
+
 async def test_healthz_reports_redis_ok(fake_redis: Any) -> None:
     server = await start_server(RedisStore(fake_redis))
     try:
@@ -91,7 +136,7 @@ async def test_healthz_reports_redis_ok(fake_redis: Any) -> None:
         await server.stop()
 
     assert response.startswith(b"HTTP/1.1 200 OK")
-    assert b'"redis": true' in response
+    assert b'"live": true' in response
 
 
 async def test_readyz_reports_degraded_when_redis_is_down() -> None:
@@ -151,7 +196,7 @@ async def test_unknown_path_returns_404(fake_redis: Any) -> None:
     assert response.startswith(b"HTTP/1.1 404 Not Found")
 
 
-@pytest.mark.parametrize("path", ["/healthz?x=1", "/readyz?verbose"])
+@pytest.mark.parametrize("path", ["/health?x=1", "/readyz?verbose"])
 async def test_query_string_still_pings_redis(path: str) -> None:
     server = await start_server(DeadStore())
     try:
@@ -171,7 +216,7 @@ async def test_query_string_keeps_healthy_response(fake_redis: Any) -> None:
         await server.stop()
 
     assert response.startswith(b"HTTP/1.1 200 OK")
-    assert b'"redis": true' in response
+    assert b'"live": true' in response
 
 
 @pytest.mark.parametrize(
@@ -330,17 +375,35 @@ async def test_connections_over_the_cap_are_refused(
     try:
         _idle_reader, idle_writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
         await asyncio.sleep(0.1)  # the idle connection now holds the only slot
-        response = await http_get(server.bound_port, "/healthz")
-        idle_writer.close()
-        await idle_writer.wait_closed()
+        try:
+            # A hard refusal never allocates a task to drain unread bytes;
+            # kernels may therefore deliver 503 or reset the over-cap socket.
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+            try:
+                writer.write(b"GET /healthz HTTP/1.1\r\n\r\n")
+                await writer.drain()
+                response = await reader.read()
+                assert not response or response.startswith(b"HTTP/1.1 503")
+            except ConnectionError:
+                pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except ConnectionError:
+                    pass
+            assert server._active_requests == 1
+            assert len(server._clients) == 1
+        finally:
+            idle_writer.close()
+            await idle_writer.wait_closed()
     finally:
         await server.stop()
 
-    assert response.startswith(b"HTTP/1.1 503")
     assert "too_many_requests" in audit_stream.getvalue()
 
 
-async def test_a_header_block_beyond_the_byte_budget_is_still_answered(fake_redis: Any) -> None:
+async def test_a_header_block_beyond_the_byte_budget_is_rejected(fake_redis: Any) -> None:
     """The drain loop stops at the budget instead of reading forever."""
     server = await start_server(fake_redis)
     try:
@@ -353,4 +416,4 @@ async def test_a_header_block_beyond_the_byte_budget_is_still_answered(fake_redi
     finally:
         await server.stop()
 
-    assert data.startswith(b"HTTP/1.1 200")
+    assert data.startswith(b"HTTP/1.1 431")

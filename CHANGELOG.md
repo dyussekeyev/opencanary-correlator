@@ -5,6 +5,91 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-04
+
+### Added
+
+- Releases are gated on the CI run of the tagged commit, published release
+  assets are immutable (drafts stay replaceable), and every release carries a
+  `SHA256SUMS` manifest that is verified again after upload. GitHub Actions are
+  pinned by commit SHA and updated through Dependabot.
+- CI builds the container image to produce a CycloneDX SBOM and fails on fixable
+  HIGH/CRITICAL findings, and a qualification job runs the opt-in real-Redis
+  recovery and POSIX-signal suite on every push. The compose smoke now restarts
+  the correlator with SIGTERM and requires exit code 0, one stored incident and
+  a healthy container afterwards.
+
+- Opt-in retention (`OCC_RETENTION_ENABLED`, off by default): one elected replica
+  removes incidents and dead letters in bounded batches, never one whose delivery
+  is still preparing, queued or dead, deletes the host pointer only while it still
+  points at the removed incident, and trims the digest's creation-time index.
+  `--retention-run` performs one bounded pass by hand and refuses to delete
+  anything unless retention was enabled.
+- Dead-letter operations: `--dlq-list` reads newest-first without changing state
+  or echoing payloads, and `--dlq-replay` requeues one entry with its delivery
+  identity preserved and attempts reset, refusing a second replay.
+- Geo lookups now separate a reader failure from an address the database does not
+  cover: `enrichment_failed` carries the failing provider, a new
+  `opencanary_enrichment_geo_total` counts hit/no_match/error, and a broken file no
+  longer discards the data the other database returned.
+- `opencanary_outbox_oldest_pending_age_seconds`, `opencanary_outbox_dead_entries`
+  and `opencanary_outbox_terminal_total{reason}` expose queue age, DLQ depth and
+  how deliveries end; `docs/operations.md` is the matching runbook.
+
+### Fixed
+
+- Runtime supervises critical consumers/workers and listeners, distinguishes
+  liveness from readiness/draining, attempts every cleanup independently, and
+  sends enabled stop notices before closing channels. Shutdown has a configurable
+  total budget and accounts for cancelled queued and in-flight events. Health
+  HTTP uses a total deadline, strict header bytes and bounded connection handling.
+- Incident writes now fence the lock owner in Lua before create/merge. Host-scan
+  thresholds rotate into durable generation-specific snapshots and acknowledge
+  evidence only with the incident commit; a bounded recovery loop completes them
+  after restart without another SYN. Fixed set expiry is initialized atomically.
+- GeoIP reader failures were silently rendered as "no data": a corrupt MMDB file
+  produced an empty country row with no audit, metric or service message, so the
+  `enrichment_failed`/`geoip` path only fired for exceptions raised outside the
+  reader. A raising city or ASN reader is now reported per provider while the
+  alert keeps the remaining data.
+- Intake handles out-of-range numeric timestamps, rejects deeply nested JSON and
+  non-finite constants consistently for JSON TCP/syslog, and buffers bounded
+  multi-frame bursts during admission with backpressure and a total deadline.
+  Late admission cannot resurrect payloads already rejected by the receiver.
+
+- Alert delivery now tracks each destination separately and uses a versioned,
+  owner-fenced outbox for both inline and background attempts. Recoverable
+  preparation atomically commits the notification budget before targets become
+  runnable; retries preserve bounded GeoIP/ASN/VT context, start backoff at attempt
+  completion, respect Retry-After, and count the initial attempt toward the limit.
+  Missing, corrupt, expired and permanently invalid deliveries terminate visibly
+  instead of looping or being resurrected by stale workers.
+
+### Changed
+
+- Statistics are historical instead of a live snapshot: each replica flushes its
+  counters into durable minute buckets behind a generation checkpoint, so the
+  digest reports the window instead of lifetime totals and keeps the numbers of a
+  replica that has since left. Alert outcomes are summed per dispatcher and
+  status label, exceptions are reported separately from failures, and the digest
+  states its flush-minute approximation. The digest also reports new versus active
+  incidents, accepted durable targets and marks a sampled source ranking.
+- Digests, service messages and budget summaries are delivered through the
+  durable outbox, one debt per target: the day marker, the suppression slot and
+  the acknowledged budget summary commit atomically with those debts, a failing
+  channel is retried on its own backoff, and a restart performs exactly one
+  catch-up of the latest scheduled digest.
+- Canary last-seen is durable (`nodes:v2:last-seen`) and independent of the
+  replica that observed it. `OCC_CANARY_EXPECTED_NODES` watches nodes that are
+  supposed to deliver, reported only after `OCC_CANARY_STARTUP_GRACE`; a registry
+  at `OCC_CANARY_REGISTRY_LIMIT` refuses new IDs visibly instead of evicting a
+  known node.
+
+- Outbox v2 requires a stop-the-workers upgrade from v0.5.2. Legacy deliveries
+  are preserved and reported as quarantined, never automatically rerouted.
+  README documents destination identity, upgrade/rollback, attempt/deadline limits
+  and the remaining at-least-once duplicate window.
+
 ## [0.5.2] - 2026-11-01
 
 ### Fixed

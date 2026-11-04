@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Final
 from urllib.parse import urlsplit
 
@@ -29,20 +30,12 @@ _MAX_REQUEST_BYTES: Final[int] = 8192
 #: one connection at a time, so the cap is far above any honest traffic.
 _MAX_CONCURRENT_REQUESTS: Final[int] = 128
 
-#: Time a refused-but-over-cap connection gets to deliver its request headers.
-#:
-#: Closing a socket that still holds unread bytes makes the kernel reset the
-#: connection, so the client would see a broken pipe instead of the 503. The
-#: read is bounded in time because the peer being refused is usually one that
-#: never finishes its request.
-_OVERLOAD_DRAIN_TIMEOUT: Final[float] = 0.5
-
 _OK_PATHS = frozenset({"/healthz", "/readyz", "/health"})
 _METRICS_PATH: Final[str] = "/metrics"
 
 
 class HealthServer:
-    """Serve `/healthz` and `/readyz` with a Redis ping."""
+    """Serve process liveness and dependency/runtime readiness with bounded HTTP."""
 
     def __init__(
         self,
@@ -64,6 +57,19 @@ class HealthServer:
         self._active_requests = 0
         self._server: asyncio.AbstractServer | None = None
         self._bound_port: int | None = None
+        self.draining = False
+        self._live: Callable[[], bool] = lambda: True
+        self._ready: Callable[[], bool] = lambda: True
+        self._clients: set[asyncio.Task[None]] = set()
+
+    def set_runtime_checks(self, live: Callable[[], bool], ready: Callable[[], bool]) -> None:
+        """Attach local task/listener checks; no external provider controls liveness."""
+        self._live, self._ready = live, ready
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the probe listener is serving."""
+        return self._server is not None and self._server.is_serving()
 
     @property
     def bound_port(self) -> int:
@@ -76,7 +82,9 @@ class HealthServer:
         """Bind the HTTP listener."""
         if self._server is not None:
             return
-        self._server = await asyncio.start_server(self._handle_client, self._host, self._port)
+        self._server = await asyncio.start_server(
+            self._accept_client, self._host, self._port, limit=_MAX_REQUEST_BYTES
+        )
         sockets = self._server.sockets or ()
         if sockets:
             self._bound_port = int(sockets[0].getsockname()[1])
@@ -87,70 +95,103 @@ class HealthServer:
         if server is not None:
             server.close()
             await server.wait_closed()
+        clients = tuple(self._clients)
+        for task in clients:
+            task.cancel()
+        await asyncio.gather(*clients, return_exceptions=True)
+
+    def _accept_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Reserve synchronously, before scheduling: over-cap sockets get no reader
+        # or refusal task. A reset under overload is preferable to unbounded tasks.
+        if self._active_requests >= self._max_concurrent_requests:
+            self._reject_overloaded(writer)
+            writer.close()
+            return
+        self._active_requests += 1
+        task = asyncio.create_task(self._handle_client(reader, writer), name="health-request")
+        self._clients.add(task)
+        task.add_done_callback(self._clients.discard)
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        if self._active_requests >= self._max_concurrent_requests:
-            await self._refuse_overloaded(reader, writer)
-            return
-        self._active_requests += 1
         try:
-            request_line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
-            if not request_line:
-                return
-            # Drain the headers before answering, even for rejected peers: closing
-            # with unread request bytes makes the kernel reset the connection, so
-            # the client never sees the 403.
-            consumed = len(request_line)
-            while consumed < _MAX_REQUEST_BYTES:
-                line = await asyncio.wait_for(reader.readline(), timeout=_REQUEST_TIMEOUT)
-                consumed += len(line)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-
-            if not self._peer_allowed(writer):
-                self._write(writer, 403, json.dumps({"error": "forbidden"}))
-                await writer.drain()
-                if self._audit is not None:
-                    self._audit.emit(
-                        "health_request_rejected", "warning", {"reason": "peer_not_allowed"}
-                    )
-                return
-
-            parts = request_line.decode("latin-1").split()
-            target = parts[1] if len(parts) >= 2 else "/"
-            try:
-                path = urlsplit(target).path or "/"
-            except ValueError:
-                # Malformed absolute-form targets must not crash the probe listener.
-                path = ""
-
-            if path == _METRICS_PATH:
-                code = 200
-                body = metrics.render().decode("utf-8")
-                content_type = metrics.CONTENT_TYPE
-            elif path in _OK_PATHS:
-                healthy = await self._store.ping()
-                code = 200 if healthy else 503
-                body = json.dumps({"status": "ok" if healthy else "degraded", "redis": healthy})
-                content_type = "application/json"
-            else:
-                code, body = 404, json.dumps({"error": "not found"})
-                content_type = "application/json"
-
-            self._write(writer, code, body, content_type)
-            await writer.drain()
+            async with asyncio.timeout(_REQUEST_TIMEOUT):
+                await self._serve_request(reader, writer)
         except (TimeoutError, ConnectionError):
             if self._audit is not None:
-                self._audit.emit("health_request_failed", "warning", {"reason": "timeout"})
+                self._audit.emit(
+                    "health_request_failed", "warning", {"reason": "timeout_or_disconnect"}
+                )
+        except ValueError:
+            self._write(writer, 431, json.dumps({"error": "headers too large"}))
+            if self._audit is not None:
+                self._audit.emit(
+                    "health_request_rejected", "warning", {"reason": "request_too_large"}
+                )
         finally:
             self._active_requests -= 1
             writer.close()
-            try:
-                await writer.wait_closed()
-            except ConnectionError:  # pragma: no cover - peer already gone
-                pass
+            # Do not let a peer extend the total deadline through wait_closed.
+
+    async def _serve_request(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        request_line = await reader.readline()
+        if not request_line:
+            return
+        # Drain the headers before answering, even for rejected peers: closing
+        # with unread request bytes makes the kernel reset the connection, so
+        # the client never sees the 403.
+        consumed = len(request_line)
+        while consumed < _MAX_REQUEST_BYTES:
+            line = await reader.readline()
+            consumed += len(line)
+            if consumed > _MAX_REQUEST_BYTES:
+                raise ValueError("request too large")
+            if line in (b"\r\n", b"\n", b""):
+                break
+        else:
+            raise ValueError("request too large")
+
+        if not self._peer_allowed(writer):
+            self._write(writer, 403, json.dumps({"error": "forbidden"}))
+            await writer.drain()
+            if self._audit is not None:
+                self._audit.emit(
+                    "health_request_rejected", "warning", {"reason": "peer_not_allowed"}
+                )
+            return
+
+        parts = request_line.decode("latin-1").split()
+        target = parts[1] if len(parts) >= 2 else "/"
+        try:
+            path = urlsplit(target).path or "/"
+        except ValueError:
+            # Malformed absolute-form targets must not crash the probe listener.
+            path = ""
+
+        if path == _METRICS_PATH:
+            code = 200
+            body = metrics.render().decode("utf-8")
+            content_type = metrics.CONTENT_TYPE
+        elif path in _OK_PATHS:
+            if path == "/healthz":
+                healthy = self._live()
+                details: dict[str, object] = {"live": healthy}
+            else:
+                redis = await self._store.ping()
+                healthy = redis and self._live() and self._ready() and not self.draining
+                details = {"redis": redis, "draining": self.draining}
+            code = 200 if healthy else 503
+            body = json.dumps({"status": "ok" if healthy else "degraded", **details})
+            content_type = "application/json"
+        else:
+            code, body = 404, json.dumps({"error": "not found"})
+            content_type = "application/json"
+
+        self._write(writer, code, body, content_type)
+        await writer.drain()
 
     def _reject_overloaded(self, writer: asyncio.StreamWriter) -> None:
         """Answer a connection over the cap with a 503 and audit the refusal."""
@@ -161,39 +202,6 @@ class HealthServer:
                 "warning",
                 {"reason": "too_many_requests", "active": self._active_requests},
             )
-
-    async def _refuse_overloaded(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Refuse a connection over the cap, after letting it finish its headers.
-
-        The refusal never waits longer than `_OVERLOAD_DRAIN_TIMEOUT`, so a peer
-        that trickles its request holds nothing for long, but a well-formed probe
-        still receives the 503 instead of a connection reset.
-        """
-        try:
-            await self._discard_request(reader)
-            self._reject_overloaded(writer)
-            await writer.drain()
-        except (TimeoutError, ConnectionError):
-            pass
-        finally:
-            writer.close()
-
-    @staticmethod
-    async def _discard_request(reader: asyncio.StreamReader) -> None:
-        """Read and drop the headers of a connection that is being refused."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _OVERLOAD_DRAIN_TIMEOUT
-        consumed = 0
-        while consumed < _MAX_REQUEST_BYTES:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise TimeoutError
-            line = await asyncio.wait_for(reader.readline(), timeout=remaining)
-            consumed += len(line)
-            if line in (b"\r\n", b"\n", b""):
-                return
 
     def _peer_allowed(self, writer: asyncio.StreamWriter) -> bool:
         if not self._allowed_networks:
@@ -213,6 +221,7 @@ class HealthServer:
             200: "OK",
             403: "Forbidden",
             404: "Not Found",
+            431: "Request Header Fields Too Large",
             503: "Service Unavailable",
         }.get(code, "OK")
         payload = body.encode("utf-8")

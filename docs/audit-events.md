@@ -28,7 +28,10 @@ a compatibility risk, because consumers only rely on these five keys.
 |---|---|---|---|
 | `startup` | `info` | all receivers and the health listener are bound | `receivers`, `rules`, `channels` |
 | `startup_failed` | `error` | Redis unreachable or a listener cannot bind | `reason: redis_unavailable` or `error_type` |
-| `shutdown` | `info` | graceful stop finished | `receivers` |
+| `shutdown` | `info` | shutdown cleanup attempts finished; inspect `cleanup_failed` for incomplete closure | `receivers` |
+| `critical_task_failed` | `error` | critical consumer/worker exited or listener stopped unexpectedly | `task`, `error_type` |
+| `runtime_failed` | `error` | failure after runtime startup, followed by teardown | `error_type` |
+| `cleanup_failed` | `error` | one resource cleanup failed or exceeded its deadline; other cleanups still run | `resource`, `error_type` |
 | `receiver_started` | `info` | a receiver is listening | `receiver`, `host`, `port` |
 | `receiver_stopped` | `info` | a receiver closed | `receiver`, `accepted` |
 | `connection_rejected` | `warning` | connection cap, per-IP budget or source allowlist refused the peer | `reason: connection_limit` / `connection_rate_limited` / `peer_not_allowed`, `peer` |
@@ -37,7 +40,7 @@ a compatibility risk, because consumers only rely on these five keys.
 | `connection_limiter_error` | `error` | the Redis limiter failed while accepting | `error_type` |
 | `event_rejected` | `warning` | one line/datagram failed parsing or validation | `reason`, `peer`, plus reason-specific fields |
 | `event_dropped` | `error` | the bounded event queue was full | `reason: queue_full`, `node_id`, `logtype` |
-| `event_dropped` | `warning` | the drain before shutdown ran out of time, so a backlog was cancelled | `reason: shutdown`, `count` |
+| `event_dropped` | `warning` | shutdown cancelled queued or in-flight work (in-flight cancellation is not proof of non-persistence) | `reason: shutdown`, `count` |
 | `event_dropped` | `warning` | the incident lock timed out, so nothing was written; the dedup claim is withdrawn and a redelivery correlates | `reason: incident_lock_timeout`, `rule`, `incident`, `node_id`, `logtype` |
 | `event_rate_limited` | `warning` | the node exceeded its event budget | `node_id`, `logtype` |
 | `event_deduplicated` | `info` | an identical event was seen inside the dedup TTL | `node_id`, `logtype` |
@@ -50,29 +53,38 @@ a compatibility risk, because consumers only rely on these five keys.
 | `datagram_error` | `error` | UDP syslog processing raised | `receiver`, `error_type` |
 | `rule_failed` | `error` | a correlation rule raised | `rule`, `node_id`, `error_type` |
 | `incident_created` | `info` | a new incident hash was written | `incident`, `key`, `node_id`, `src_host` |
+| `incident_lease_lost` | `warning` | stale incident owner was refused before any commit; dedup must not be confirmed | `incident`, `src_host` |
+| `scan_recovery_failed` | `error` | a durable scan snapshot could not be completed; remains pending for retry | `error_type` |
 | `incident_updated` | `info` | an event merged into an existing incident | `incident`, `key`, `events_count` |
 | `incident_lock_timeout` | `error` | the create-or-merge lock was not acquired in time; the event was **not** stored (it is not a merge) | `incident`, `src_host` |
 | `alert_dispatch` | `success` / `error` | one delivery attempt finished | `dispatcher`, `incident`, `status`, `duration_ms` |
-| `alert_retry` | `warning` | an attempt failed and the outbox scheduled another | `dispatcher`, `incident`, `attempts`, `reason`, `next_attempt_in` |
-| `alert_dead_letter` | `error` | the outbox gave up; the entry is in `outbox:dead` | `dispatcher`, `incident`, `attempts`, `reason` (`timeout`, `error`, `unknown_channel`, `incident_gone`) |
+| `alert_retry` | `warning` | a fenced attempt failed and the outbox scheduled another from completion time | `dispatcher`, `target` (hashed destination), `attempts`, `reason`, `next_attempt_in` |
+| `alert_dead_letter` | `error` | terminal delivery/preparation, preserved in `outbox:v2:dead` | `entry`, `reason` (`expired`, `missing_entry`, `corrupt_entry`, `corrupt_payload`, `unknown_target`, `incident_gone`, `incident_gone_or_corrupt`, `attempts_exhausted`, safe HTTP/error code) |
+| `alert_lease_lost` | `warning` | stale owner's send/transition was refused | `entry`, `transition` |
+| `outbox_legacy_quarantined` | `warning` | startup found legacy deliveries; v2 preserves but never automatically reroutes them | `pending` |
 | `outbox_failed` | `error` | one worker iteration raised and was skipped | `error_type` |
-| `service_message_sent` | `success` / `error` | a service message about the correlator reached (or failed on) one channel | `kind`, `dispatcher`, `status`, `count` |
+| `service_message_sent` | `success` / `error` | a service message about the correlator reached (or failed on) one channel; with the outbox enabled this is the durable attempt, `kind` includes `budget.summary` | `kind`, `dispatcher`, `status`, `count` |
 | `service_message_suppressed` | `info` | the cooldown muted a repeat of the same `(kind, subject)` | `kind`, `subject`, `count` |
-| `canary_silent` | `warning` | a node delivered nothing for longer than `OCC_CANARY_SILENT_AFTER` | `node_id`, `last_seen`, `silent_seconds` |
+| `canary_silent` | `warning` | a node delivered nothing for longer than `OCC_CANARY_SILENT_AFTER`, or an expected node never appeared after the startup grace (`last_seen: 0`) | `node_id`, `last_seen`, `silent_seconds` |
+| `node_registry_overflow` | `warning` | node bookkeeping refused new identities at `OCC_CANARY_REGISTRY_LIMIT`; known nodes were not evicted | `count` |
+| `retention_run` | `info` | one bounded sweep ran on the elected replica | `incidents`, `protected`, `stale`, `dead`, `created_pruned` |
+| `retention_failed` | `error` | the sweep raised; no delivery or intake path is affected | `error_type` |
+| `dlq_replayed` | `info` | an operator requeued exactly one dead letter | `entry` |
 | `health_watch_failed` | `error` | one window check raised and was skipped | `error_type` |
 | `service_message_failed` | `error` | a channel could not carry the service message | `kind`, `dispatcher`, `reason: timeout` / `not_supported`, or `error_type` |
-| `digest_sent` | `success` / `error` | the daily digest was produced (or no channel accepted it) | `day`, `incidents`, `replicas`, `events` |
+| `digest_sent` | `success` / `error` | the daily digest was accepted into the outbox, or no target could be queued | `day`, `incidents`, `replicas`, `events` |
 | `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |
 | `enrichment_cooldown_changed` | `warning` | an atomic Redis write installs or extends a VT pause; shorter competing writes emit nothing | `provider`, `reason` (`auth`, `rate`, `error`), `outcome`, `seconds` |
 | `enrichment_request_skipped` | `info` | a VT lookup is withheld/interrupted, once per terminating reason, never per lock poll | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) |
 | `stats_heartbeat_failed` | `warning` | the replica could not publish its heartbeat (a digest field is missing, nothing else) | `error_type` |
 | `alert_suppressed` | `warning` | the alert budget withheld this notification; the incident itself is stored | `incident`, `node_id`, `src_host` |
-| `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |
+| `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel (with the outbox enabled the summary is committed as a `budget.summary` notice and the acknowledgement of its source summary is atomic with the per-target debts) | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |
 | `alert_summary_failed` | `error` | one summary iteration raised and was skipped | `error_type` |
 | `alert_budget_failed` | `error` | the budget could not count, so the alert was sent anyway (fails open) | `incident`, `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
 | `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
+| `health_request_rejected` | `warning` | a probe was refused before a response: oversized headers, a peer outside `OCC_HEALTH_ALLOWED_IPS`, or the active-handler cap | `reason: request_too_large` / `peer_not_allowed` / `too_many_requests`, `active` |
 
 Rejection reasons: `invalid_utf8`, `line_too_large`, `canary_error_line` (an
 `[ERR] '…'` line from `PyLogger.error()`), `malformed_json`, `non_object_payload`,
