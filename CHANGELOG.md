@@ -5,6 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-05
+
+### Changed
+
+- Documentation: release validation now records the measured RPO/RTO (about one
+  second of acknowledged Redis writes; 0.95 s from `docker start` to accepting
+  connections on 5 001 keys / 0.84 MB), the first-day observation signals and
+  their thresholds, the observed 0.6.0 release path, and the ten required status
+  checks. The 24-hour observation window is explicitly not part of release
+  acceptance; the signals remain runbook targets.
+
+### Fixed
+
+- The runtime image installs `apt` and `libapt-pkg6.0` 2.6.2 from
+  bookworm-security, fixing CVE-2026-109518 (HIGH, fixable). The container scan
+  rejected the previous 2.6.1 pair in CI after the 0.6.0 release; the finding is
+  fixed rather than suppressed.
+
 ## [0.6.0] - 2026-11-04
 
 ### Added
