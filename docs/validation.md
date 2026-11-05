@@ -1,8 +1,8 @@
 # Validation and acceptance record
 
-Local figures were measured on 2026-10-24. The suite counts and the CI section
-below were last re-measured on 2026-11-04 against `df3a36b`, the commit
-`v0.6.0` points at: CI
+The 0.7.0 gates below were measured locally on 2026-11-05. Earlier figures and
+the CI section below were last re-measured on 2026-11-04 against `df3a36b`, the
+commit `v0.6.0` points at: CI
 [41809072240](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809072240)
 on the merge commit, CI
 [41809334402](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809334402)
@@ -17,18 +17,30 @@ locally on 2026-11-05 with the gates below.
 | Command | Result |
 |---|---|
 | `ruff check .` | All checks passed |
-| `ruff format --check .` | 180 files already formatted |
-| `mypy src tools` | Success: no issues found in 98 source files |
-| `pytest -q` | **1273 passed, 10 skipped**, coverage **94.03 %** |
+| `ruff format --check .` | 182 files already formatted |
+| `mypy src tools` | Success: no issues found in 99 source files |
+| `pytest -q` | **1276 passed, 10 skipped**, coverage **93.80 %** |
 | `python tools/characterize.py` | `golden snapshot matches (75 rendered alerts)` |
+| `python tools/opencti_smoke.py` (live OpenCTI 6.8.13 and 7.261026.0) | `ok: created, existing, updated, concurrent, deleted` |
 | `git diff --check` | clean |
 
 The ten skips are the opt-in real-Redis recovery suite (nine) and the POSIX
-signal test on Windows; CI runs both. Two limits are explicit: OpenCTI was
-exercised against `httpx.MockTransport` only, because no live instance was
-available, so GraphQL schema compatibility with a specific OpenCTI release is
-unverified; and the golden snapshot was regenerated for the new layout and
-reviewed entry by entry rather than accepted blindly.
+signal test on Windows; CI runs both. The golden snapshot was regenerated for
+the new layout and reviewed entry by entry rather than accepted blindly.
+
+OpenCTI was additionally exercised against live OpenCTI 6.8.13 and 7.261026.0
+(local Docker stacks: Elasticsearch 8.19, RabbitMQ 4.3, Redis 8.10, MinIO) with
+`tools/opencti_smoke.py`, which asserts on what the platform stored rather than
+on the client's return value: create, a repeated alert with a cold cache
+(`existing`), an in-place `updated` with a stable id, two concurrent alerts that
+still leave one indicator, and deletion. The 6.8.13 run found a real schema
+mismatch: `IndicatorAddInput` has no `labels` field in 6.x, so every create with
+the default `OCC_OPENCTI_LABELS` was rejected with `BAD_USER_INPUT` and wrote
+nothing. Labels are now resolved to `objectLabel` ids (creating a missing label
+first) before create and patch, and the smoke run finished `ok` on both
+versions afterwards. The only 7.x setup difference was the platform's
+`APP__ENCRYPTION_KEY`, which must be 32 base64-encoded bytes rather than a hex
+string.
 
 Version 0.6.1 (2026-11-05) is a patch: it updates this document and upgrades
 `apt`/`libapt-pkg6.0` to 2.6.2 in the runtime image (CVE-2026-109518). It adds
@@ -36,7 +48,7 @@ no application logic, so the 0.6.0 suite and benchmark evidence below still
 describe the code; the 0.6.1 CI run on its merge commit re-validates the image
 and the package.
 
-**Environment:** Windows 11 with Python 3.14.9 in `.venv` (project requires
+**Environment:** Windows 11 with Python 3.14.10 in `.venv` (project requires
 3.11+), ruff 0.17.2, mypy 2.4.0, pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis
 2.40 with lupa 2.8 (the Lua runtime fakeredis needs for the scripts), Docker
 CLI 29 with Compose v5.6.1 and Docker Desktop (started for the benchmark

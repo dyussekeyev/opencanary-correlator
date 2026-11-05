@@ -49,7 +49,7 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 |---|---|
 | `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer; wires field validators |
 | `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
-| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `opencti.py` looks up a STIX 2.1 indicator and optionally creates or patches it, `service.py` bounds the whole pass on one deadline |
+| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `opencti.py` looks up a STIX 2.1 indicator and optionally creates or patches it, resolving label names to `objectLabel` ids, `service.py` bounds the whole pass on one deadline |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
 | `core/retention.py` | opt-in bounded sweep: incidents past retention, dead letters past DLQ retention and the digest's creation index; skips any incident with an owed delivery |
 | `storage/_retention.py` | the deletion scripts: incident, index, pointer and envelope in one call; DLQ expiry and idempotent replay |
@@ -98,7 +98,7 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 | `app/wiring.py` | enricher, receivers, rate limiter, health server |
 | `app/describe.py` | the secret-free `--check-config` document and the values `log_secrets` masks |
 | `app/runner.py` | supervision, signal handling, `main` and the exit codes |
-| `cli.py` | a 39-line façade re-exporting the `app` package, the documented import path |
+| `cli.py` | a 38-line façade re-exporting the `app` package, the documented import path |
 
 Dependency direction is enforced by convention: `core` imports only
 `connectors/base.py`, never a concrete receiver or dispatcher. Adding a channel
@@ -403,27 +403,40 @@ target (2.6 and newer, including managed Redis and Redis-compatible servers).
 `opencanary_correlator.metrics`. The counters are process-local: every replica
 is scraped separately, which is the normal Prometheus model for a horizontally
 scaled service. No metric carries an incident key, source address, payload or
-credential; labels are limited to receiver name, result/reason, rule name and
-dispatcher name.
+credential; labels are limited to fixed dimensions: receiver, channel, rule,
+provider, scope, result and reason.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `opencanary_events_total` | counter | `result` (`accepted`, `rejected`, `dropped`, `rate_limited`, `deduplicated`, `unrouted`) | event outcomes across ingestion and correlation |
+| `opencanary_events_ignored_total` | counter | `reason` (`smb_action`) | valid events a rule deliberately did not correlate |
 | `opencanary_events_dropped_total` | counter | `reason` (`queue_full`, `dispatch_failed`, `shutdown`, `incident_lock_timeout`) | events lost before correlation, split by cause |
 | `opencanary_event_queue_depth` | gauge | — | events waiting across the pipeline lanes |
 | `opencanary_active_connections` | gauge | `receiver` | currently open receiver connections |
 | `opencanary_connection_rejections_total` | counter | `receiver`, `reason` | rejected connections before payload processing |
+| `opencanary_node_registry_overflow_total` | counter | `scope` (`local`, `durable`) | node bookkeeping refused at capacity; known nodes are never evicted |
 | `opencanary_rule_failures_total` | counter | `rule` | isolated rule exceptions |
 | `opencanary_alerts_total` | counter | `dispatcher`, `status` | alert delivery attempts by outcome |
 | `opencanary_outbox_pending` | gauge | — | deliveries waiting for a retry |
 | `opencanary_outbox_delivered_total` | counter | `channel` | deliveries settled as accepted |
 | `opencanary_outbox_retried_total` | counter | `channel` | deliveries rescheduled for another attempt |
 | `opencanary_outbox_dead_total` | counter | `channel` | deliveries buried in the dead letter list |
+| `opencanary_outbox_dead_entries` | gauge | — | dead letters currently retained for an operator |
+| `opencanary_outbox_oldest_pending_age_seconds` | gauge | — | age of the oldest pending delivery, measured from its next attempt time |
+| `opencanary_outbox_terminal_total` | counter | `reason` (classifier reason such as `expired`, `attempts_exhausted`, `unknown_target`, an HTTP/error code, or `other`) | deliveries settled in a terminal state |
 | `opencanary_alerts_budget_total` | counter | `result` (`allowed`, `suppressed`) | notifications the alert budget rationed |
-| `opencanary_enrichment_cache_total` | counter | `provider`, `result` (`hit`, `negative_hit`, `miss`) | initial cache read per VT lookup; polling and post-lock rechecks excluded |
+| `opencanary_retention_removed_total` | counter | `scope` (`incident`, `dead_letter`) | expired objects deleted by the retention janitor |
+| `opencanary_retention_protected_total` | counter | `scope` (`incident`) | expired incidents kept because a delivery still referenced them |
+| `opencanary_enrichment_cache_total` | counter | `provider`, `result` (`hit`, `negative_hit`, `miss`) | initial cache read per provider lookup; polling and post-lock rechecks excluded |
 | `opencanary_enrichment_requests_total` | counter | `provider`, `outcome` (`ok`, `not_found`, `unauthorized`, `quota`, `http_error`, `timeout`, `network_error`, `cancelled`) | actual HTTP attempts, counted once independently of cache writes |
-| `opencanary_enrichment_skipped_total` | counter | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) | withheld or interrupted lookups, not dropped honeypot events |
+| `opencanary_enrichment_geo_total` | counter | `result` (`hit`, `no_match`, `error`) | offline GeoIP lookups by outcome |
+| `opencanary_enrichment_skipped_total` | counter | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`, `response_too_large`, `label_unavailable`) | withheld or interrupted lookups, not dropped honeypot events; cooldown/quota reasons are VirusTotal-only, `label_unavailable` is OpenCTI-only |
 | `opencanary_build_info` | info | `version`, `python` | static build information |
+
+OpenCTI label names are resolved to `objectLabel` ids before a create or patch.
+A label that cannot be resolved is counted as
+`opencanary_enrichment_skipped_total{provider="opencti",reason="label_unavailable"}`
+and the indicator is still written.
 
 The VirusTotal cache key is the canonical attacker address and is shared by every
 incident type and replica; positive and negative entries have independent TTLs,
@@ -439,7 +452,7 @@ lookup deadline expired, including cache/lock/store work. Cache misses coalesced
 by a lease remain misses; they do not become additional hits when polling finds
 the owner's answer. A Redis read failure before the initial read completes has
 no cache result, but does count `store_error`. All counters are process-local;
-sum across replicas for cluster totals. No new metrics are needed for offline GeoIP.
+sum across replicas for cluster totals.
 
 The endpoint never pings Redis, so it remains scrapeable during a Redis failure;
 use `/readyz` for dependency health. Disabling `OCC_HEALTH_PORT` disables both

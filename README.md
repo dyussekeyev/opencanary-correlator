@@ -31,7 +31,7 @@ infinite numbers, excessive `logdata` nesting.
 
 ## Requirements
 
-- Python 3.11+ (tested on 3.14)
+- Python 3.11+ (tested on 3.11–3.14 in CI, Windows included)
 - Redis 6+ as one logical server, with scripting enabled (`EVAL`/`EVALSHA`
   drive the atomic incident write and lock release), TLS via `rediss://`, Unix
   sockets via `unix://`; Redis Cluster is not supported (see [Scaling](#scaling))
@@ -622,8 +622,9 @@ available during pauses; no automatic HTTP retry is made inside a lookup.
 The health listener's `/metrics` exposes `opencanary_enrichment_cache_total`
 (initial hit/negative_hit/miss only), `opencanary_enrichment_requests_total`
 (actual HTTP attempts by transport/status outcome) and
-`opencanary_enrichment_skipped_total` (cooldown, quota, lookup deadline or Redis
-failure). Counters are per replica; lock polling never inflates cache counts.
+`opencanary_enrichment_skipped_total` (cooldowns, quota, lookup deadline, Redis
+failure, oversized response or an unresolved OpenCTI label). Counters are per
+replica; lock polling never inflates cache counts.
 A cache miss served by another replica remains one initial miss and spends no
 HTTP request on the waiting replica. HTTP `ok` means status 200, not proof the
 body is usable. Labels contain no IP, credential or URL. JSON audit records
@@ -647,10 +648,13 @@ OCC_OPENCTI_LABELS=opencanary,honeypot
 
 `missing` creates an indicator only when the lookup answered "no indicator";
 `always` creates one when absent and refreshes `confidence`, `labels` and
-`valid_from` when it exists, so a repeated alert never duplicates it. A lookup
-that failed (`unavailable`, `unauthorized`) never writes anything, and
-`valid_from` is the incident time rather than the delivery time. Indicators are
-STIX 2.1 patterns built from the validated address
+`valid_from` when it exists, so a repeated alert never duplicates it. Label names
+from `OCC_OPENCTI_LABELS` are resolved to OpenCTI label ids and sent as
+`objectLabel`; a label that does not exist is created first, and one that still
+cannot be resolved is skipped (`label_unavailable`) instead of failing the
+indicator write. A lookup that failed (`unavailable`, `unauthorized`) never
+writes anything, and `valid_from` is the incident time rather than the delivery
+time. Indicators are STIX 2.1 patterns built from the validated address
 (`[ipv4-addr:value = '198.51.100.7']`), never from `logdata`.
 
 A lookup answer is cached per canonical address for `OCC_OPENCTI_CACHE_TTL`
@@ -660,7 +664,10 @@ request. Mutations are never retried: a create that timed out may already have
 been applied, and a retry would make a second indicator. When OpenCTI is slow or
 down the alert still goes out with `🔎 OpenCTI: unavailable`, and the whole
 enrichment pass — GeoIP, VirusTotal and OpenCTI — is bounded by
-`OCC_ENRICHMENT_TIMEOUT`.
+`OCC_ENRICHMENT_TIMEOUT`. `tools/opencti_smoke.py` exercises a live instance end
+to end — lookup, create, a repeated alert with a cold cache, an in-place update,
+two concurrent alerts and cleanup — and reports what the platform stored, not
+what the client returned.
 
 **The JSON webhook carries it as fields, not as text.** A webhook consumer does
 not have to read a message: the document gains an `enrichment` object whenever
