@@ -12,6 +12,7 @@ import asyncio
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
@@ -25,8 +26,12 @@ from opencanary_correlator.core.outbox import AlertOutbox
 from opencanary_correlator.core.rules import HostPortScanRule, Rule
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceNotifier
 from opencanary_correlator.core.windows import DedupCache, event_fingerprint
-from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.schemas import CanaryEvent
+
+if TYPE_CHECKING:
+    # Annotation-only: `enrichment.service` imports `core.service_messages`, so a
+    # runtime import here closes a cycle whenever `enrichment` is imported first.
+    from opencanary_correlator.enrichment.service import IncidentEnricher
 
 #: Consecutive alerts that reached no channel at all before the engine says so.
 #: One failed alert is normal (a flaky endpoint, a deploy); three in a row means
