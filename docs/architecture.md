@@ -49,7 +49,7 @@ honeypot imitates — notably `8080`, the classic HTTP-alt port.
 |---|---|
 | `config.py` | `Settings` (pydantic-settings, `OCC_` prefix), legacy `.conf` importer; wires field validators |
 | `config_validation.py` | pure validation rules for `Settings` (URL, port and bound checks), no state and no environment access |
-| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `service.py` bounds the whole pass |
+| `enrichment/` | optional attacker-IP context: `geo.py` reads DB-IP/GeoLite2 MMDB files offline, `virustotal.py` adds the VirusTotal verdict behind a Redis cache and three quota windows, `opencti.py` looks up a STIX 2.1 indicator and optionally creates or patches it, `service.py` bounds the whole pass on one deadline |
 | `schemas.py` | `CanaryEvent` (lenient, bounded), typed `logdata` accessors, `IncidentRecord` |
 | `core/retention.py` | opt-in bounded sweep: incidents past retention, dead letters past DLQ retention and the digest's creation index; skips any incident with an owed delivery |
 | `storage/_retention.py` | the deletion scripts: incident, index, pointer and envelope in one call; DLQ expiry and idempotent replay |
@@ -181,7 +181,7 @@ therefore never touches correlation logic.
    `outbox:v2:preparing`. They are not available to delivery workers. Inline or
    recovery preparation takes an owner lease, obtains bounded enrichment and
    commits a provider-only snapshot together with the budget decision in one
-   fenced Lua script. A crash before commit spends no budget; a committed decision
+   fenced Lua script. GeoIP, VirusTotal and OpenCTI share that one deadline. A crash before commit spends no budget; a committed decision
    is not reserved again. Redis errors leave preparation recoverable, not fail-open.
    Suppressed targets keep state `suppressed`, with no runnable index member.
 9. **Deliver/retry** — ready targets enter `outbox:v2:alerts`, scored by due time.
@@ -228,6 +228,10 @@ record, the dispatch result, and process start/stop.
 | Ingestion | `ingestion.dropped`, `ingestion.rejected` | `core/watch.py`, from the process-local counters (`opencanary_events_dropped_total`, `opencanary_events_total{result="rejected"}`), once per threshold window and cooldown |
 | Canary silence | `canary.silent` | `core/watch.py`, on a timer, from the per-node evidence the ingest path records and the heartbeat publishes |
 | Lifecycle | `lifecycle.started`, `lifecycle.stopped` | `app/runner.py`, around the supervised task set |
+
+OpenCTI has no service message of its own yet: its degradation is visible in the
+`opencti_failed` audit record and in the alert's `🔎 OpenCTI: unavailable` row,
+and it never replaces or delays an alert.
 
 `ServiceNotifier` applies three gates before anything is sent: the category
 (`OCC_SERVICE_CATEGORIES`), the severity floor (`OCC_SERVICE_MIN_SEVERITY`) and a
@@ -421,7 +425,12 @@ dispatcher name.
 | `opencanary_enrichment_skipped_total` | counter | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) | withheld or interrupted lookups, not dropped honeypot events |
 | `opencanary_build_info` | info | `version`, `python` | static build information |
 
-Enrichment `provider` is currently `virustotal` only. HTTP outcomes describe
+The VirusTotal cache key is the canonical attacker address and is shared by every
+incident type and replica; positive and negative entries have independent TTLs,
+and a cache hit does not extend either TTL. The OpenCTI lookup uses the same key
+shape with its own TTLs, and counts `ok`/`not_found` as cacheable answers;
+mutations are not retried and are audited instead. Enrichment `provider` is
+`virustotal` or `opencti`. HTTP outcomes describe
 transport/status, not validated reputation: `ok` means HTTP 200 (including a
 malformed body), and `not_found` means HTTP 404 (negative caching still requires
 `NotFoundError`). `timeout` covers the HTTP budget; `cancelled` covers external

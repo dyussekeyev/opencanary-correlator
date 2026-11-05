@@ -36,6 +36,8 @@ CAPTURED_PASSWORD = "CAPTURED-SECRET"
 #: Sent as a header, so `httpx` never logs the URL with it — the filter covers
 #: the paths that are not visible from here (an exception carrying the request).
 VIRUSTOTAL_KEY = "VT-API-SECRET-KEY"
+#: A bearer header on every GraphQL request; same exposure as the VirusTotal key.
+OPENCTI_TOKEN = "OPENCTI-API-SECRET"
 
 SECRETS = (
     TELEGRAM_TOKEN,
@@ -46,6 +48,7 @@ SECRETS = (
     SMTP_PASSWORD,
     CAPTURED_PASSWORD,
     VIRUSTOTAL_KEY,
+    OPENCTI_TOKEN,
 )
 
 
@@ -167,3 +170,24 @@ def test_a_logged_virustotal_key_is_masked(
     assert VIRUSTOTAL_KEY not in log_text
     assert VIRUSTOTAL_KEY not in stderr
     assert "x-apikey" in log_text
+
+
+def test_a_logged_opencti_token_is_masked(
+    settings_factory: Any, tmp_path: Any, capsys: Any
+) -> None:
+    """The token travels in an `Authorization` header that a log line can echo."""
+    import logging
+
+    settings = settings_factory(opencti_token=OPENCTI_TOKEN)
+    target = tmp_path / "correlator.log"
+    configure_logging(settings.log_level, target, secrets=log_secrets(settings))
+
+    logging.getLogger("opencanary_correlator.enrichment.opencti").warning(
+        "request headers: {'Authorization': 'Bearer %s'}", OPENCTI_TOKEN
+    )
+
+    log_text = target.read_text(encoding="utf-8")
+    stderr = capsys.readouterr().err
+    assert OPENCTI_TOKEN not in log_text
+    assert OPENCTI_TOKEN not in stderr
+    assert "Authorization" in log_text

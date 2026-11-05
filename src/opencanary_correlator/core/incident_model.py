@@ -71,7 +71,6 @@ class IncidentHTTPRequest(Incident):
             description=self.DESCRIPTION,
             created=self.created,
             src_host=self.src_host,
-            dst_host=self.dst_host,
             node_id=self.node_id,
             extra=extra,
         )
@@ -111,7 +110,6 @@ class IncidentSMBFileOpen(Incident):
             description=self.DESCRIPTION,
             created=self.created,
             src_host=self.src_host,
-            dst_host=self.dst_host,
             node_id=self.node_id,
             extra=f"  File    : {filename}\n  User    : {user}\n",
         )
@@ -125,7 +123,6 @@ class IncidentSMBFileOpen(Incident):
             description=self.DESCRIPTION,
             src_host=self.src_host,
             node_id=self.node_id,
-            dst_host=self.dst_host,
             extra=f' File "{filename}", user "{user}".',
         )
 
@@ -175,9 +172,9 @@ class IncidentNetworkPortScan(Incident):
     def format_report(self) -> str:
         """Formatting used by the legacy alert for distributed scans."""
         try:
-            targets = ", ".join(str(host) for host in decode_logdata(self.logdata))
+            targets = len(decode_logdata(self.logdata))
         except TypeError:
-            targets = "Target data absent"
+            targets = 0
         return render_scan_report(
             description=self.DESCRIPTION,
             created=self.created,

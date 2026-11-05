@@ -65,6 +65,33 @@ def test_no_enrichment_is_built_without_configuration(
     assert build_enricher(settings_factory(), store, audit) is None
 
 
+async def test_an_enabled_opencti_lookup_builds_the_enricher(
+    settings_factory: Any, store: Any, audit: Any
+) -> None:
+    settings = settings_factory(
+        opencti_url="https://opencti.example",
+        opencti_token="opencti-secret",
+        opencti_lookup_enabled=True,
+    )
+
+    enricher = build_enricher(settings, store, audit)
+
+    assert enricher is not None
+    assert enricher.enabled is True
+    await enricher.aclose()
+
+
+def test_a_stored_opencti_token_that_nothing_uses_builds_nothing(
+    settings_factory: Any, store: Any, audit: Any
+) -> None:
+    settings = settings_factory(
+        opencti_url="https://opencti.example",
+        opencti_token="opencti-secret",
+    )
+
+    assert build_enricher(settings, store, audit) is None
+
+
 def test_a_missing_geo_database_stops_startup(
     settings_factory: Any, store: Any, audit: Any, tmp_path: Any
 ) -> None:

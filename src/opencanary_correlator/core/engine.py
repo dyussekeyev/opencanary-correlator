@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 
 from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
@@ -213,7 +214,13 @@ class CorrelationEngine:
             return
         for incident in incidents:
             try:
-                incident.enrichment = await self._enricher.enrich(incident.src_host)
+                incident.enrichment = await self._enricher.enrich(
+                    incident.src_host,
+                    # The incident time becomes the STIX `valid_from` of an
+                    # indicator OpenCTI creates, so a delayed alert does not
+                    # claim the address was first seen at delivery time.
+                    occurred_at=datetime.fromtimestamp(float(incident.created), tz=UTC),
+                )
             except Exception as exc:  # a broken enrichment must not lose the alert
                 self._audit.emit(
                     "enrichment_failed",

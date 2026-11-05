@@ -83,7 +83,7 @@ class Incident(BaseModel):
 
     def format_title(self) -> str:
         """One-line title used as an email/webhook subject."""
-        return render_title(self.DESCRIPTION, self.src_host, self.node_id, self.dst_host)
+        return render_title(self.DESCRIPTION, self.src_host, self.node_id)
 
     def format_report(self) -> str:
         """Full plain-text report."""
@@ -91,7 +91,6 @@ class Incident(BaseModel):
             description=self.DESCRIPTION,
             created=self.created,
             src_host=self.src_host,
-            dst_host=self.dst_host,
             node_id=self.node_id,
         )
 
@@ -101,7 +100,6 @@ class Incident(BaseModel):
             description=self.DESCRIPTION,
             src_host=self.src_host,
             node_id=self.node_id,
-            dst_host=self.dst_host,
         )
 
     # --- Serialisation ------------------------------------------------------

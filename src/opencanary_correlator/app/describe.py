@@ -50,6 +50,9 @@ def log_secrets(settings: Settings) -> tuple[str, ...]:
         # Sent in a header, so httpx does not log it - but an exception carrying
         # the request, or any future library that logs headers, would.
         secrets.append(settings.virustotal_api_key.get_secret_value())
+    if settings.opencti_token is not None:
+        # Same path: a bearer header on every GraphQL request.
+        secrets.append(settings.opencti_token.get_secret_value())
     return tuple(secrets)
 
 

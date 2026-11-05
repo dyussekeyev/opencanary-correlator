@@ -69,6 +69,17 @@ DIGEST_TIME_RE: Final[re.Pattern[str]] = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d
 #: `create_file`); anything much longer is a typo or a payload.
 MAX_SMB_ACTION_LENGTH: Final[int] = 64
 
+#: How an OpenCTI indicator is created: never, only when the lookup found
+#: nothing, or on every alert (create-or-update, never a duplicate).
+OPENCTI_CREATE_MODES: Final[tuple[str, ...]] = ("off", "missing", "always")
+
+#: Longest accepted OpenCTI label. STIX has no hard limit; a configuration is
+#: not a data feed, and a label is copied into every indicator created.
+MAX_OPENCTI_LABEL_LENGTH: Final[int] = 64
+
+#: Labels one indicator may carry at most.
+MAX_OPENCTI_LABELS: Final[int] = 20
+
 
 def split_comma_separated(value: Any) -> Any:
     """Split a comma-separated string, or decode a JSON array, into a list."""
@@ -129,6 +140,105 @@ def require_http_urls(value: list[str]) -> list[str]:
                 f"(host {parsed.hostname!r})"
             )
     return value
+
+
+def normalise_opencti_url(value: Any) -> Any:
+    """Treat an unset or blank ``OCC_OPENCTI_URL`` as "not configured"."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def require_opencti_url(value: str | None) -> str | None:
+    """Accept an https base URL, and plain http only for a loopback appliance.
+
+    The client appends ``/graphql`` to this value, so a query string or fragment
+    would silently produce a different endpoint than the operator typed. Error
+    messages name the setting and, at most, the host: a tenant path ends up in
+    the container log otherwise.
+    """
+    if value is None:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"opencti_url must be an http(s) URL, got scheme {parsed.scheme or '<none>'!r}"
+        )
+    if not parsed.hostname:
+        raise ValueError("opencti_url must name a host")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError(
+            f"opencti_url must use https unless it is loopback (host {parsed.hostname!r})"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError("opencti_url must not carry a query string or fragment")
+    return value
+
+
+def normalise_opencti_token(value: Any) -> Any:
+    """An empty ``OCC_OPENCTI_TOKEN`` means "no token", not an empty secret."""
+    if isinstance(value, SecretStr):
+        return value if value.get_secret_value().strip() else None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def normalise_opencti_create_mode(value: Any) -> Any:
+    """`off`, `missing` and `always` are case-insensitive setting values."""
+    if not isinstance(value, str):
+        return value
+    return value.strip().lower()
+
+
+def validate_opencti_labels(value: list[str]) -> list[str]:
+    """Normalise indicator labels and reject values STIX would not carry.
+
+    Blank entries are dropped and duplicates collapse, so a stray comma is
+    harmless. Control characters and oversized entries are refused: a label is
+    copied into every indicator the correlator creates, and a typo there is only
+    visible after it has been written to a third party.
+    """
+    unique: dict[str, None] = {}
+    for raw in value:
+        label = raw.strip()
+        if not label:
+            continue
+        if len(label) > MAX_OPENCTI_LABEL_LENGTH:
+            raise ValueError(f"opencti_labels entry exceeds {MAX_OPENCTI_LABEL_LENGTH} characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in label):
+            raise ValueError("opencti_labels must not contain control characters")
+        unique.setdefault(label, None)
+    if len(unique) > MAX_OPENCTI_LABELS:
+        raise ValueError(f"opencti_labels accepts at most {MAX_OPENCTI_LABELS} entries")
+    return list(unique)
+
+
+def require_opencti_config(
+    *,
+    lookup_enabled: bool,
+    create_mode: str,
+    url: str | None,
+    token: SecretStr | None,
+) -> None:
+    """Refuse a half-configured OpenCTI integration at startup.
+
+    Enabling the lookup, or a create mode other than ``off``, promises a
+    provider the correlator will call. Without both a URL and a token nothing
+    would ever reach it and the operator would read "off" instead of
+    "misconfigured". Creation is a write to a third party, so it needs the same
+    credentials the lookup does.
+    """
+    if not lookup_enabled and create_mode == "off":
+        return
+    if url is None:
+        raise ValueError("OCC_OPENCTI_URL is required when OpenCTI lookup or create is enabled")
+    if token is None:
+        raise ValueError("OCC_OPENCTI_TOKEN is required when OpenCTI lookup or create is enabled")
 
 
 def validate_telegram_token(value: SecretStr | None) -> SecretStr | None:
@@ -342,6 +452,9 @@ __all__ = [
     "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
+    "MAX_OPENCTI_LABELS",
+    "MAX_OPENCTI_LABEL_LENGTH",
+    "OPENCTI_CREATE_MODES",
     "SERVICE_CATEGORIES",
     "TELEGRAM_TOKEN_RE",
     "decode_incident_horizons",
@@ -351,9 +464,14 @@ __all__ = [
     "normalise_health_host",
     "normalise_log_file",
     "normalise_log_level",
+    "normalise_opencti_create_mode",
+    "normalise_opencti_token",
+    "normalise_opencti_url",
     "normalise_service_severity",
     "require_email_address",
     "require_http_urls",
+    "require_opencti_config",
+    "require_opencti_url",
     "require_redis_scheme",
     "require_slack_endpoints",
     "slack_configured_but_disabled",
@@ -361,6 +479,7 @@ __all__ = [
     "validate_allowed_ips",
     "validate_digest_time",
     "validate_incident_horizons",
+    "validate_opencti_labels",
     "validate_service_categories",
     "validate_service_channels",
     "validate_telegram_token",

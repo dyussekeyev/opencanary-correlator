@@ -665,3 +665,157 @@ def test_a_coherent_ingestion_configuration_is_accepted(settings_factory: Any) -
 
     assert settings.service_drops_threshold == 10
     assert settings.service_rejections_threshold == 25
+
+
+def test_opencti_is_off_until_it_is_configured(settings_factory: Any) -> None:
+    """No URL means nothing is called and nothing is written to a third party."""
+    settings = settings_factory()
+
+    assert settings.opencti_url is None
+    assert settings.opencti_token is None
+    assert settings.opencti_lookup_enabled is False
+    assert settings.opencti_create_mode == "off"
+    assert settings.opencti_labels == ["opencanary"]
+    assert settings.opencti_confidence == 50
+    assert settings.opencti_verify_tls is True
+    assert settings.opencti_max_response_bytes == 1024 * 1024
+    assert (settings.opencti_cache_ttl, settings.opencti_negative_cache_ttl) == (3600.0, 300.0)
+
+
+def test_opencti_reads_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_OPENCTI_URL", "https://opencti.example")
+    monkeypatch.setenv("OCC_OPENCTI_TOKEN", "opencti-secret")
+    monkeypatch.setenv("OCC_OPENCTI_LOOKUP_ENABLED", "true")
+    monkeypatch.setenv("OCC_OPENCTI_CREATE_MODE", " ALWAYS ")
+    monkeypatch.setenv("OCC_OPENCTI_LABELS", " opencanary , honeypot ,, opencanary ")
+    monkeypatch.setenv("OCC_OPENCTI_CONFIDENCE", "80")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.opencti_url == "https://opencti.example"
+    assert settings.opencti_token is not None
+    assert settings.opencti_lookup_enabled is True
+    assert settings.opencti_create_mode == "always"
+    assert settings.opencti_labels == ["opencanary", "honeypot"]
+    assert settings.opencti_confidence == 80
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://opencti.example",
+        "ftp://opencti.example",
+        "opencti.example",
+        "https://",
+        "https://opencti.example/?tenant=acme",
+    ],
+)
+def test_invalid_opencti_urls_are_rejected(settings_factory: Any, url: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(opencti_url=url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost:4000", "http://127.0.0.1:4000", "http://[::1]:4000"],
+)
+def test_a_loopback_opencti_may_use_plain_http(settings_factory: Any, url: str) -> None:
+    assert settings_factory(opencti_url=url).opencti_url == url
+
+
+def test_a_blank_opencti_url_means_not_configured(settings_factory: Any) -> None:
+    assert settings_factory(opencti_url="   ").opencti_url is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"opencti_lookup_enabled": True}, id="lookup-without-anything"),
+        pytest.param(
+            {"opencti_lookup_enabled": True, "opencti_url": "https://opencti.example"},
+            id="lookup-without-token",
+        ),
+        pytest.param(
+            {"opencti_create_mode": "always", "opencti_url": "https://opencti.example"},
+            id="create-without-token",
+        ),
+        pytest.param({"opencti_create_mode": "missing"}, id="create-without-url"),
+        pytest.param(
+            {
+                "opencti_create_mode": "always",
+                "opencti_url": "https://opencti.example",
+                "opencti_token": "   ",
+            },
+            id="create-with-blank-token",
+        ),
+    ],
+)
+def test_a_half_configured_opencti_is_refused(
+    settings_factory: Any, overrides: dict[str, Any]
+) -> None:
+    """Enabling the provider without credentials would silently do nothing."""
+    with pytest.raises(ValidationError, match="OCC_OPENCTI"):
+        settings_factory(**overrides)
+
+
+def test_a_blank_opencti_token_is_not_a_token(settings_factory: Any) -> None:
+    assert settings_factory(opencti_token="   ").opencti_token is None
+
+
+def test_a_configured_opencti_lookup_needs_no_create_mode(settings_factory: Any) -> None:
+    settings = settings_factory(
+        opencti_url="https://opencti.example",
+        opencti_token="opencti-secret",
+        opencti_lookup_enabled=True,
+    )
+
+    assert settings.opencti_create_mode == "off"
+
+
+def test_an_unknown_opencti_create_mode_is_rejected(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(
+            opencti_url="https://opencti.example",
+            opencti_token="opencti-secret",
+            opencti_create_mode="sometimes",
+        )
+
+
+@pytest.mark.parametrize("value", [-1, 101])
+def test_opencti_confidence_is_bounded(settings_factory: Any, value: int) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(opencti_confidence=value)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"opencti_timeout": 0}, id="timeout-zero"),
+        pytest.param({"opencti_timeout": 61}, id="timeout-too-long"),
+        pytest.param({"opencti_cache_ttl": -1}, id="negative-cache-ttl"),
+        pytest.param({"opencti_negative_cache_ttl": -1}, id="negative-negative-cache-ttl"),
+        pytest.param({"opencti_max_response_bytes": 10}, id="response-limit-too-small"),
+        pytest.param({"opencti_max_response_bytes": 65 * 1024 * 1024}, id="response-limit-huge"),
+    ],
+)
+def test_invalid_opencti_limits_are_rejected(
+    settings_factory: Any, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(**overrides)
+
+
+def test_opencti_labels_reject_controls_and_oversized_entries(settings_factory: Any) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(opencti_labels=["open\ncanary"])
+    with pytest.raises(ValidationError):
+        settings_factory(opencti_labels=["a" * 65])
+
+
+def test_the_opencti_token_stays_out_of_repr(settings_factory: Any) -> None:
+    settings = settings_factory(opencti_token="opencti-secret-value")
+
+    assert "opencti-secret-value" not in repr(settings)
+    assert settings.opencti_token is not None
+    assert settings.opencti_token.get_secret_value() == "opencti-secret-value"

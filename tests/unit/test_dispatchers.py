@@ -27,6 +27,7 @@ from opencanary_correlator.connectors.dispatchers.discord import (
 from opencanary_correlator.enrichment.models import (
     Enrichment,
     GeoInfo,
+    OpenCTIIndicator,
     VirusTotalReport,
 )
 
@@ -101,12 +102,27 @@ async def test_webhook_posts_incident_and_reports_success(incident_factory: Any)
 
     assert result.status == "success"
     payload = json.loads(calls[0].content)
-    assert payload["title"] == "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    assert payload["title"] == "FTP Login Attempt by 10.0.0.5 on canary-1"
     assert "FTP Login Attempt" in payload["text"]
     assert payload["key"] == "incident:ftplogin:10.0.0.5:1418997029"
     assert "PASSWORD" not in json.dumps(payload)
     # Without enrichment the document stays exactly the legacy three keys.
     assert set(payload) == {"title", "text", "key"}
+
+
+async def test_webhook_title_and_text_hide_the_honeypot_address(incident_factory: Any) -> None:
+    """A SIEM document must not map the deployment it reports on."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client, detail="detailed")
+    try:
+        await dispatcher.dispatch(incident_factory(dst_host="89.126.202.164", dst_port=3389))
+    finally:
+        await dispatcher.aclose()
+
+    document = json.loads(calls[0].content)
+    assert "89.126.202.164" not in document["title"]
+    assert "89.126.202.164" not in document["text"]
 
 
 async def test_webhook_carries_the_attacker_context_as_structured_json(
@@ -158,6 +174,53 @@ async def test_webhook_reports_a_spent_quota_without_a_verdict(incident_factory:
     payload = json.loads(calls[0].content)
     assert payload["enrichment"]["geo"]["country"] == "Kazakhstan"
     assert payload["enrichment"]["virustotal_status"] == "quota"
+
+
+async def test_webhook_carries_the_opencti_indicator(incident_factory: Any) -> None:
+    """The SIEM gets the STIX fields, not a sentence to parse."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client)
+    enrichment = Enrichment(
+        opencti=OpenCTIIndicator(
+            id="indicator--1",
+            pattern="[ipv4-addr:value = '10.0.0.5']",
+            confidence=80,
+            created_at="2026-11-05T12:00:00.000Z",
+            valid_from="2026-11-05T12:00:00.000Z",
+            labels=("opencanary",),
+        ),
+        opencti_status="ok",
+    )
+    try:
+        await dispatcher.dispatch(incident_factory(enrichment=enrichment))
+    finally:
+        await dispatcher.aclose()
+
+    payload = json.loads(calls[0].content)
+    assert payload["enrichment"]["opencti"] == {
+        "id": "indicator--1",
+        "pattern": "[ipv4-addr:value = '10.0.0.5']",
+        "confidence": 80,
+        "created_at": "2026-11-05T12:00:00.000Z",
+        "valid_from": "2026-11-05T12:00:00.000Z",
+        "labels": ["opencanary"],
+    }
+
+
+async def test_webhook_reports_an_unknown_indicator_as_a_status(incident_factory: Any) -> None:
+    """`not_found` is an answer: the document says so instead of omitting it."""
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client)
+    try:
+        await dispatcher.dispatch(
+            incident_factory(enrichment=Enrichment(opencti_status="not_found"))
+        )
+    finally:
+        await dispatcher.aclose()
+
+    assert json.loads(calls[0].content)["enrichment"] == {"opencti_status": "not_found"}
 
 
 async def test_webhook_retries_server_errors(incident_factory: Any) -> None:
@@ -400,7 +463,7 @@ async def test_smtp_sends_email(incident_factory: Any) -> None:
 
     assert result.status == "success"
     message, kwargs = sent[0]
-    assert message["Subject"] == "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    assert message["Subject"] == "FTP Login Attempt by 10.0.0.5 on canary-1"
     assert message["To"] == "soc@example.test"
     assert kwargs["hostname"] == "smtp.test"
     assert kwargs["start_tls"] is True
@@ -430,6 +493,29 @@ async def test_smtp_default_layout_shows_the_attacker_context(incident_factory: 
     assert "Instance: canary-1" in body
     assert "Location: 🇰🇿 Kazakhstan" in body
     assert "VT: 0/94 malicious (+1 suspicious)" in body
+
+
+async def test_smtp_subject_and_body_hide_the_honeypot_address(incident_factory: Any) -> None:
+    sent: list[Any] = []
+
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
+        sent.append(message)
+        return ({}, "ok")
+
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=587,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        send=fake_send,
+    )
+
+    await dispatcher.dispatch(incident_factory(dst_host="89.126.202.164", dst_port=3389))
+
+    message = sent[0]
+    assert "89.126.202.164" not in str(message["Subject"])
+    assert "89.126.202.164" not in message.get_content()
+    assert message["Subject"] == "FTP Login Attempt by 10.0.0.5 on canary-1"
 
 
 async def test_smtp_subject_cannot_be_split_by_a_payload(incident_factory: Any) -> None:

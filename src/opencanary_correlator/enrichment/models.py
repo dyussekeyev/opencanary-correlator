@@ -100,6 +100,30 @@ class VirusTotalReport(BaseModel):
         return self.malicious + self.suspicious
 
 
+#: Outcome of the OpenCTI lookup for one address. ``not_found`` is a real
+#: answer, while ``unavailable``/``unauthorized`` describe a provider that could
+#: not answer; ``disabled`` means the lookup was never configured.
+OpenCTIStatus = Literal["ok", "not_found", "disabled", "unavailable", "unauthorized"]
+
+
+class OpenCTIIndicator(BaseModel):
+    """The OpenCTI indicator behind one attacker address.
+
+    Only what an operator or a SIEM can act on is kept: the STIX pattern, the
+    confidence OpenCTI reports and the labels it carries. The full GraphQL
+    response is never stored, so an incident hash cannot grow with a provider.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = ""
+    pattern: str = ""
+    confidence: int | None = None
+    created_at: str | None = None
+    valid_from: str | None = None
+    labels: tuple[str, ...] = ()
+
+
 class Enrichment(BaseModel):
     """Everything known about one attacker address at alert time."""
 
@@ -108,13 +132,17 @@ class Enrichment(BaseModel):
     geo: GeoInfo | None = None
     virus_total: VirusTotalReport | None = None
     virus_total_status: VirusTotalStatus | None = None
+    opencti: OpenCTIIndicator | None = None
+    opencti_status: OpenCTIStatus | None = None
 
     @property
     def is_empty(self) -> bool:
         """True when nothing would be rendered."""
         if self.geo is not None and not self.geo.is_empty:
             return False
-        return self.virus_total is None and self.virus_total_status is None
+        if self.virus_total is not None or self.virus_total_status is not None:
+            return False
+        return self.opencti is None and self.opencti_status is None
 
     def to_payload(self) -> dict[str, Any]:
         """Return the machine-readable form used by the JSON webhook.
@@ -149,7 +177,27 @@ class Enrichment(BaseModel):
             }
         elif self.virus_total_status is not None:
             payload["virustotal_status"] = self.virus_total_status
+        indicator = self.opencti
+        if indicator is not None:
+            payload["opencti"] = {
+                "id": indicator.id,
+                "pattern": indicator.pattern,
+                "confidence": indicator.confidence,
+                "created_at": indicator.created_at,
+                "valid_from": indicator.valid_from,
+                "labels": list(indicator.labels),
+            }
+        elif self.opencti_status is not None:
+            payload["opencti_status"] = self.opencti_status
         return payload
 
 
-__all__ = ["Enrichment", "GeoInfo", "VirusTotalReport", "VirusTotalStatus", "country_flag"]
+__all__ = [
+    "Enrichment",
+    "GeoInfo",
+    "OpenCTIIndicator",
+    "OpenCTIStatus",
+    "VirusTotalReport",
+    "VirusTotalStatus",
+    "country_flag",
+]

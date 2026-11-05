@@ -83,6 +83,10 @@ a compatibility risk, because consumers only rely on these five keys.
 | `alert_budget_failed` | `error` | the budget could not count, so the alert was sent anyway (fails open) | `incident`, `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
 | `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
+| `opencti_lookup` | `info` | an indicator lookup completed and the alert reflects its status | `status` (`ok` / `not_found` / `unavailable` / `unauthorized`), `found`, `outcome` (`created` / `updated` / `existing` / `skipped`, only when a write was attempted) |
+| `opencti_create` | `success` | an indicator was created or patched in OpenCTI | `outcome` (`created` / `updated`) |
+| `opencti_create_skipped` | `info` | nothing was written, by design or because the lookup gave no usable answer | `reason` (`lookup_unavailable`, `lookup_unauthorized`, `missing_indicator_id`) |
+| `opencti_failed` | `warning` / `error` | a lookup or mutation failed; the alert is still delivered | `reason` (`timeout`, `network_error`, `http_error`, `invalid_response`, `unauthorized`), `operation` (`create` / `update`) |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 | `health_request_rejected` | `warning` | a probe was refused before a response: oversized headers, a peer outside `OCC_HEALTH_ALLOWED_IPS`, or the active-handler cap | `reason: request_too_large` / `peer_not_allowed` / `too_many_requests`, `active` |
 

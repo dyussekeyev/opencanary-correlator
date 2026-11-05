@@ -17,9 +17,9 @@ from tests.unit.incident_factories import make_incident
 def test_title_and_short_report_match_the_legacy_text() -> None:
     incident = make_incident()
 
-    assert incident.format_title() == "FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)"
+    assert incident.format_title() == "FTP Login Attempt by 10.0.0.5 on canary-1"
     assert incident.format_report_short() == (
-        "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1 (10.0.0.2)."
+        "Canary Incident: FTP Login Attempt. Source 10.0.0.5. Target canary-1."
     )
 
 
@@ -30,7 +30,8 @@ def test_full_report_matches_the_legacy_layout() -> None:
     assert "  Incident: FTP Login Attempt" in report
     assert "  Time    : 2014-12-19 13:50:29 (UTC)" in report
     assert "  Source  : 10.0.0.5" in report
-    assert "  Target  : 10.0.0.2 (id canary-1)" in report
+    assert "  Target  : canary-1" in report
+    assert "10.0.0.2" not in report
     assert "EXTRA" not in report
 
 
@@ -71,7 +72,7 @@ def test_http_request_report_without_logdata_falls_back_to_the_base_report() -> 
     assert "  Incident: HTTP Request" in incident.format_report()
     assert "  Path" not in incident.format_report()
     assert incident.format_report_short() == (
-        "Canary Incident: HTTP Request. Source 10.0.0.5. Target canary-1 (10.0.0.2)."
+        "Canary Incident: HTTP Request. Source 10.0.0.5. Target canary-1."
     )
 
 
@@ -94,7 +95,7 @@ def test_smb_failure_never_logs_the_stored_payload(caplog: Any) -> None:
     assert incident.key in caplog.text
 
 
-def test_network_scan_report_lists_targets() -> None:
+def test_network_scan_report_counts_targets() -> None:
     incident = make_incident(
         IncidentNetworkPortScan,
         logdata=json.dumps(["10.0.0.2", "10.0.0.3"]),
@@ -105,4 +106,7 @@ def test_network_scan_report_lists_targets() -> None:
     report = incident.format_report()
 
     assert "  Port    : 22" in report
-    assert "  Targets : 10.0.0.2, 10.0.0.3" in report
+    assert "  Targets : 2 hosts" in report
+    # The scanned honeypot addresses stay out of the alert.
+    assert "10.0.0.2" not in report
+    assert "10.0.0.3" not in report
