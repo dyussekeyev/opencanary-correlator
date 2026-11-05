@@ -5,6 +5,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-05
+
+### Added
+
+- OpenCTI threat intelligence as an optional enrichment provider next to GeoIP
+  and VirusTotal. `OCC_OPENCTI_LOOKUP_ENABLED` asks whether the attacker
+  address is already a STIX 2.1 indicator; `OCC_OPENCTI_CREATE_MODE=missing`
+  creates one only when the lookup says there is none, and `always` creates it
+  when absent and patches `confidence`, `labels` and `valid_from` when it
+  exists, so repeated alerts never duplicate an indicator. A lookup that failed
+  (`unavailable`, `unauthorized`) never writes anything. `valid_from` is the
+  incident time, not the delivery time.
+- Alerts show `🔎 OpenCTI: known indicator (confidence 80)`, `not found` or
+  `unavailable`, and the JSON webhook carries `enrichment.opencti` (id, pattern,
+  confidence, timestamps, labels) plus `enrichment.opencti_status`.
+- Lookups are cached per canonical address for `OCC_OPENCTI_CACHE_TTL`
+  (3600 s; `OCC_OPENCTI_NEGATIVE_CACHE_TTL` 300 s for "no indicator") behind a
+  singleflight lock, so every incident type and replica shares one GraphQL
+  answer, and a repeated alert costs no request. Mutations are never retried:
+  a create that timed out may have been applied.
+- Audit records `opencti_lookup`, `opencti_create`, `opencti_create_skipped` and
+  `opencti_failed`, and the API token joins the redaction list, so it cannot
+  appear in a log line or `--check-config`.
+
+### Changed
+
+- **Breaking:** the honeypot's own address (`dst_host`) is no longer printed in
+  any notification, at any detail level. The `🌐 IP` row is gone from the
+  multiline layout, and the legacy `minimal` report, `format_report()`,
+  `format_report_short()`, the SMTP subject, the Discord embed title and the
+  webhook `title` no longer contain it. A parser that read the old text needs to
+  be updated.
+- The alert header block now reads `🌐 Instance` (was `🖥 Instance`) and
+  `👿 Attacker` (was `🎯 Attacker`). The instance line follows the header
+  directly, with the attacker block after it; CRLF, escaping, detail levels and
+  credential masking are unchanged.
+- The network port-scan report counts its targets (`Targets : 2 hosts`) instead
+  of listing the addresses of the canaries the scan reached.
+
+### Fixed
+
+- An incident that already carries enrichment is no longer enriched again by
+  the outbox: a second VirusTotal lookup for the same address is not made, and a
+  retry reuses the stored provider snapshot.
+
 ## [0.6.1] - 2026-11-05
 
 ### Changed

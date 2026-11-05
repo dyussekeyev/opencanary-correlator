@@ -93,7 +93,7 @@ class RecordingEnricher:
         self.error = error
         self.calls: list[str] = []
 
-    async def enrich(self, src_host: str) -> Any:
+    async def enrich(self, src_host: str, **_: Any) -> Any:
         self.calls.append(src_host)
         if self.error is not None:
             raise self.error

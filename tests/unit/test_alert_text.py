@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from opencanary_correlator.connectors.dispatchers.alert_text import (
+    ALERT_DETAIL_LEVELS,
     CRLF,
     clip,
     log_summary,
@@ -13,7 +16,12 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
 )
 from opencanary_correlator.constants import LogType
 from opencanary_correlator.core.incident import IncidentSMBFileOpen
-from opencanary_correlator.enrichment.models import Enrichment, GeoInfo, VirusTotalReport
+from opencanary_correlator.enrichment.models import (
+    Enrichment,
+    GeoInfo,
+    OpenCTIIndicator,
+    VirusTotalReport,
+)
 
 #: One real `smbd_audit` line, split the way OpenCanary's Samba watcher splits it.
 SMB_LOG_DATA: dict[str, Any] = {
@@ -97,6 +105,72 @@ def test_an_unavailable_provider_is_shown_as_a_status(incident_factory: Any) -> 
     assert "VT: unavailable" in text
 
 
+def test_opencti_reports_a_known_indicator(incident_factory: Any) -> None:
+    enrichment = Enrichment(
+        opencti=OpenCTIIndicator(
+            id="indicator--1",
+            pattern="[ipv4-addr:value = '10.0.0.5']",
+            confidence=80,
+            valid_from="2026-11-05T12:00:00.000Z",
+        ),
+        opencti_status="ok",
+    )
+
+    standard = render_alert(
+        incident_factory(enrichment=enrichment), detail="standard", flavor="plain"
+    )
+    detailed = render_alert(
+        incident_factory(enrichment=enrichment), detail="detailed", flavor="plain"
+    )
+
+    assert "🔎 OpenCTI: known indicator (confidence 80)" in standard
+    # The validity date belongs to the detailed level, the same split as city.
+    assert "since" not in standard
+    assert "🔎 OpenCTI: known indicator (confidence 80), since 2026-11-05" in detailed
+
+
+def test_an_indicator_without_a_confidence_still_renders(incident_factory: Any) -> None:
+    enrichment = Enrichment(opencti=OpenCTIIndicator(id="indicator--1"), opencti_status="ok")
+
+    text = render_alert(incident_factory(enrichment=enrichment), detail="standard", flavor="plain")
+
+    assert "🔎 OpenCTI: known indicator" in text
+    assert "confidence" not in text
+
+
+def test_a_missing_indicator_is_reported_as_not_found(incident_factory: Any) -> None:
+    text = render_alert(
+        incident_factory(enrichment=Enrichment(opencti_status="not_found")),
+        detail="standard",
+        flavor="plain",
+    )
+
+    assert "🔎 OpenCTI: not found" in text
+
+
+@pytest.mark.parametrize("status", ["unavailable", "unauthorized"])
+def test_a_failed_opencti_lookup_reads_as_unavailable(incident_factory: Any, status: str) -> None:
+    text = render_alert(
+        incident_factory(enrichment=Enrichment(opencti_status=status)),
+        detail="standard",
+        flavor="plain",
+    )
+
+    assert "🔎 OpenCTI: unavailable" in text
+    assert "unauthorized" not in text
+
+
+def test_a_disabled_opencti_adds_no_row(incident_factory: Any) -> None:
+    """`disabled` is a status, but showing it would be noise on every alert."""
+    text = render_alert(
+        incident_factory(enrichment=Enrichment(opencti_status="disabled")),
+        detail="detailed",
+        flavor="plain",
+    )
+
+    assert "OpenCTI" not in text
+
+
 def test_minimal_never_shows_enrichment(incident_factory: Any) -> None:
     incident = incident_factory(enrichment=enriched())
 
@@ -111,6 +185,7 @@ def test_an_alert_without_enrichment_has_no_extra_rows(incident_factory: Any) ->
 
     assert "Location" not in text
     assert "VT:" not in text
+    assert "OpenCTI" not in text
 
 
 def test_enrichment_values_cannot_forge_lines(incident_factory: Any) -> None:
@@ -120,7 +195,7 @@ def test_enrichment_values_cannot_forge_lines(incident_factory: Any) -> None:
 
     # The CRLFs collapse into spaces, so the payload stays on the Location row.
     assert "NL 🎯 Attacker: 6.6.6.6" in text
-    assert sum(1 for line in text.split(CRLF) if line.startswith("🎯")) == 1
+    assert sum(1 for line in text.split(CRLF) if line.startswith("👿")) == 1
 
 
 def test_minimal_level_is_the_legacy_one_liner(incident_factory: Any) -> None:
@@ -140,15 +215,33 @@ def test_standard_level_puts_the_instance_before_the_attacker(incident_factory: 
     lines = text.split(CRLF)
 
     assert lines[0] == "OpenCanary: FTP Login Attempt"
-    assert "Instance: opencanary-embassy" in lines[2]
-    # The instance address carries its port, so no second destination row repeats it.
-    assert "IP: 89.126.202.164:21" in lines[3]
-    assert "Destination" not in text
-    assert "Attacker: 10.0.0.5:40000" in lines[5]
-    assert "Time: 2014-12-19 13:50:29 UTC" in lines[6]
-    assert lines[8] == "📝 Log: USERNAME=admin"
+    assert lines[1] == "🌐 Instance: opencanary-embassy"
+    assert lines[2] == ""
+    assert lines[3] == "👿 Attacker: 10.0.0.5:40000"
+    assert lines[4] == "🕒 Time: 2014-12-19 13:50:29 UTC"
+    assert lines[6] == "📝 Log: USERNAME=admin"
     # The instance block must come first, the attacker block after it.
     assert text.index("opencanary-embassy") < text.index("10.0.0.5")
+
+
+def test_instance_and_attacker_use_the_requested_emoji(incident_factory: Any) -> None:
+    text = render_alert(incident_factory(), detail="standard", flavor="plain")
+
+    assert "🌐 Instance:" in text
+    assert "👿 Attacker:" in text
+    assert "🖥" not in text
+    assert "🎯" not in text
+
+
+def test_no_detail_level_prints_the_honeypot_address(incident_factory: Any) -> None:
+    """D1: the canary's own address never leaves the estate, minimal included."""
+    incident = incident_factory(dst_host="89.126.202.164", dst_port=21)
+
+    for detail in ALERT_DETAIL_LEVELS:
+        text = render_alert(incident, detail=detail, flavor="plain")
+
+        assert "89.126.202.164" not in text
+        assert "IP:" not in text
 
 
 def test_detailed_level_adds_events_and_more_log_data(incident_factory: Any) -> None:
@@ -160,8 +253,7 @@ def test_detailed_level_adds_events_and_more_log_data(incident_factory: Any) -> 
     text = render_alert(incident, detail="detailed", flavor="plain")
     lines = text.split(CRLF)
 
-    assert "IP: 10.0.0.2:21" in text
-    assert "Destination" not in text
+    assert "10.0.0.2" not in text
     assert "Events: 4" in text
     assert "Log: USERNAME=admin, PASSWORD=***" in text
     assert "hunter2" not in text
@@ -170,11 +262,11 @@ def test_detailed_level_adds_events_and_more_log_data(incident_factory: Any) -> 
     assert lines[-1].startswith("📝 Log:")
 
 
-def test_a_destination_without_a_port_is_not_rendered_as_minus_one(incident_factory: Any) -> None:
-    text = render_alert(incident_factory(dst_port=-1), detail="standard", flavor="plain")
+def test_a_source_without_a_port_is_not_rendered_as_minus_one(incident_factory: Any) -> None:
+    text = render_alert(incident_factory(src_port=-1), detail="standard", flavor="plain")
 
-    assert "IP: 10.0.0.2" in text
-    assert "10.0.0.2:-1" not in text
+    assert "Attacker: 10.0.0.5" in text
+    assert "10.0.0.5:-1" not in text
 
 
 def test_credentials_are_masked_for_every_incident_shape(incident_factory: Any) -> None:
@@ -197,18 +289,18 @@ def test_control_characters_cannot_forge_extra_lines(incident_factory: Any) -> N
 
     text = render_alert(incident, detail="standard", flavor="plain")
 
-    assert len(text.split(CRLF)) == 9
+    assert len(text.split(CRLF)) == 7
     assert "canary 🎯 Attacker: 6.6.6.6" in text
 
 
 def test_telegram_markup_escapes_reserved_characters(incident_factory: Any) -> None:
-    incident = incident_factory(description="FTP (Login) Attempt!", dst_host="10.0.0.2")
+    incident = incident_factory(description="FTP (Login) Attempt!")
 
     text = render_alert(incident, detail="standard", flavor="telegram")
 
     assert "*FTP \\(Login\\) Attempt\\!*" in text
     assert "*Instance:*" in text
-    assert "10\\.0\\.0\\.2" in text
+    assert "10\\.0\\.0\\.5" in text
 
 
 def test_slack_markup_escapes_html_entities(incident_factory: Any) -> None:
@@ -319,10 +411,11 @@ def test_a_corrupt_timestamp_renders_unknown_instead_of_crashing(incident_factor
     assert "Time: unknown" in text
 
 
-def test_an_incident_without_a_destination_host_shows_unknown(incident_factory: Any) -> None:
+def test_an_incident_without_a_destination_host_still_renders(incident_factory: Any) -> None:
     text = render_alert(incident_factory(dst_host=""), detail="standard", flavor="plain")
 
-    assert "IP: unknown:21" in text
+    assert "Attacker: 10.0.0.5:40000" in text
+    assert "unknown" not in text
 
 
 def test_a_geo_guess_without_a_country_name_falls_back_to_the_code(incident_factory: Any) -> None:

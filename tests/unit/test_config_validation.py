@@ -227,3 +227,131 @@ def test_disable_health_port_keeps_real_ports(value: Any, expected: int) -> None
 
 def test_disable_health_port_leaves_unparseable_strings_for_pydantic() -> None:
     assert cv.disable_health_port("eighty") == "eighty"
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_normalise_opencti_url_treats_missing_values_as_unset(value: Any) -> None:
+    assert cv.normalise_opencti_url(value) is None
+
+
+def test_normalise_opencti_url_trims_whitespace() -> None:
+    assert cv.normalise_opencti_url("  https://opencti.example  ") == "https://opencti.example"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://opencti.example", "https://opencti.example/tenant", "http://localhost:4000"],
+)
+def test_require_opencti_url_accepts_https_and_loopback_http(url: str) -> None:
+    assert cv.require_opencti_url(url) == url
+
+
+def test_require_opencti_url_allows_none() -> None:
+    assert cv.require_opencti_url(None) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://opencti.example",
+        "ftp://opencti.example",
+        "opencti.example",
+        "https://",
+        "https://opencti.example/#frag",
+    ],
+)
+def test_require_opencti_url_rejects_remote_http_and_malformed_values(url: str) -> None:
+    with pytest.raises(ValueError, match="opencti_url"):
+        cv.require_opencti_url(url)
+
+
+def test_opencti_url_errors_do_not_echo_the_tenant_path() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        cv.require_opencti_url("http://opencti.example/tenants/SECRET-TENANT")
+
+    message = str(excinfo.value)
+    assert "opencti.example" in message
+    assert "SECRET-TENANT" not in message
+
+
+def test_normalise_opencti_token_maps_blank_values_to_none() -> None:
+    assert cv.normalise_opencti_token("") is None
+    assert cv.normalise_opencti_token("   ") is None
+    assert cv.normalise_opencti_token(None) is None
+    assert cv.normalise_opencti_token(SecretStr("  ")) is None
+
+
+def test_normalise_opencti_token_keeps_a_real_secret() -> None:
+    token = cv.normalise_opencti_token("  opencti-secret  ")
+
+    assert token == "opencti-secret"
+
+
+def test_normalise_opencti_create_mode_is_case_insensitive() -> None:
+    assert cv.normalise_opencti_create_mode(" ALWAYS ") == "always"
+    assert cv.normalise_opencti_create_mode(None) is None
+    # An unknown mode is passed through so pydantic reports the allowed set.
+    assert cv.normalise_opencti_create_mode("sometimes") == "sometimes"
+
+
+def test_validate_opencti_labels_trims_drops_blanks_and_deduplicates() -> None:
+    assert cv.validate_opencti_labels([" opencanary ", "", "honeypot", "opencanary"]) == [
+        "opencanary",
+        "honeypot",
+    ]
+
+
+def test_validate_opencti_labels_accepts_an_empty_list() -> None:
+    assert cv.validate_opencti_labels([]) == []
+
+
+def test_validate_opencti_labels_rejects_control_characters() -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        cv.validate_opencti_labels(["open\tcanary"])
+
+
+def test_validate_opencti_labels_rejects_an_oversized_entry() -> None:
+    with pytest.raises(ValueError, match="exceeds"):
+        cv.validate_opencti_labels(["a" * (cv.MAX_OPENCTI_LABEL_LENGTH + 1)])
+
+
+def test_validate_opencti_labels_rejects_too_many_entries() -> None:
+    labels = [f"label-{index}" for index in range(cv.MAX_OPENCTI_LABELS + 1)]
+
+    with pytest.raises(ValueError, match="at most"):
+        cv.validate_opencti_labels(labels)
+
+
+def test_require_opencti_config_allows_a_fully_disabled_provider() -> None:
+    """The default deployment never calls OpenCTI and needs no credentials."""
+    cv.require_opencti_config(lookup_enabled=False, create_mode="off", url=None, token=None)
+
+
+def test_require_opencti_config_accepts_a_complete_configuration() -> None:
+    cv.require_opencti_config(
+        lookup_enabled=True,
+        create_mode="always",
+        url="https://opencti.example",
+        token=SecretStr("token"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("lookup_enabled", "create_mode", "missing"),
+    [
+        pytest.param(True, "off", "OCC_OPENCTI_URL", id="lookup-without-url"),
+        pytest.param(False, "missing", "OCC_OPENCTI_URL", id="create-without-url"),
+        pytest.param(True, "off", "OCC_OPENCTI_TOKEN", id="lookup-without-token"),
+        pytest.param(False, "always", "OCC_OPENCTI_TOKEN", id="create-without-token"),
+    ],
+)
+def test_require_opencti_config_names_the_missing_setting(
+    lookup_enabled: bool, create_mode: str, missing: str
+) -> None:
+    url = None if missing == "OCC_OPENCTI_URL" else "https://opencti.example"
+    token = None if missing == "OCC_OPENCTI_TOKEN" else SecretStr("token")
+
+    with pytest.raises(ValueError, match=missing):
+        cv.require_opencti_config(
+            lookup_enabled=lookup_enabled, create_mode=create_mode, url=url, token=token
+        )

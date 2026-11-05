@@ -24,6 +24,7 @@ from opencanary_correlator.enrichment import (
     GeoLookup,
     GeoLookupError,
     IncidentEnricher,
+    OpenCTIClient,
     QuotaLimits,
     VirusTotalClient,
 )
@@ -44,7 +45,8 @@ def build_enricher(
     A configured geo database that cannot be opened stops startup: the operator
     asked for country data and would otherwise get alerts without it, with no
     hint about why. VirusTotal needs a key, which is also the consent to send
-    attacker addresses to a third party.
+    attacker addresses to a third party. OpenCTI is built only when the lookup or
+    a create mode is enabled, so a stored token that nothing uses calls nothing.
     """
     geo: GeoLookup | None = None
     if settings.geoip_city_db or settings.geoip_asn_db:
@@ -73,11 +75,33 @@ def build_enricher(
                 per_month=settings.virustotal_per_month,
             ),
         )
-    if geo is None and virustotal is None:
+    opencti: OpenCTIClient | None = None
+    if (
+        settings.opencti_url is not None
+        and settings.opencti_token is not None
+        and (settings.opencti_lookup_enabled or settings.opencti_create_mode != "off")
+    ):
+        opencti = OpenCTIClient(
+            url=settings.opencti_url,
+            token=settings.opencti_token,
+            store=store,
+            create_mode=settings.opencti_create_mode,
+            cache_ttl=settings.opencti_cache_ttl,
+            miss_cache_ttl=settings.opencti_negative_cache_ttl,
+            timeout=settings.opencti_timeout,
+            lookup_timeout=settings.enrichment_timeout,
+            verify_tls=settings.opencti_verify_tls,
+            max_response_bytes=settings.opencti_max_response_bytes,
+            audit=audit,
+        )
+    if geo is None and virustotal is None and opencti is None:
         return None
     return IncidentEnricher(
         geo=geo,
         virustotal=virustotal,
+        opencti=opencti,
+        opencti_confidence=settings.opencti_confidence,
+        opencti_labels=settings.opencti_labels,
         audit=audit,
         timeout=settings.enrichment_timeout,
         notifier=notifier,

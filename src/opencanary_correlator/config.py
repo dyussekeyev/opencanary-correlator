@@ -29,16 +29,22 @@ from opencanary_correlator.config_validation import (
     normalise_health_host,
     normalise_log_file,
     normalise_log_level,
+    normalise_opencti_create_mode,
+    normalise_opencti_token,
+    normalise_opencti_url,
     normalise_service_severity,
     normalise_smb_actions,
     require_email_address,
     require_http_urls,
+    require_opencti_config,
+    require_opencti_url,
     require_redis_scheme,
     require_slack_endpoints,
     split_comma_separated,
     validate_allowed_ips,
     validate_digest_time,
     validate_incident_horizons,
+    validate_opencti_labels,
     validate_service_categories,
     validate_service_channels,
     validate_telegram_token,
@@ -56,6 +62,10 @@ AlertDetail = Literal["minimal", "standard", "detailed"]
 
 #: How loudly a service message speaks; see `core.service_messages`.
 ServiceSeverity = Literal["info", "warning", "critical"]
+
+#: Whether an OpenCTI indicator is created. `missing` writes one only when the
+#: lookup found nothing; `always` creates or updates the existing indicator.
+OpenCTICreateMode = Literal["off", "missing", "always"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
 
@@ -313,6 +323,31 @@ class Settings(BaseSettings):
     #: Budget for one enrichment pass, below `dispatch_timeout` on purpose.
     enrichment_timeout: float = Field(default=6.0, gt=0.0, le=120.0)
 
+    # --- OpenCTI threat intelligence ----------------------------------------
+    # Off unless configured. A lookup only reads; `opencti_create_mode` writes
+    # STIX 2.1 indicators into a third-party platform, so it is a separate
+    # decision with its own gate. Both speak GraphQL over https, and a failure
+    # there is fail-soft: the alert is still delivered.
+    opencti_url: str | None = Field(default=None, max_length=2048)
+    opencti_token: SecretStr | None = Field(default=None, repr=False)
+    opencti_lookup_enabled: bool = False
+    opencti_create_mode: OpenCTICreateMode = "off"
+    opencti_timeout: float = Field(default=5.0, gt=0.0, le=60.0)
+    #: Lookup cache for the canonical address, shared by every logtype and
+    #: replica. `negative` is the "no indicator" answer; 0 disables reuse.
+    opencti_cache_ttl: float = Field(default=3600.0, ge=0.0)
+    opencti_negative_cache_ttl: float = Field(default=300.0, ge=0.0)
+    #: Confidence and labels attached to every indicator the correlator creates.
+    opencti_confidence: int = Field(default=50, ge=0, le=100)
+    opencti_labels: CommaSeparated = Field(
+        default_factory=lambda: ["opencanary"],
+        description="Comma-separated STIX labels attached to created indicators",
+    )
+    opencti_verify_tls: bool = True
+    #: A GraphQL response is parsed in memory, so its size is bounded before
+    #: the body is read; an OpenCTI instance is not a trusted peer.
+    opencti_max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+
     # --- Service messages ---------------------------------------------------
     # The correlator talking about itself: a rejected VirusTotal key, a spent
     # quota, a broken GeoIP database, a channel whose breaker opened, no channel
@@ -407,11 +442,37 @@ class Settings(BaseSettings):
         "digest_channels",
         "smb_ignore_actions",
         "canary_expected_nodes",
+        "opencti_labels",
         mode="before",
     )
     @classmethod
     def _split_comma_separated(cls, value: Any) -> Any:
         return split_comma_separated(value)
+
+    @field_validator("opencti_labels")
+    @classmethod
+    def _validate_opencti_labels(cls, value: list[str]) -> list[str]:
+        return validate_opencti_labels(value)
+
+    @field_validator("opencti_url", mode="before")
+    @classmethod
+    def _normalise_opencti_url(cls, value: Any) -> Any:
+        return normalise_opencti_url(value)
+
+    @field_validator("opencti_url")
+    @classmethod
+    def _require_opencti_url(cls, value: str | None) -> str | None:
+        return require_opencti_url(value)
+
+    @field_validator("opencti_token", mode="before")
+    @classmethod
+    def _normalise_opencti_token(cls, value: Any) -> Any:
+        return normalise_opencti_token(value)
+
+    @field_validator("opencti_create_mode", mode="before")
+    @classmethod
+    def _normalise_opencti_create_mode(cls, value: Any) -> Any:
+        return normalise_opencti_create_mode(value)
 
     @field_validator("service_channels", "digest_channels")
     @classmethod
@@ -526,6 +587,17 @@ class Settings(BaseSettings):
     def _validate_slack(self) -> Self:
         """An enabled Slack channel must have somewhere to send."""
         require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_opencti(self) -> Self:
+        """A lookup or a create mode without a URL and token would be a no-op."""
+        require_opencti_config(
+            lookup_enabled=self.opencti_lookup_enabled,
+            create_mode=self.opencti_create_mode,
+            url=self.opencti_url,
+            token=self.opencti_token,
+        )
         return self
 
     @model_validator(mode="after")

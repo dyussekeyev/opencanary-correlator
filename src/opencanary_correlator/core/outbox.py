@@ -12,6 +12,7 @@ import asyncio
 import re
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Final
 
 from pydantic import ValidationError
@@ -102,10 +103,17 @@ class AlertOutbox:
         if len(token) != 32:
             self._terminal(incident.key, token)
             return False
-        if self._enricher is not None:
+        # An incident may already carry context (an inline caller or a future
+        # wiring that enriches before preparation). Re-running the provider would
+        # overwrite it and spend another lookup; the snapshot below is all the
+        # delivery needs.
+        if self._enricher is not None and incident.enrichment is None:
             try:
                 incident.enrichment = await asyncio.wait_for(
-                    self._enricher.enrich(incident.src_host),
+                    self._enricher.enrich(
+                        incident.src_host,
+                        occurred_at=datetime.fromtimestamp(float(incident.created), tz=UTC),
+                    ),
                     timeout=self._settings.enrichment_timeout,
                 )
             except Exception as exc:

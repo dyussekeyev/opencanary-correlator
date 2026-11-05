@@ -163,11 +163,12 @@ mean `detailed`):
 | Level | Message |
 |---|---|
 | `minimal` | The legacy alert, byte-identical for messages that fit the channel limit |
-| `standard` | Instance name and address (`IP:port`), then attacker IP and source port, the detection time and a one-entry log summary |
+| `standard` | Instance name, then attacker IP and source port, the detection time and a one-entry log summary |
 | `detailed` | `standard` plus the event count and up to three log entries |
 
-The instance address carries its own port, so no second row repeats the same
-host. Lines are separated with CRLF, and chat channels use their native markup:
+The canary's own address is never printed, at any detail level: alerts travel to
+chat, mail and a SIEM, so they must not map the honeypot estate. Lines are
+separated with CRLF, and chat channels use their native markup:
 MarkdownV2 for Telegram (with every field escaped, so no payload can break the
 message), mrkdwn for Slack and markdown for Discord. Every channel a person reads
 — Telegram, Slack, Discord and **SMTP** — defaults to `standard`, so the readable
@@ -180,11 +181,9 @@ data, by the same rule that redacts the audit trail.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*
+🌐 *Instance:* opencanary-embassy
 
-🖥 *Instance:* opencanary-embassy
-🌐 *IP:* 89.126.202.164:3389
-
-🎯 *Attacker:* 66.132.159.132:52344
+👿 *Attacker:* 66.132.159.132:52344
 🕒 *Time:* 2026-10-26 07:01:15 UTC
 
 📝 *Log:* USERNAME=admin, PASSWORD=***
@@ -198,11 +197,9 @@ that record instead of a clipped `KEY=value` dump:
 
 ```
 🛡 OpenCanary: *Shared File Opened*
+🌐 *Instance:* opencanary-embassy
 
-🖥 *Instance:* opencanary-embassy
-🌐 *IP:* 172.19.0.2:445
-
-🎯 *Attacker:* 85.117.156.153
+👿 *Attacker:* 85.117.156.153
 🕒 *Time:* 2026-10-28 22:38:57 UTC
 👤 *User:* root
 📁 *Share:* share (SRV01)
@@ -527,9 +524,9 @@ a silent canary.
 
 ## Attacker enrichment (optional)
 
-The attacker block can carry where the address comes from and how VirusTotal
-rates it. Both providers are off until configured; with neither, alerts are
-byte-identical to a build without the feature.
+The attacker block can carry where the address comes from, how VirusTotal rates
+it and whether OpenCTI already knows it. Every provider is off until configured;
+with none, alerts are byte-identical to a build without the feature.
 
 ```bash
 # Country/city/ASN from local files — nothing leaves the host
@@ -537,13 +534,18 @@ OCC_GEOIP_CITY_DB=/data/geoip/dbip-city-lite.mmdb
 OCC_GEOIP_ASN_DB=/data/geoip/dbip-asn-lite.mmdb
 # VirusTotal reputation — setting the key is the consent to send IPs there
 OCC_VIRUSTOTAL_API_KEY=<key>
+# OpenCTI — lookup, and optionally create/update, a STIX 2.1 indicator
+OCC_OPENCTI_URL=https://opencti.example.test
+OCC_OPENCTI_TOKEN=<token>
+OCC_OPENCTI_LOOKUP_ENABLED=true
+OCC_OPENCTI_CREATE_MODE=missing      # off, missing or always
 ```
 
 | Level | Rows added under the attacker block |
 |---|---|
 | `minimal` | none |
-| `standard` | `📍 Location: 🇰🇿 Kazakhstan`, `🦠 VT: 0/94 malicious` |
-| `detailed` | `📍 Location: 🇰🇿 Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26` |
+| `standard` | `📍 Location: 🇰🇿 Kazakhstan`, `🦠 VT: 0/94 malicious`, `🔎 OpenCTI: known indicator` |
+| `detailed` | `📍 Location: 🇰🇿 Kazakhstan, Almaty`, `🏢 ASN: AS202958 …`, `🦠 VT: 0/94 malicious, reputation 0, 2026-10-26`, `🔎 OpenCTI: known indicator (confidence 50), since 2026-10-28` |
 
 The country row carries the emoji flag of the ISO 3166-1 alpha-2 code, in every
 channel a person reads (Telegram, Slack, Discord, SMTP) and in the webhook's
@@ -557,15 +559,14 @@ does not have to parse message text.
 
 ```
 🛡 OpenCanary: *RDP Login Attempt*
+🌐 *Instance:* opencanary-embassy
 
-🖥 *Instance:* opencanary-embassy
-🌐 *IP:* 2.126.2.164:3389
-
-🎯 *Attacker:* 89.126.202.164:52344
+👿 *Attacker:* 89.126.202.164:52344
 🕒 *Time:* 2026-10-28 17:30:28 UTC
 📍 *Location:* 🇰🇿 Kazakhstan, Almaty
 🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
 🦠 *VT:* 0/94 malicious, reputation 0, 2026-10-26
+🔎 *OpenCTI:* known indicator (confidence 50), since 2026-10-28
 📊 *Events:* 1
 📝 *Log:* USERNAME=administrator
 ```
@@ -597,9 +598,18 @@ never delay it by more than `OCC_ENRICHMENT_TIMEOUT` (6 s). The key travels in
 the `x-apikey` header, so it cannot appear in a request-URL log line, and it is
 hidden from `repr()` and `--check-config`.
 
+The cache key is the canonical attacker address, so every incident type and every
+replica shares one entry: an RDP auth followed by an RDP login for the same IP
+spends one request, not two. A cache hit never refreshes the TTL; after
+`OCC_VIRUSTOTAL_CACHE_TTL` the next alert asks VirusTotal again, and setting it to
+`0` disables positive reuse. `OCC_VIRUSTOTAL_MISS_CACHE_TTL=0` does the same for
+negative entries.
+
 No-data responses and confirmed `404 NotFoundError` results are cached for
 `OCC_VIRUSTOTAL_MISS_CACHE_TTL` (3600 s), not treated as a clean verdict.
-Malformed response envelopes remain unavailable. Replicas share provider pauses
+Malformed response envelopes remain unavailable. `quota` and `unavailable`
+outcomes are not cached as verdicts; they use the provider pauses below instead.
+Replicas share provider pauses
 in Redis: `OCC_VIRUSTOTAL_ERROR_COOLDOWN` (30 s) after network/timeout/server
 failures, `OCC_VIRUSTOTAL_AUTH_COOLDOWN` (300 s) after 401/403, and
 `OCC_VIRUSTOTAL_RATE_LIMIT_COOLDOWN` (60 s) after 429 without a usable
@@ -622,6 +632,36 @@ body is usable. Labels contain no IP, credential or URL. JSON audit records
 See [metric semantics](docs/architecture.md#metrics) and
 [audit events](docs/audit-events.md) for the bounded label values.
 
+**OpenCTI is opt-in both ways.** With `OCC_OPENCTI_URL` and `OCC_OPENCTI_TOKEN`
+set, the correlator can ask whether the attacker address is already an
+indicator, and can write one itself:
+
+```bash
+OCC_OPENCTI_URL=https://opencti.example.test
+OCC_OPENCTI_TOKEN=<token>            # SecretStr: env only, masked everywhere
+OCC_OPENCTI_LOOKUP_ENABLED=true
+OCC_OPENCTI_CREATE_MODE=missing      # off, missing or always
+OCC_OPENCTI_CONFIDENCE=50            # 0..100, attached to created indicators
+OCC_OPENCTI_LABELS=opencanary,honeypot
+```
+
+`missing` creates an indicator only when the lookup answered "no indicator";
+`always` creates one when absent and refreshes `confidence`, `labels` and
+`valid_from` when it exists, so a repeated alert never duplicates it. A lookup
+that failed (`unavailable`, `unauthorized`) never writes anything, and
+`valid_from` is the incident time rather than the delivery time. Indicators are
+STIX 2.1 patterns built from the validated address
+(`[ipv4-addr:value = '198.51.100.7']`), never from `logdata`.
+
+A lookup answer is cached per canonical address for `OCC_OPENCTI_CACHE_TTL`
+(3600 s, and `OCC_OPENCTI_NEGATIVE_CACHE_TTL` 300 s for "no indicator") behind a
+singleflight lock, so every incident type and every replica shares one GraphQL
+request. Mutations are never retried: a create that timed out may already have
+been applied, and a retry would make a second indicator. When OpenCTI is slow or
+down the alert still goes out with `🔎 OpenCTI: unavailable`, and the whole
+enrichment pass — GeoIP, VirusTotal and OpenCTI — is bounded by
+`OCC_ENRICHMENT_TIMEOUT`.
+
 **The JSON webhook carries it as fields, not as text.** A webhook consumer does
 not have to read a message: the document gains an `enrichment` object whenever
 context exists, at every detail level, while `text` stays exactly the legacy
@@ -630,7 +670,7 @@ three keys as before.
 
 ```json
 {
-  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy (2.126.2.164)",
+  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy",
   "text": "... legacy report ...",
   "key": "incident:rdplogin:89.126.202.164:1793207641",
   "enrichment": {
@@ -648,14 +688,24 @@ three keys as before.
       "total": 94,
       "reputation": 0,
       "checked": "2026-10-26"
-    }
+    },
+    "opencti": {
+      "id": "indicator--6f1c…",
+      "pattern": "[ipv4-addr:value = '89.126.202.164']",
+      "confidence": 50,
+      "created_at": "2026-10-28T17:30:28.000Z",
+      "valid_from": "2026-10-28T17:30:28.000Z",
+      "labels": ["opencanary"]
+    },
+    "opencti_status": "ok"
   }
 }
 ```
 
 A provider that was asked but produced no verdict says so instead of disappearing:
-`"virustotal_status": "quota"` or `"unavailable"`. `detections` and `total` are
-provided so a downstream rule does not have to recompute the ratio.
+`"virustotal_status": "quota"` or `"unavailable"`, `"opencti_status":
+"not_found"` or `"unavailable"`. `detections` and `total` are provided so a
+downstream rule does not have to recompute the ratio.
 
 **Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

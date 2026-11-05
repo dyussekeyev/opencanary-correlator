@@ -9,6 +9,8 @@ useful context, not a reason to lose the notification.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Final, Literal
 
 from opencanary_correlator import metrics
@@ -18,9 +20,12 @@ from opencanary_correlator.enrichment.geo import GeoLookup, public_address
 from opencanary_correlator.enrichment.models import (
     Enrichment,
     GeoInfo,
+    OpenCTIIndicator,
+    OpenCTIStatus,
     VirusTotalReport,
     VirusTotalStatus,
 )
+from opencanary_correlator.enrichment.opencti import OpenCTIClient
 from opencanary_correlator.enrichment.virustotal import VirusTotalClient
 
 #: Upper bound for a whole enrichment pass, well below the dispatch timeout.
@@ -28,19 +33,26 @@ DEFAULT_ENRICHMENT_TIMEOUT: Final[float] = 6.0
 
 
 class IncidentEnricher:
-    """Look up geo data and VirusTotal reputation for an attacker address."""
+    """Look up geo, VirusTotal and OpenCTI data for an attacker address."""
 
     def __init__(
         self,
         *,
         geo: GeoLookup | None = None,
         virustotal: VirusTotalClient | None = None,
+        opencti: OpenCTIClient | None = None,
+        opencti_confidence: int = 50,
+        opencti_labels: Sequence[str] = (),
         audit: AuditLogger | None = None,
         timeout: float = DEFAULT_ENRICHMENT_TIMEOUT,
         notifier: ServiceNotifier | None = None,
     ) -> None:
         self._geo = geo
         self._virustotal = virustotal
+        self._opencti = opencti
+        # Copied once: the settings list must not change under a running process.
+        self._opencti_confidence = opencti_confidence
+        self._opencti_labels = tuple(opencti_labels)
         self._audit = audit
         self._timeout = timeout
         # Service messages are best-effort: a degraded notifier must never turn a
@@ -51,31 +63,50 @@ class IncidentEnricher:
         """Release the provider resources (HTTP client, MMDB readers)."""
         if self._virustotal is not None:
             await self._virustotal.aclose()
+        if self._opencti is not None:
+            await self._opencti.aclose()
         if self._geo is not None:
             self._geo.close()
 
     @property
     def enabled(self) -> bool:
         """True when at least one provider is configured."""
-        return self._geo is not None or self._virustotal is not None
+        return self._geo is not None or self._virustotal is not None or self._opencti is not None
 
-    async def enrich(self, src_host: str) -> Enrichment | None:
+    async def enrich(
+        self, src_host: str, *, occurred_at: datetime | None = None
+    ) -> Enrichment | None:
         """Return what is known about `src_host`, or None when nothing is.
 
         Private, loopback and invalid addresses are skipped entirely: showing
         "Netherlands" for `10.0.0.5` would be worse than showing nothing, and the
         address is not worth a quota slot.
+
+        `occurred_at` is the incident time and becomes the STIX `valid_from` of an
+        indicator OpenCTI creates. One deadline is shared by every provider, so
+        three slow sources cannot add up to three budgets.
         """
         if not self.enabled or public_address(src_host) is None:
             return None
 
+        deadline = asyncio.get_running_loop().time() + self._timeout
         geo = await self._lookup_geo(src_host)
         report = None
         status: VirusTotalStatus | None = None
         if self._virustotal is not None:
-            report, status = await self._lookup_virustotal(src_host)
+            report, status = await self._lookup_virustotal(src_host, deadline)
+        indicator: OpenCTIIndicator | None = None
+        opencti_status: OpenCTIStatus | None = None
+        if self._opencti is not None:
+            indicator, opencti_status = await self._lookup_opencti(src_host, deadline, occurred_at)
 
-        enrichment = Enrichment(geo=geo, virus_total=report, virus_total_status=status)
+        enrichment = Enrichment(
+            geo=geo,
+            virus_total=report,
+            virus_total_status=status,
+            opencti=indicator,
+            opencti_status=opencti_status,
+        )
         return None if enrichment.is_empty else enrichment
 
     async def _lookup_geo(self, src_host: str) -> GeoInfo | None:
@@ -120,13 +151,15 @@ class IncidentEnricher:
         )
 
     async def _lookup_virustotal(
-        self, src_host: str
+        self, src_host: str, deadline: float
     ) -> tuple[VirusTotalReport | None, VirusTotalStatus]:
         client = self._virustotal
         if client is None:  # pragma: no cover - guarded by `enrich`
             return None, "unavailable"
         try:
-            report, status = await asyncio.wait_for(client.report(src_host), timeout=self._timeout)
+            report, status = await asyncio.wait_for(
+                client.report(src_host), timeout=self._remaining(deadline)
+            )
         except TimeoutError:
             self._emit(
                 "enrichment_failed", "warning", {"provider": "virustotal", "reason": "timeout"}
@@ -163,6 +196,73 @@ class IncidentEnricher:
             )
             await self._notify_virustotal("unavailable", detail="unavailable")
         return report, status
+
+    async def _lookup_opencti(
+        self,
+        src_host: str,
+        deadline: float,
+        occurred_at: datetime | None,
+    ) -> tuple[OpenCTIIndicator | None, OpenCTIStatus | None]:
+        """Read or write the OpenCTI indicator, inside the pass budget.
+
+        Both paths are bounded by the time left and never raise: a platform that
+        is down, slow or refuses the token changes what the alert says, not
+        whether it is delivered.
+        """
+        client = self._opencti
+        if client is None:  # pragma: no cover - guarded by `enrich`
+            return None, None
+        indicator: OpenCTIIndicator | None
+        status: OpenCTIStatus
+        outcome = ""
+        try:
+            if client.create_mode == "off":
+                indicator, status = await asyncio.wait_for(
+                    client.lookup(src_host), timeout=self._remaining(deadline)
+                )
+            else:
+                created = await asyncio.wait_for(
+                    client.create_or_update(
+                        src_host,
+                        confidence=self._opencti_confidence,
+                        labels=self._opencti_labels,
+                        valid_from=occurred_at,
+                    ),
+                    timeout=self._remaining(deadline),
+                )
+                indicator, status = created.indicator, created.status
+                outcome = created.outcome
+        except TimeoutError:
+            self._emit("enrichment_failed", "warning", {"provider": "opencti", "reason": "timeout"})
+            return None, "unavailable"
+        except Exception as exc:  # defensive: the client is documented not to raise
+            self._emit(
+                "enrichment_failed",
+                "error",
+                {"provider": "opencti", "error_type": type(exc).__name__},
+            )
+            return None, "unavailable"
+        if status == "disabled":
+            # Nothing was asked and nothing was written; no row in the alert.
+            return None, None
+        details: dict[str, object] = {"status": status, "found": indicator is not None}
+        if outcome:
+            details["outcome"] = outcome
+        self._emit("opencti_lookup", "info", details)
+        if status == "unauthorized":
+            self._emit(
+                "enrichment_failed", "error", {"provider": "opencti", "reason": "unauthorized"}
+            )
+        elif status == "unavailable":
+            self._emit(
+                "enrichment_failed", "warning", {"provider": "opencti", "reason": "unavailable"}
+            )
+        return indicator, status
+
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        """Seconds left in the pass budget; `wait_for` rejects a zero timeout."""
+        return max(0.001, deadline - asyncio.get_running_loop().time())
 
     async def _quota_window(self, client: VirusTotalClient) -> str | None:
         """Ask which free-tier window is spent, without letting that answer fail."""

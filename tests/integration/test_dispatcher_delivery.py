@@ -386,5 +386,6 @@ async def test_smtp_delivers_through_a_real_server(incident_factory: Any) -> Non
     assert "canary@example.test" in envelope["mail_from"]
     assert any("soc@example.test" in recipient for recipient in envelope["rcpt"])
     text = data.decode("utf-8", "replace")
-    assert "Subject: FTP Login Attempt by 10.0.0.5 on canary-1 (10.0.0.2)" in text
+    assert "Subject: FTP Login Attempt by 10.0.0.5 on canary-1" in text
+    assert "10.0.0.2" not in text
     assert "FTP Login Attempt" in text

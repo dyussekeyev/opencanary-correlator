@@ -60,6 +60,7 @@ def make_engine(
     dispatcher: BaseDispatcher,
     *,
     outbox: AlertOutbox | None,
+    enricher: Any | None = None,
 ) -> CorrelationEngine:
     repository = make_repository(store, settings, audit, clock, outbox.channels if outbox else ())
     return CorrelationEngine(
@@ -70,6 +71,7 @@ def make_engine(
         audit=audit,
         clock=clock,
         outbox=outbox,
+        enricher=enricher,
     )
 
 
@@ -372,7 +374,7 @@ async def test_worker_cannot_send_while_enrichment_is_preparing(
     entered, release = asyncio.Event(), asyncio.Event()
 
     class Enricher:
-        async def enrich(self, ip: str) -> Enrichment:
+        async def enrich(self, ip: str, **_: Any) -> Enrichment:
             entered.set()
             await release.wait()
             return Enrichment(geo=GeoInfo(country_code="NL", asn=123))
@@ -420,6 +422,112 @@ async def test_crash_before_preparation_recovers_budget_without_bypass(
     assert await store.outbox_pending() == 0
 
 
+async def test_two_logtypes_share_one_virustotal_request_and_one_enrichment_per_incident(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """Two attack types for one IP must share the VirusTotal cache.
+
+    With an outbox the engine delegates enrichment to it, so this test proves the
+    cache is shared across incident types and that the outbox enriches once per
+    incident. The separate `prepare` test covers the pre-enriched guard.
+    """
+    import httpx
+
+    from opencanary_correlator.enrichment.service import IncidentEnricher
+    from opencanary_correlator.enrichment.virustotal import VirusTotalClient
+
+    payload = {
+        "data": {
+            "attributes": {
+                "last_analysis_stats": {
+                    "malicious": 1,
+                    "suspicious": 0,
+                    "harmless": 10,
+                    "undetected": 5,
+                },
+                "reputation": -2,
+                "last_analysis_date": 1_793_000_000,
+            }
+        }
+    }
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=payload)
+
+    class CountingEnricher(IncidentEnricher):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.calls = 0
+
+        async def enrich(self, src_host: str, **kwargs: Any) -> Any:
+            self.calls += 1
+            return await super().enrich(src_host, **kwargs)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        virustotal = VirusTotalClient(api_key="test-key", store=store, client=http)
+        enricher = CountingEnricher(virustotal=virustotal)
+        dispatcher = RecordingDispatcher()
+        settings = settings_factory()
+        outbox = AlertOutbox(store, [dispatcher], settings, audit, clock=clock)
+        engine = make_engine(
+            store, settings, audit, clock, dispatcher, outbox=outbox, enricher=enricher
+        )
+
+        await engine.handle_event(
+            CanaryEvent.model_validate(event_factory(src_host="74.22.3.178", logtype=2000))
+        )
+        await engine.handle_event(
+            CanaryEvent.model_validate(event_factory(src_host="74.22.3.178", logtype=14001))
+        )
+
+    assert len(seen) == 1
+    assert enricher.calls == 2
+    assert len(dispatcher.incidents) == 2
+
+
+async def test_prepare_reuses_existing_enrichment_without_another_provider_call(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    """An incident that already has context must not be enriched again.
+
+    The current engine skips its own enrichment when an outbox is present, so the
+    outbox is normally the only caller. This guard still matters for an incident
+    handed in already enriched (a caller, a retry path or a future wiring): the
+    provider context must be preserved instead of overwriting it with a second
+    lookup.
+    """
+    from opencanary_correlator.enrichment.models import Enrichment, GeoInfo
+
+    class CountingEnricher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def enrich(self, src_host: str) -> Enrichment:
+            self.calls += 1
+            return Enrichment(geo=GeoInfo(country_code="NL"))
+
+    settings = settings_factory()
+    dispatcher = RecordingDispatcher()
+    outbox = AlertOutbox(store, [dispatcher], settings, audit, clock=clock)
+    enricher = CountingEnricher()
+    outbox.set_enricher(enricher)  # type: ignore[arg-type]
+    repository = make_repository(store, settings, audit, clock, outbox.channels)
+    incident = await repository.record(
+        "ftp.login_attempt", CanaryEvent.model_validate(event_factory())
+    )
+    assert incident is not None
+    incident.enrichment = Enrichment(geo=GeoInfo(country_code="DE"))
+
+    assert await outbox.prepare(incident)
+
+    assert enricher.calls == 0
+    assert incident.enrichment is not None
+    assert incident.enrichment.geo is not None
+    assert incident.enrichment.geo.country_code == "DE"
+
+
 async def test_retry_preserves_enrichment_without_new_lookup(
     store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
 ) -> None:
@@ -428,7 +536,7 @@ async def test_retry_preserves_enrichment_without_new_lookup(
     class Enricher:
         calls = 0
 
-        async def enrich(self, ip: str) -> Enrichment:
+        async def enrich(self, ip: str, **_: Any) -> Enrichment:
             self.calls += 1
             return Enrichment(
                 geo=GeoInfo(country_code="NL", asn=123), virus_total=VirusTotalReport(malicious=3)

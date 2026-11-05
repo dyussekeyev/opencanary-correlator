@@ -38,6 +38,8 @@ def make_client(
     *,
     limits: QuotaLimits | None = None,
     clock: Any = None,
+    cache_ttl: float = 7 * 24 * 3600.0,
+    miss_cache_ttl: float = 3600.0,
 ) -> tuple[VirusTotalClient, list[httpx.Request]]:
     """Client whose transport replays `answers` in order."""
     seen: list[httpx.Request] = []
@@ -56,6 +58,8 @@ def make_client(
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         limits=limits,
         clock=clock or (lambda: 1_793_200_000.0),
+        cache_ttl=cache_ttl,
+        miss_cache_ttl=miss_cache_ttl,
     )
     return client, seen
 
@@ -153,6 +157,62 @@ async def test_a_report_is_parsed_and_cached(store: Any) -> None:
     assert len(seen) == 1
     assert second == report
     assert second_status == "ok"
+
+
+async def test_positive_cache_expires_after_the_configured_ttl(store: Any) -> None:
+    client, seen = make_client(
+        store,
+        [httpx.Response(200, json=PAYLOAD), httpx.Response(200, json=PAYLOAD)],
+        cache_ttl=0.03,
+    )
+    try:
+        first = await client.report(ATTACKER)
+        assert await store.client.pttl(keys.enrichment_cache_key("vt", ATTACKER)) > 0
+        assert await client.report(ATTACKER) == first
+        assert len(seen) == 1
+        await asyncio.sleep(0.05)
+        assert await client.report(ATTACKER) == first
+    finally:
+        await client.aclose()
+
+    assert len(seen) == 2
+
+
+async def test_negative_cache_expires_after_the_configured_ttl(store: Any) -> None:
+    answer = httpx.Response(404, json={"error": {"code": "NotFoundError"}})
+    client, seen = make_client(
+        store,
+        [answer, httpx.Response(404, json={"error": {"code": "NotFoundError"}})],
+        miss_cache_ttl=0.03,
+    )
+    try:
+        assert await client.report(ATTACKER) == (None, "ok")
+        assert await store.client.pttl(keys.enrichment_cache_key("vt", ATTACKER)) > 0
+        assert await client.report(ATTACKER) == (None, "ok")
+        assert len(seen) == 1
+        await asyncio.sleep(0.05)
+        assert await client.report(ATTACKER) == (None, "ok")
+    finally:
+        await client.aclose()
+
+    assert len(seen) == 2
+
+
+async def test_two_clients_share_one_positive_cache_entry(store: Any) -> None:
+    hit = metrics.ENRICHMENT_CACHE.labels(provider="virustotal", result="hit")
+    before = hit._value.get()
+    first, seen_first = make_client(store, [httpx.Response(200, json=PAYLOAD)])
+    second, seen_second = make_client(store, [])
+    try:
+        report = await first.report(ATTACKER)
+        assert await second.report(ATTACKER) == report
+    finally:
+        await first.aclose()
+        await second.aclose()
+
+    assert len(seen_first) == 1
+    assert seen_second == []
+    assert hit._value.get() == before + 1
 
 
 async def test_the_key_travels_in_a_header_not_the_url(store: Any) -> None:

@@ -9,6 +9,27 @@ on the merge commit, CI
 on the tagged commit, and release
 [41809356717](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809356717).
 
+Version 0.7.0 (2026-11-05) adds OpenCTI enrichment and changes the notification
+format: the honeypot's own address is gone from every message and subject, which
+is a deliberate breaking change for parsers of the legacy text. It was validated
+locally on 2026-11-05 with the gates below.
+
+| Command | Result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 180 files already formatted |
+| `mypy src tools` | Success: no issues found in 98 source files |
+| `pytest -q` | **1273 passed, 10 skipped**, coverage **94.03 %** |
+| `python tools/characterize.py` | `golden snapshot matches (75 rendered alerts)` |
+| `git diff --check` | clean |
+
+The ten skips are the opt-in real-Redis recovery suite (nine) and the POSIX
+signal test on Windows; CI runs both. Two limits are explicit: OpenCTI was
+exercised against `httpx.MockTransport` only, because no live instance was
+available, so GraphQL schema compatibility with a specific OpenCTI release is
+unverified; and the golden snapshot was regenerated for the new layout and
+reviewed entry by entry rather than accepted blindly.
+
 Version 0.6.1 (2026-11-05) is a patch: it updates this document and upgrades
 `apt`/`libapt-pkg6.0` to 2.6.2 in the runtime image (CVE-2026-109518). It adds
 no application logic, so the 0.6.0 suite and benchmark evidence below still

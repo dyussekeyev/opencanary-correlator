@@ -3,10 +3,12 @@
 Three detail levels are supported, selected per channel in the configuration:
 
 * ``minimal``  — the legacy single line, byte-identical to the old correlator.
-* ``standard`` — instance block (node name, host IP), then the attacker block
-  (source IP and port), the detection time and a one-entry log message summary.
-* ``detailed`` — ``standard`` plus destination address, event counter and up to
-  three log entries.
+* ``standard`` — the instance (node name), then the attacker block (source IP
+  and port), the detection time and a one-entry log message summary.
+* ``detailed`` — ``standard`` plus the event counter and up to three log entries.
+
+The canary's own address is never rendered at any level: alerts travel to chat,
+mail and SIEM systems, so they must not map the honeypot estate.
 
 Every line is separated with CRLF so Telegram, Discord, Slack and SMTP clients
 render them as distinct lines. Rendering is defensive on purpose: fields come
@@ -69,6 +71,9 @@ _MAX_LOG_KEY: Final[int] = 40
 _CONTROL_CHARS: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]+")
 #: MarkdownV2 reserved characters; an unescaped one makes Telegram reject the message.
 _TELEGRAM_RESERVED: Final[re.Pattern[str]] = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+#: `YYYY-MM-DD` prefix of an ISO timestamp; an indicator's raw string is never
+#: printed whole, so a provider value cannot lengthen the row unbounded.
+_DATE_PREFIX: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 #: How loudly a service message speaks, as a symbol an operator recognises.
 _SEVERITY_EMOJI: Final[dict[Severity, str]] = {
@@ -323,8 +328,9 @@ def _enrichment_lines(
 ) -> list[str]:
     """Render the attacker context rows, if any are known.
 
-    `standard` shows country and the detection ratio; `detailed` adds city, the
-    network and VirusTotal's reputation and analysis date. A throttled or broken
+    `standard` shows country, the detection ratio and whether OpenCTI already
+    knows the address; `detailed` adds city, the network, VirusTotal's reputation
+    and analysis date, and when the indicator became valid. A throttled or broken
     provider is shown as a status instead of silently disappearing, so an
     operator can tell "no detections" from "never asked".
     """
@@ -360,6 +366,22 @@ def _enrichment_lines(
         lines.append(_line("🦠", "VT", "quota exhausted", flavor))
     elif enrichment.virus_total_status == "unavailable":
         lines.append(_line("🦠", "VT", "unavailable", flavor))
+
+    indicator = enrichment.opencti
+    if indicator is not None:
+        summary = "known indicator"
+        if indicator.confidence is not None:
+            summary += f" (confidence {indicator.confidence})"
+        since = _DATE_PREFIX.match(indicator.valid_from or "")
+        if detailed and since is not None:
+            summary += f", since {since.group(0)}"
+        lines.append(_line("🔎", "OpenCTI", summary, flavor))
+    elif enrichment.opencti_status == "not_found":
+        lines.append(_line("🔎", "OpenCTI", "not found", flavor))
+    elif enrichment.opencti_status in ("unavailable", "unauthorized"):
+        # "OpenCTI refused the token" is a deployment problem for the operator,
+        # not something to spell out in every chat alert: it reads as no answer.
+        lines.append(_line("🔎", "OpenCTI", "unavailable", flavor))
     return lines
 
 
@@ -379,15 +401,13 @@ def render_alert(
     if detail == "minimal":
         return clip(incident.format_report_short(), max_length)
 
+    # The instance is named, never addressed: the destination host and port are
+    # deliberately absent, here and in every other channel.
     lines: list[str] = [
         _header(incident.display_description, flavor),
+        _line("🌐", "Instance", incident.node_id, flavor),
         "",
-        _line("🖥", "Instance", incident.node_id, flavor),
-        # The destination port belongs to the instance address, not to a separate
-        # row: printing `IP` and `Destination` repeated the host on every alert.
-        _line("🌐", "IP", _address(incident.dst_host, incident.dst_port), flavor),
-        "",
-        _line("🎯", "Attacker", _address(incident.src_host, incident.src_port), flavor),
+        _line("👿", "Attacker", _address(incident.src_host, incident.src_port), flavor),
         _line("🕒", "Time", _format_time(incident.created), flavor),
     ]
 
