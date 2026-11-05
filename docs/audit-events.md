@@ -75,18 +75,18 @@ a compatibility risk, because consumers only rely on these five keys.
 | `digest_sent` | `success` / `error` | the daily digest was accepted into the outbox, or no target could be queued | `day`, `incidents`, `replicas`, `events` |
 | `digest_failed` | `error` | one digest iteration raised and was skipped | `error_type` |
 | `enrichment_cooldown_changed` | `warning` | an atomic Redis write installs or extends a VT pause; shorter competing writes emit nothing | `provider`, `reason` (`auth`, `rate`, `error`), `outcome`, `seconds` |
-| `enrichment_request_skipped` | `info` | a VT lookup is withheld/interrupted, once per terminating reason, never per lock poll | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`) |
+| `enrichment_request_skipped` | `info` | a VirusTotal or OpenCTI lookup is withheld/interrupted, once per terminating reason, never per lock poll | `provider`, `reason` (`cooldown_auth`, `cooldown_rate_limit`, `cooldown_error`, `quota`, `singleflight_timeout`, `store_error`, `response_too_large`, `label_unavailable`); cooldown/quota reasons are VirusTotal-only, `label_unavailable` is OpenCTI-only |
 | `stats_heartbeat_failed` | `warning` | the replica could not publish its heartbeat (a digest field is missing, nothing else) | `error_type` |
 | `alert_suppressed` | `warning` | the alert budget withheld this notification; the incident itself is stored | `incident`, `node_id`, `src_host` |
 | `alert_summary` | `info` / `success` / `error` | a closed window's withheld count was summarised, then sent per channel (with the outbox enabled the summary is committed as a `budget.summary` notice and the acknowledgement of its source summary is atomic with the per-target debts) | `window_start`, `window_end`, `suppressed`, `sources`; then `dispatcher`, `status`, `detail` |
 | `alert_summary_failed` | `error` | one summary iteration raised and was skipped | `error_type` |
 | `alert_budget_failed` | `error` | the budget could not count, so the alert was sent anyway (fails open) | `incident`, `error_type` |
 | `enrichment_skipped` | `info` | a provider quota window was full, so no lookup was made (the alert says `VT: quota exhausted`) | `provider`, `reason: quota` |
-| `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable`) | `provider`, `reason: timeout` / `unavailable`, or `error_type` |
-| `opencti_lookup` | `info` | an indicator lookup completed and the alert reflects its status | `status` (`ok` / `not_found` / `unavailable` / `unauthorized`), `found`, `outcome` (`created` / `updated` / `existing` / `skipped`, only when a write was attempted) |
+| `enrichment_failed` | `warning` / `error` | a provider timed out, failed or raised (the alert says `VT: unavailable` or `🔎 OpenCTI: unavailable`) | `provider`, `reason: timeout` / `unavailable` / `unauthorized` / `key_rejected`, or `error_type` |
+| `opencti_lookup` | `info` | an indicator lookup completed and the alert reflects its status | `status` (`ok` / `not_found` / `unavailable` / `unauthorized`), `found`, `outcome` (`created` / `updated` / `existing` / `skipped` / `failed`, when `OCC_OPENCTI_CREATE_MODE` is not `off`) |
 | `opencti_create` | `success` | an indicator was created or patched in OpenCTI | `outcome` (`created` / `updated`) |
-| `opencti_create_skipped` | `info` | nothing was written, by design or because the lookup gave no usable answer | `reason` (`lookup_unavailable`, `lookup_unauthorized`, `missing_indicator_id`) |
-| `opencti_failed` | `warning` / `error` | a lookup or mutation failed; the alert is still delivered | `reason` (`timeout`, `network_error`, `http_error`, `invalid_response`, `unauthorized`), `operation` (`create` / `update`) |
+| `opencti_create_skipped` | `info` | nothing was written because the lookup gave no usable answer, or the existing indicator had no id to patch | `reason` (`lookup_unavailable`, `lookup_unauthorized`, `missing_indicator_id`) |
+| `opencti_failed` | `warning` / `error` | a lookup or mutation failed; the alert is still delivered | `reason` (`timeout`, `network_error`, `http_error`, `response_too_large`, `invalid_response`, `unauthorized`), `operation` (`create` / `update`, mutations only) |
 | `health_request_failed` | `warning` | a probe timed out or disconnected | `reason: timeout` |
 | `health_request_rejected` | `warning` | a probe was refused before a response: oversized headers, a peer outside `OCC_HEALTH_ALLOWED_IPS`, or the active-handler cap | `reason: request_too_large` / `peer_not_allowed` / `too_many_requests`, `active` |
 

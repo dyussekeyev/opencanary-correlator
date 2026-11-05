@@ -35,6 +35,7 @@ actual traffic. Each row names the runbook section to open when it fires.
 | `opencanary_outbox_oldest_pending_age_seconds` | > 600 s | a channel is slow or the worker is stuck | §Slow or failing channel |
 | `opencanary_outbox_dead_entries` | > 0 and rising | deliveries are being buried faster than an operator clears them | §Dead letters |
 | `opencanary_outbox_dead_total{channel}` | any increase | a target rejected or exhausted its attempts | §Dead letters; fix the destination, then replay one entry |
+| `opencanary_enrichment_requests_total{provider="opencti",outcome="unauthorized"}` | any increase | the OpenCTI token is rejected; alerts still deliver | §OpenCTI lookup or write failure |
 | `opencanary_retention_protected_total` | keeps rising | dead letters or queued deliveries pin incidents that should expire | §Retention |
 | `opencanary_retention_removed_total` | flat while retention is enabled and the dataset grows | the janitor is not running | §Retention; check `--retention-run` |
 | Redis `used_memory` / `maxmemory` | > 80 % | `noeviction` will start refusing writes | §Redis is out of memory |
@@ -127,6 +128,26 @@ audit record with `details.failures = ["city:ValueError"]` means the reader
 raised, not that the address is unknown (`result="no_match"`). The alert still
 goes out with whatever the other database returned; replace the MMDB file and
 restart. A path that cannot be opened is a startup error by design.
+
+## OpenCTI lookup or write failure
+
+`opencti_failed` names the failing stage: `unauthorized` (HTTP 401/403, audit
+status `error`) means the API token is rejected; `timeout`, `network_error`,
+`http_error`, `invalid_response` and `response_too_large` leave the alert intact
+with `🔎 OpenCTI: unavailable`. A skipped write is `opencti_create_skipped` with
+`lookup_unavailable`, `lookup_unauthorized` or `missing_indicator_id`; a
+non-public address surfaces as `opencti_lookup` with `status=unavailable` and
+`outcome=skipped`, and a label that could not be resolved appears as
+`enrichment_request_skipped{provider="opencti",reason="label_unavailable"}`
+without blocking the indicator.
+
+Mutations are deliberately not retried: a create that timed out may already have
+been applied, so check the platform for the exact STIX pattern before re-running
+anything by hand. Repeated alerts are safe by design — `missing` and `always`
+search the exact pattern first, and `always` patches the existing indicator
+instead of adding a second one. If writes fail with `unauthorized`, rotate
+`OCC_OPENCTI_TOKEN`; if only labels fail, create them in OpenCTI or remove them
+from `OCC_OPENCTI_LABELS`.
 
 ## Silent canary
 
