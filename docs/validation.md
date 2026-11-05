@@ -1,9 +1,19 @@
 # Validation and acceptance record
 
-Local figures were measured on 2026-10-24; the suite counts and the CI section
-below were re-measured on 2026-10-28 against the commit the `v0.4.0` tag points
-at (`e7337fd`), in run
-[40769958410](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/40769958410).
+Local figures were measured on 2026-10-24. The suite counts and the CI section
+below were last re-measured on 2026-11-04 against `df3a36b`, the commit
+`v0.6.0` points at: CI
+[41809072240](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809072240)
+on the merge commit, CI
+[41809334402](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809334402)
+on the tagged commit, and release
+[41809356717](https://github.com/dyussekeyev/opencanary-correlator/actions/runs/41809356717).
+
+Version 0.6.1 (2026-11-05) is a patch: it updates this document and upgrades
+`apt`/`libapt-pkg6.0` to 2.6.2 in the runtime image (CVE-2026-109518). It adds
+no application logic, so the 0.6.0 suite and benchmark evidence below still
+describe the code; the 0.6.1 CI run on its merge commit re-validates the image
+and the package.
 
 **Environment:** Windows 11 with Python 3.14.9 in `.venv` (project requires
 3.11+), ruff 0.17.2, mypy 2.4.0, pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis
