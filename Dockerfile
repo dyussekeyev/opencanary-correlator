@@ -29,6 +29,16 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1
 
+# The pinned base still ships apt/libapt-pkg6.0 2.6.1, which the container scan
+# flags as CVE-2026-109518 (fixed in 2.6.2). The slim base does not reliably
+# enable bookworm-security, so add it and upgrade the pair explicitly instead
+# of suppressing the finding.
+RUN printf 'deb http://deb.debian.org/debian-security bookworm-security main\n' \
+        > /etc/apt/sources.list.d/bookworm-security.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends apt=2.6.2 libapt-pkg6.0=2.6.2 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 10001 occ \
     && useradd --system --uid 10001 --gid occ \
         --home-dir /nonexistent --shell /usr/sbin/nologin occ
