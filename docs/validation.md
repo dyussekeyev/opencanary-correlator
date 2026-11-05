@@ -147,12 +147,12 @@ The signals that decide whether a release behaves, and what the runbook alerts o
   attempt was made, so an idle deployment must not be read as zero failures.
 - **Liveness:** `/readyz` returning 503 for two minutes.
 
-**Status:** release `v0.6.0` was published on 2026-11-04, but no deployed
-instance is attached to this release, so no 24-hour window has been observed and
-none is claimed. The compose smoke recorded 0 pending deliveries, 0 dead letters
-and no dispatcher attempts, which leaves the failed-dispatch share undefined
-(0/0) rather than zero. The window starts when a deployment is pointed at these
-queries; until then these values are targets, not results.
+**Status:** release `v0.6.0` was published on 2026-11-04. A 24-hour observation
+window is not part of this release's acceptance: it was explicitly dropped on
+2026-11-04, so no window has been observed and none is claimed. The compose smoke
+recorded 0 pending deliveries, 0 dead letters and no dispatcher attempts, which
+leaves the failed-dispatch share undefined (0/0) rather than zero. The signals
+above remain runbook targets for operators who deploy the release.
 
 ## Compatibility proof
 
