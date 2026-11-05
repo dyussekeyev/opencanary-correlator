@@ -49,6 +49,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An incident that already carries enrichment is no longer enriched again by
   the outbox: a second VirusTotal lookup for the same address is not made, and a
   retry reuses the stored provider snapshot.
+- OpenCTI creates and patches sent the label list as `labels`, a field that
+  `IndicatorAddInput` does not define in OpenCTI 6.x, so a create with the
+  default `OCC_OPENCTI_LABELS` was rejected (`BAD_USER_INPUT`) and no indicator
+  was written. Label values are now resolved to `objectLabel` ids, creating a
+  missing label first, before the indicator is created or patched. Found by the
+  new `tools/opencti_smoke.py` against live OpenCTI 6.8.13; the fixed client was
+  re-validated against live 6.8.13 and 7.261026.0.
 
 ## [0.6.1] - 2026-11-05
 

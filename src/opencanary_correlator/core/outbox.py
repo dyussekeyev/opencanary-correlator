@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 
@@ -25,7 +25,6 @@ from opencanary_correlator.core.delivery import deliver
 from opencanary_correlator.core.incident import INCIDENT_TYPES, Incident
 from opencanary_correlator.core.service_messages import ServiceKind, ServiceMessage
 from opencanary_correlator.enrichment.models import Enrichment
-from opencanary_correlator.enrichment.service import IncidentEnricher
 from opencanary_correlator.incident_specs import INCIDENT_SPECS
 from opencanary_correlator.storage.keys import (
     LEGACY_OUTBOX_INDEX,
@@ -33,6 +32,13 @@ from opencanary_correlator.storage.keys import (
     outbox_envelope_key,
 )
 from opencanary_correlator.storage.redis_store import RedisStore
+
+if TYPE_CHECKING:
+    # Annotation-only: importing it at runtime creates a cycle, because
+    # `enrichment.service` imports `core.service_messages`, which pulls in
+    # `core.engine` -> `core.outbox` before this module has finished loading.
+    # Any module that imported `enrichment` first then failed to import at all.
+    from opencanary_correlator.enrichment.service import IncidentEnricher
 
 BACKOFF_SECONDS: Final[tuple[float, ...]] = (1.0, 5.0, 30.0, 300.0, 1800.0)
 _CLASSES_BY_PREFIX: Final[dict[str, type[Incident]]] = {

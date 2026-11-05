@@ -13,6 +13,7 @@ import pytest
 from opencanary_correlator import metrics
 from opencanary_correlator.enrichment.opencti import (
     ADD_INDICATOR_MUTATION,
+    ADD_LABEL_MUTATION,
     INDICATOR_DESCRIPTION,
     INDICATOR_QUERY,
     PATCH_INDICATOR_MUTATION,
@@ -457,10 +458,32 @@ def patched(node: dict[str, Any] | None = INDICATOR_NODE) -> dict[str, Any]:
     return {"data": {"indicatorFieldPatch": node}}
 
 
+def labels_body(*nodes: tuple[str, str]) -> dict[str, Any]:
+    """`labels` connection with one node per (id, value) pair."""
+    return {
+        "data": {
+            "labels": {
+                "edges": [
+                    {"node": {"id": identifier, "value": value}} for identifier, value in nodes
+                ]
+            }
+        }
+    }
+
+
+def label_added(identifier: str, value: str) -> dict[str, Any]:
+    return {"data": {"labelAdd": {"id": identifier, "value": value}}}
+
+
 async def test_missing_creates_a_stix_indicator_when_nothing_was_found(store: Any) -> None:
     client, seen = make_client(
         store,
-        [httpx.Response(200, json=body()), httpx.Response(200, json=created())],
+        [
+            httpx.Response(200, json=body()),
+            httpx.Response(200, json=labels_body(("label--1", "opencanary"))),
+            httpx.Response(200, json=labels_body(("label--2", "honeypot"))),
+            httpx.Response(200, json=created()),
+        ],
         create_mode="missing",
     )
     try:
@@ -476,8 +499,8 @@ async def test_missing_creates_a_stix_indicator_when_nothing_was_found(store: An
     assert result.outcome == "created"
     assert result.status == "ok"
     assert result.indicator is not None and result.indicator.id == "indicator--1"
-    assert len(seen) == 2
-    payload = json.loads(seen[1].content)
+    assert len(seen) == 4
+    payload = json.loads(seen[3].content)
     assert payload["query"] == ADD_INDICATOR_MUTATION
     assert payload["variables"]["input"] == {
         "name": ATTACKER,
@@ -486,7 +509,7 @@ async def test_missing_creates_a_stix_indicator_when_nothing_was_found(store: An
         "x_opencti_main_observable_type": "IPv4-Addr",
         "valid_from": VALID_FROM_TEXT,
         "confidence": 80,
-        "labels": ["opencanary", "honeypot"],
+        "objectLabel": ["label--1", "label--2"],
         "description": INDICATOR_DESCRIPTION,
     }
     # The description must never carry honeypot data or a node identifier.
@@ -525,7 +548,11 @@ async def test_always_creates_when_the_indicator_is_missing(store: Any) -> None:
 async def test_always_updates_an_existing_indicator(store: Any) -> None:
     client, seen = make_client(
         store,
-        [httpx.Response(200, json=body(INDICATOR_NODE)), httpx.Response(200, json=patched())],
+        [
+            httpx.Response(200, json=body(INDICATOR_NODE)),
+            httpx.Response(200, json=labels_body(("label--1", "opencanary"))),
+            httpx.Response(200, json=patched()),
+        ],
         create_mode="always",
     )
     try:
@@ -537,14 +564,14 @@ async def test_always_updates_an_existing_indicator(store: Any) -> None:
 
     assert result.outcome == "updated"
     assert result.indicator is not None and result.indicator.id == "indicator--1"
-    payload = json.loads(seen[1].content)
+    payload = json.loads(seen[2].content)
     assert payload["query"] == PATCH_INDICATOR_MUTATION
     assert payload["variables"] == {
         "id": "indicator--1",
         "input": [
             {"key": "confidence", "value": ["90"]},
             {"key": "valid_from", "value": [VALID_FROM_TEXT]},
-            {"key": "labels", "value": ["opencanary"]},
+            {"key": "objectLabel", "value": ["label--1"]},
         ],
     }
 
@@ -640,7 +667,11 @@ async def test_a_rejected_mutation_is_unauthorized(store: Any) -> None:
 async def test_a_mutation_without_a_node_still_reports_the_indicator(store: Any) -> None:
     client, _seen = make_client(
         store,
-        [httpx.Response(200, json=body()), httpx.Response(200, json=created(None))],
+        [
+            httpx.Response(200, json=body()),
+            httpx.Response(200, json=labels_body(("label--1", "opencanary"))),
+            httpx.Response(200, json=created(None)),
+        ],
         create_mode="missing",
     )
     try:
@@ -746,7 +777,51 @@ async def test_empty_labels_are_not_sent(store: Any) -> None:
     finally:
         await client.aclose()
 
-    assert "labels" not in json.loads(seen[1].content)["variables"]["input"]
+    assert "objectLabel" not in json.loads(seen[1].content)["variables"]["input"]
+
+
+async def test_a_missing_label_is_created_before_the_indicator(store: Any) -> None:
+    client, seen = make_client(
+        store,
+        [
+            httpx.Response(200, json=body()),
+            httpx.Response(200, json=labels_body()),
+            httpx.Response(200, json=label_added("label--9", "opencanary")),
+            httpx.Response(200, json=created()),
+        ],
+        create_mode="missing",
+    )
+    try:
+        result = await client.create_or_update(ATTACKER, confidence=80, labels=("opencanary",))
+    finally:
+        await client.aclose()
+
+    assert result.outcome == "created"
+    assert json.loads(seen[2].content)["query"] == ADD_LABEL_MUTATION
+    assert json.loads(seen[2].content)["variables"] == {"input": {"value": "opencanary"}}
+    assert json.loads(seen[3].content)["variables"]["input"]["objectLabel"] == ["label--9"]
+
+
+async def test_an_unresolvable_label_does_not_block_the_indicator(store: Any) -> None:
+    """The indicator is the product; a label failure is metadata only."""
+    client, seen = make_client(
+        store,
+        [
+            httpx.Response(200, json=body()),
+            httpx.Response(500),
+            httpx.Response(500),
+            httpx.Response(200, json=created()),
+        ],
+        create_mode="missing",
+    )
+    try:
+        result = await client.create_or_update(ATTACKER, confidence=80, labels=("opencanary",))
+    finally:
+        await client.aclose()
+
+    assert result.outcome == "created"
+    fields = json.loads(seen[3].content)["variables"]["input"]
+    assert "objectLabel" not in fields
 
 
 def test_stix_datetime_is_utc_with_milliseconds() -> None:

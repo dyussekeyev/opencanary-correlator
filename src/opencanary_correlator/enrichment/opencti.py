@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Literal, Self
+from typing import Any, Final, Literal, Self, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, model_validator
@@ -74,6 +74,31 @@ mutation PatchIndicator($id: ID!, $input: [EditInput!]!) {
     confidence
     created_at
     valid_from
+  }
+}
+""".strip()
+
+#: Label values are not accepted by `IndicatorAddInput`: OpenCTI 6.x takes
+#: `objectLabel` ids, so a configured name is resolved (and created when it does
+#: not exist) before the write. Querying by value needs no extra endpoint.
+LABEL_QUERY: Final[str] = """
+query LabelByValue($filters: FilterGroup) {
+  labels(filters: $filters, first: 1) {
+    edges {
+      node {
+        id
+        value
+      }
+    }
+  }
+}
+""".strip()
+
+ADD_LABEL_MUTATION: Final[str] = """
+mutation AddLabel($input: LabelAddInput!) {
+  labelAdd(input: $input) {
+    id
+    value
   }
 }
 """.strip()
@@ -205,6 +230,8 @@ class OpenCTIClient:
         )
         self._owns_client = client is None
         self._audit = audit
+        #: Label value -> id, resolved once per process; labels are stable.
+        self._label_ids: dict[str, str] = {}
 
     async def aclose(self) -> None:
         """Close the HTTP client if this client created it."""
@@ -292,6 +319,7 @@ class OpenCTIClient:
         moment: str,
     ) -> OpenCTICreateResult:
         """Create one STIX 2.1 indicator and cache it as the lookup answer."""
+        label_ids = await self._resolve_labels(labels) if labels else []
         fields: dict[str, Any] = {
             "name": str(address),
             "pattern": stix_pattern(address),
@@ -303,8 +331,8 @@ class OpenCTIClient:
         }
         # An empty list would clear labels an operator set by hand; omitting the
         # key leaves OpenCTI's own defaults alone.
-        if labels:
-            fields["labels"] = list(labels)
+        if label_ids:
+            fields["objectLabel"] = label_ids
         mutation = await self._mutate(ADD_INDICATOR_MUTATION, {"input": fields}, operation="create")
         if mutation.reason is not None:
             self._audit_failure(mutation.reason, operation="create")
@@ -333,12 +361,13 @@ class OpenCTIClient:
         moment: str,
     ) -> OpenCTICreateResult:
         """Patch confidence, `valid_from` and labels of an existing indicator."""
+        label_ids = await self._resolve_labels(labels) if labels else []
         patch: list[dict[str, Any]] = [
             {"key": "confidence", "value": [str(confidence)]},
             {"key": "valid_from", "value": [moment]},
         ]
-        if labels:
-            patch.append({"key": "labels", "value": list(labels)})
+        if label_ids:
+            patch.append({"key": "objectLabel", "value": label_ids})
         mutation = await self._mutate(
             PATCH_INDICATOR_MUTATION,
             {"id": existing.id, "input": patch},
@@ -392,6 +421,74 @@ class OpenCTIClient:
         except (ValueError, TypeError, KeyError, AttributeError):
             return _Mutation(reason="invalid_response", status="unavailable")
         return _Mutation(node=node)
+
+    async def _resolve_labels(self, labels: Sequence[str]) -> list[str]:
+        """Resolve label values to OpenCTI ids, creating labels that do not exist.
+
+        A label that cannot be resolved is skipped and audited instead of failing
+        the write: the indicator is the product, the label is metadata, and a
+        missing label must not turn an alert into a skipped create.
+        """
+        resolved: list[str] = []
+        for name in labels:
+            cached = self._label_ids.get(name)
+            if cached is not None:
+                resolved.append(cached)
+                continue
+            identifier = await self._find_label(name)
+            if identifier is None:
+                identifier = await self._create_label(name)
+            if identifier is None:
+                self._skip("label_unavailable")
+                continue
+            self._label_ids[name] = identifier
+            resolved.append(identifier)
+        return resolved
+
+    async def _find_label(self, name: str) -> str | None:
+        """Return the id of an existing label, or None when it is absent."""
+        payload = await self._graphql(
+            LABEL_QUERY,
+            {
+                "filters": {
+                    "mode": "and",
+                    "filterGroups": [],
+                    "filters": [{"key": "value", "values": [name], "operator": "eq"}],
+                }
+            },
+        )
+        if payload is None:
+            return None
+        try:
+            return _label_id(payload)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    async def _create_label(self, name: str) -> str | None:
+        """Create one label and return its id, or None when that fails."""
+        payload = await self._graphql(ADD_LABEL_MUTATION, {"input": {"value": name}})
+        if payload is None:
+            return None
+        try:
+            return _created_label_id(payload)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    async def _graphql(self, query: str, variables: dict[str, Any]) -> object | None:
+        """POST one auxiliary document; None means it did not answer usefully."""
+        try:
+            response = await self._http_request(
+                {"query": query, "variables": variables},
+                max(0.0, self._lookup_timeout * 0.8),
+            )
+        except (httpx.HTTPError, TimeoutError):
+            return None
+        if response.status_code != 200 or len(response.content) > self._max_response_bytes:
+            return None
+        try:
+            return cast("object", response.json())
+        except ValueError:
+            return None
 
     async def _singleflight(
         self,
@@ -642,6 +739,49 @@ def _indicator(node: dict[str, Any]) -> OpenCTIIndicator:
     )
 
 
+def _label_id(payload: object) -> str | None:
+    """Return the id of the first label in a `labels` connection."""
+    data = _data(payload)
+    connection = data.get("labels")
+    if not isinstance(connection, dict):
+        raise ValueError("invalid labels connection")
+    edges = connection.get("edges")
+    if not isinstance(edges, list):
+        raise ValueError("invalid labels edges")
+    if not edges:
+        return None
+    head = edges[0]
+    node = head.get("node") if isinstance(head, dict) else None
+    if not isinstance(node, dict):
+        raise ValueError("invalid label node")
+    identifier = node.get("id")
+    return identifier if isinstance(identifier, str) and identifier else None
+
+
+def _created_label_id(payload: object) -> str | None:
+    """Return the id of the label `labelAdd` created."""
+    data = _data(payload)
+    node = data.get("labelAdd")
+    if node is None:
+        return None
+    if not isinstance(node, dict):
+        raise ValueError("invalid label mutation payload")
+    identifier = node.get("id")
+    return identifier if isinstance(identifier, str) and identifier else None
+
+
+def _data(payload: object) -> dict[str, Any]:
+    """Return the `data` object of a GraphQL envelope, or raise."""
+    if not isinstance(payload, dict):
+        raise ValueError("invalid GraphQL envelope")
+    if payload.get("errors"):
+        raise ValueError("GraphQL query failed")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("invalid GraphQL data")
+    return data
+
+
 def _text(value: object) -> str:
     """Return a string field, or an empty string for anything unexpected."""
     return value if isinstance(value, str) else ""
@@ -649,9 +789,11 @@ def _text(value: object) -> str:
 
 __all__ = [
     "ADD_INDICATOR_MUTATION",
+    "ADD_LABEL_MUTATION",
     "CREATE_MODES",
     "INDICATOR_DESCRIPTION",
     "INDICATOR_QUERY",
+    "LABEL_QUERY",
     "PATCH_INDICATOR_MUTATION",
     "CreateMode",
     "CreateOutcome",
