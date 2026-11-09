@@ -811,6 +811,32 @@ A restricted `User` role commonly lacks the last permission, in which case use
 account. `OCC_MISP_DISTRIBUTION=4` also requires a sharing group id; without one
 MISP cannot resolve the audience.
 
+**Live draft smoke test.** `tools/misp_smoke.py` checks the instance before a
+real publisher run. It is read-only by default: it validates the URL and API
+key, resolves every configured TLP/PAP/confidence/free-form tag by exact name,
+confirms that warninglists are enabled and queries
+`/warninglists/checkValue` for the test address. Only with `--execute` does it
+create one unpublished `distribution=0` event containing a single `ip-src` from
+a documentation range with `to_ids=false`, read it back to verify the draft,
+attribute and tags, then delete it and confirm it is gone. A failure after
+creation still deletes the event in a `finally` block; if cleanup fails, the
+event id is printed so it can be removed by hand. The publish endpoint is never
+called.
+
+```bash
+export OCC_MISP_URL=https://misp.example
+export OCC_MISP_API_KEY=...        # or --token-file
+.venv/Scripts/python.exe tools/misp_smoke.py            # preflight only
+.venv/Scripts/python.exe tools/misp_smoke.py --execute  # one draft, then delete
+```
+
+The key is read from `OCC_MISP_API_KEY` or `--token-file`, never from argv, and
+it is excluded from logs and from the JSON summary. `--keep` leaves the draft in
+place for inspection; `--allow-warninglisted` permits the write when the
+documentation address itself matches an enabled warninglist. Exit codes: `0`
+pass or dry-run preflight, `1` assertion/API failure, `2` usage error, `3`
+instance unreachable or API key rejected.
+
 ## Correlation semantics
 
 - Global horizon `OCC_INCIDENT_HORIZON` (60 s): a repeat from the same `src_host`

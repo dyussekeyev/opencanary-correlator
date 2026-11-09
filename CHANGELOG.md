@@ -20,6 +20,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   attributes and records sightings instead of duplicating them; a window with
   only known addresses creates no event. Retries are idempotent through
   deterministic UUIDs.
+- `tools/misp_smoke.py`, a safe live draft smoke test for the MISP publisher.
+  It is read-only unless `--execute` is passed; a write creates one unpublished
+  `distribution=0` event with a single documentation-range `ip-src` and
+  `to_ids=false`, verifies the draft, attribute, tags and warninglist gate,
+  then deletes it and confirms it is gone. Cleanup also runs after a failure,
+  the API key is read from the environment or a file and never appears in argv
+  or the summary, and the publish endpoint is never called.
 - `OCC_NOTIFICATION_REDACT_VALUES` hides the deployment's own IPv4/IPv6
   addresses and DNS names in every outbound alert. The final boundary of each
   HTTP channel and of SMTP rewrites occurrences to `REDACTED`, covering the
