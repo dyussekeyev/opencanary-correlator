@@ -29,6 +29,7 @@ from opencanary_correlator.config_validation import (
     normalise_health_host,
     normalise_log_file,
     normalise_log_level,
+    normalise_notification_redact_values,
     normalise_opencti_create_mode,
     normalise_opencti_token,
     normalise_opencti_url,
@@ -298,6 +299,19 @@ class Settings(BaseSettings):
     webhook_detail: AlertDetail = "minimal"
     smtp_detail: AlertDetail = "standard"
 
+    #: Addresses and names of the operator's own honeypots. They are removed from
+    #: every outbound notification, whichever event field carried them, so a
+    #: canary hostname captured in `logdata` cannot map the estate. Kept out of
+    #: `repr()` like a credential: the list describes the deployment's identity.
+    notification_redact_values: CommaSeparated = Field(
+        default_factory=list,
+        repr=False,
+        description=(
+            "Comma-separated honeypot IP addresses and DNS names removed from "
+            "outbound notifications"
+        ),
+    )
+
     # --- Attacker enrichment ------------------------------------------------
     # Off unless configured. The geo databases are local files (DB-IP Lite or
     # GeoLite2, MMDB), so no attacker address leaves the host; VirusTotal is a
@@ -443,6 +457,7 @@ class Settings(BaseSettings):
         "smb_ignore_actions",
         "canary_expected_nodes",
         "opencti_labels",
+        "notification_redact_values",
         mode="before",
     )
     @classmethod
@@ -453,6 +468,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_opencti_labels(cls, value: list[str]) -> list[str]:
         return validate_opencti_labels(value)
+
+    @field_validator("notification_redact_values")
+    @classmethod
+    def _validate_notification_redact_values(cls, value: list[str]) -> list[str]:
+        return normalise_notification_redact_values(value)
 
     @field_validator("opencti_url", mode="before")
     @classmethod

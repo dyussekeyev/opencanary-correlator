@@ -53,6 +53,10 @@ def log_secrets(settings: Settings) -> tuple[str, ...]:
     if settings.opencti_token is not None:
         # Same path: a bearer header on every GraphQL request.
         secrets.append(settings.opencti_token.get_secret_value())
+    # The operator's own honeypot addresses and names are not credentials, but
+    # they are deployment identity: keep them out of stderr, the log file and
+    # the legacy console journal as well as out of notifications.
+    secrets.extend(settings.notification_redact_values)
     return tuple(secrets)
 
 
@@ -85,6 +89,10 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "incident_lookup_scan_limit": settings.incident_lookup_scan_limit,
         "dispatch_timeout": settings.dispatch_timeout,
         "alert_detail": {spec.name: spec.detail(settings) for spec in CHANNEL_SPECS},
+        "notification_redaction": {
+            "enabled": bool(settings.notification_redact_values),
+            "values": len(settings.notification_redact_values),
+        },
         "channels": channel_names(settings),
         "enrichment": {
             "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),

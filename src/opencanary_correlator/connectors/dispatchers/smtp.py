@@ -21,6 +21,7 @@ from opencanary_correlator.connectors.dispatchers.alert_text import (
     render_service_message,
 )
 from opencanary_correlator.connectors.dispatchers.base import RetryPolicy
+from opencanary_correlator.notification_identity import NotificationIdentityRedactor
 from opencanary_correlator.redaction import sanitize_text
 from opencanary_correlator.storage.keys import delivery_target_id
 
@@ -58,6 +59,7 @@ class SmtpDispatcher(BaseDispatcher):
         retry: RetryPolicy | None = None,
         send: SendFunction = aiosmtplib.send,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        identity_redactor: NotificationIdentityRedactor | None = None,
     ) -> None:
         self.delivery_target_id = delivery_target_id(
             self.name, host, str(port), sender, *sorted(set(recipients))
@@ -75,6 +77,9 @@ class SmtpDispatcher(BaseDispatcher):
         self._retry = retry or RetryPolicy()
         self._send = send
         self._sleep = sleep
+        # Mail is a separate delivery path from the HTTP dispatchers, so it
+        # applies the same outbound identity rule to the subject and body.
+        self._identity_redactor = identity_redactor
 
     def build_message(self, incident: IncidentLike) -> EmailMessage:
         """Render the plain-text alert email.
@@ -88,13 +93,13 @@ class SmtpDispatcher(BaseDispatcher):
         message = EmailMessage()
         message["From"] = sanitize_text(self._sender)
         message["To"] = sanitize_text(", ".join(self._recipients))
-        message["Subject"] = sanitize_text(incident.format_title())
+        message["Subject"] = sanitize_text(self._scrub(incident.format_title()))
         body = (
             incident.format_report()
             if self._detail == "minimal"
             else render_alert(incident, detail=self._detail, flavor="plain")
         )
-        message.set_content(body)
+        message.set_content(self._scrub(body))
         return message
 
     def build_service_message(self, message: ServiceMessage) -> EmailMessage:
@@ -108,8 +113,8 @@ class SmtpDispatcher(BaseDispatcher):
         mail["From"] = sanitize_text(self._sender)
         mail["To"] = sanitize_text(", ".join(self._recipients))
         subject = f"[{message.severity.value}] {message.title}"
-        mail["Subject"] = sanitize_text(subject)
-        mail.set_content(render_service_message(message, flavor="plain"))
+        mail["Subject"] = sanitize_text(self._scrub(subject))
+        mail.set_content(self._scrub(render_service_message(message, flavor="plain")))
         return mail
 
     async def notify(self, message: ServiceMessage) -> DispatchResult:
@@ -132,6 +137,7 @@ class SmtpDispatcher(BaseDispatcher):
         message = EmailMessage()
         message["From"] = sanitize_text(self._sender)
         message["To"] = sanitize_text(", ".join(self._recipients))
+        body = self._scrub(body)
         headline = next((line for line in body.splitlines() if line.strip()), "")
         message["Subject"] = sanitize_text(headline) or "OpenCanary notice"
         message.set_content(body)
@@ -161,6 +167,12 @@ class SmtpDispatcher(BaseDispatcher):
             return DispatchResult(dispatcher=self.name, status="error", detail=type(exc).__name__)
 
         return await self._send_with_retries(message)
+
+    def _scrub(self, text: str) -> str:
+        """Remove configured honeypot identities from one outbound string."""
+        if self._identity_redactor is None:
+            return text
+        return self._identity_redactor.text(text)
 
     async def _send_with_retries(self, message: EmailMessage) -> DispatchResult:
         """Send one rendered message, retrying a relay failure with backoff."""

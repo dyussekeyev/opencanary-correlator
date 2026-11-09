@@ -221,6 +221,35 @@ usual entry. A suppressed event is counted in `opencanary_events_ignored_total`
 and audited as `event_ignored` with `reason=smb_action`, so a suppression never
 looks like a lost event.
 
+### Hiding the honeypot's own address
+
+`dst_host` is already omitted from every alert layout, but a canary's address or
+hostname can still arrive inside a log field, for example as `HOSTNAME` in an
+HTTP request or as the target of a port scan. Set
+`OCC_NOTIFICATION_REDACT_VALUES` to a comma-separated list of the deployment's
+own IPv4/IPv6 addresses and DNS names to replace every occurrence on the final
+outbound boundary with `REDACTED`:
+
+```
+OCC_NOTIFICATION_REDACT_VALUES=203.0.113.10,canary.example.test
+```
+
+The filter is off by default. It runs after a message has been rendered and
+escaped, so it covers `minimal` text, every detail level, Telegram MarkdownV2,
+Slack, Discord, the complete webhook JSON document and SMTP subject and body —
+including a value an attacker placed in a log line. Matching is token-aware
+(`198.51.100.70` is not a hit for `198.51.100.7`, and
+`notcanary.example.test` is not a hit for `canary.example.test`); a configured
+DNS name also covers its subdomains, and escaped dots or hyphens in MarkdownV2
+are recognised. Values are normalised, deduplicated and limited to 100 entries
+of 253 characters; an invalid entry stops the correlator at startup. Stored
+incidents, Redis keys and the investigation data itself are never rewritten.
+
+The values never appear in `--check-config` or `repr(Settings)`; it reports only
+`notification_redaction: {"enabled": true, "values": N}`. Keep the real list in
+the untracked `.env`, and note that an exact value is also added to the log
+secret list, so it is masked in log lines as well.
+
 HTTP channels retry 429/5xx and transport errors three times with exponential
 backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
 endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
@@ -561,7 +590,7 @@ does not have to parse message text.
 🛡 OpenCanary: *RDP Login Attempt*
 🌐 *Instance:* opencanary-embassy
 
-👿 *Attacker:* 89.126.202.164:52344
+👿 *Attacker:* 198.51.100.7:52344
 🕒 *Time:* 2026-10-28 17:30:28 UTC
 📍 *Location:* 🇰🇿 Kazakhstan, Almaty
 🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
@@ -677,9 +706,9 @@ three keys as before.
 
 ```json
 {
-  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy",
+  "title": "RDP Login Attempt by 198.51.100.7 on opencanary-embassy",
   "text": "... legacy report ...",
-  "key": "incident:rdplogin:89.126.202.164:1793207641",
+  "key": "incident:rdplogin:198.51.100.7:1793207641",
   "enrichment": {
     "geo": {
       "country_code": "KZ",
@@ -698,7 +727,7 @@ three keys as before.
     },
     "opencti": {
       "id": "indicator--6f1c…",
-      "pattern": "[ipv4-addr:value = '89.126.202.164']",
+      "pattern": "[ipv4-addr:value = '198.51.100.7']",
       "confidence": 50,
       "created_at": "2026-10-28T17:30:28.000Z",
       "valid_from": "2026-10-28T17:30:28.000Z",

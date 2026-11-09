@@ -131,6 +131,53 @@ def test_accepts_json_encoded_lists(settings_factory: Any) -> None:
     assert settings.slack_webhooks == ["https://hooks.slack.com/services/a"]
 
 
+def test_notification_redact_values_are_canonicalised(settings_factory: Any) -> None:
+    settings = settings_factory(
+        notification_redact_values=(
+            " 203.0.113.10, Canary.Example.Test, 2001:0db8:0:0:0:0:0:10, 203.0.113.10 "
+        )
+    )
+
+    assert settings.notification_redact_values == [
+        "203.0.113.10",
+        "canary.example.test",
+        "2001:db8::10",
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not a host",
+        "-bad.example",
+        "bad-.example",
+        "999.1.1.1",
+        "a" * 254,
+    ],
+)
+def test_invalid_notification_redact_values_are_rejected(settings_factory: Any, value: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_factory(notification_redact_values=value)
+
+
+def test_notification_redact_values_are_hidden_from_repr(settings_factory: Any) -> None:
+    settings = settings_factory(notification_redact_values="203.0.113.10,canary.example.test")
+
+    rendered = repr(settings)
+
+    assert "203.0.113.10" not in rendered
+    assert "canary.example.test" not in rendered
+
+
+def test_notification_redact_values_are_read_from_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("OCC_NOTIFICATION_REDACT_VALUES", "203.0.113.10, Canary.Example.Test")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.notification_redact_values == ["203.0.113.10", "canary.example.test"]
+
+
 def test_empty_comma_separated_values_become_empty_lists(settings_factory: Any) -> None:
     settings = settings_factory(discord_webhooks="", smtp_to="   ")
 

@@ -108,27 +108,27 @@
       "text": "OpenCanary: HTTP Request\r\n🌐 Instance: canary-1\r\n\r\n👿 Attacker: 10.0.0.9:40000\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n\r\n📝 Log: METHOD=GET, PATH=/admin, HOST=10.0.0.2, USERAGENT=curl/8.4",
       "title": "HTTP Request by 10.0.0.9 on canary-1"
     },
-    "rdp_enriched/discord/detailed": "🛡 OpenCanary: **RDP Login Attempt**\r\n🌐 **Instance:** canary-1\r\n\r\n👿 **Attacker:** 89.126.202.164:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** 🇰🇿 Kazakhstan, Almaty\r\n🏢 **ASN:** AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 **VT:** 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 **Events:** 1\r\n📝 **Log:** USERNAME=administrator",
-    "rdp_enriched/discord/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1.",
-    "rdp_enriched/discord/standard": "🛡 OpenCanary: **RDP Login Attempt**\r\n🌐 **Instance:** canary-1\r\n\r\n👿 **Attacker:** 89.126.202.164:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** 🇰🇿 Kazakhstan\r\n🦠 **VT:** 15/92 malicious (+3 suspicious)\r\n\r\n📝 **Log:** USERNAME=administrator",
-    "rdp_enriched/slack/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary-1\r\n\r\n👿 *Attacker:* 89.126.202.164:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 *VT:* 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME=administrator",
-    "rdp_enriched/slack/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1.",
-    "rdp_enriched/slack/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary-1\r\n\r\n👿 *Attacker:* 89.126.202.164:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan\r\n🦠 *VT:* 15/92 malicious (+3 suspicious)\r\n\r\n📝 *Log:* USERNAME=administrator",
+    "rdp_enriched/discord/detailed": "🛡 OpenCanary: **RDP Login Attempt**\r\n🌐 **Instance:** canary-1\r\n\r\n👿 **Attacker:** 198.51.100.7:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** 🇰🇿 Kazakhstan, Almaty\r\n🏢 **ASN:** AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 **VT:** 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 **Events:** 1\r\n📝 **Log:** USERNAME=administrator",
+    "rdp_enriched/discord/minimal": "Canary Incident: RDP Login Attempt. Source 198.51.100.7. Target canary-1.",
+    "rdp_enriched/discord/standard": "🛡 OpenCanary: **RDP Login Attempt**\r\n🌐 **Instance:** canary-1\r\n\r\n👿 **Attacker:** 198.51.100.7:52344\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n📍 **Location:** 🇰🇿 Kazakhstan\r\n🦠 **VT:** 15/92 malicious (+3 suspicious)\r\n\r\n📝 **Log:** USERNAME=administrator",
+    "rdp_enriched/slack/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary-1\r\n\r\n👿 *Attacker:* 198.51.100.7:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 *VT:* 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME=administrator",
+    "rdp_enriched/slack/minimal": "Canary Incident: RDP Login Attempt. Source 198.51.100.7. Target canary-1.",
+    "rdp_enriched/slack/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary-1\r\n\r\n👿 *Attacker:* 198.51.100.7:52344\r\n🕒 *Time:* 2026-10-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan\r\n🦠 *VT:* 15/92 malicious (+3 suspicious)\r\n\r\n📝 *Log:* USERNAME=administrator",
     "rdp_enriched/smtp/detailed": {
-      "body": "OpenCanary: RDP Login Attempt\n🌐 Instance: canary-1\n\n👿 Attacker: 89.126.202.164:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: 🇰🇿 Kazakhstan, Almaty\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\n📊 Events: 1\n📝 Log: USERNAME=administrator\n",
-      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "body": "OpenCanary: RDP Login Attempt\n🌐 Instance: canary-1\n\n👿 Attacker: 198.51.100.7:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: 🇰🇿 Kazakhstan, Almaty\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\n📊 Events: 1\n📝 Log: USERNAME=administrator\n",
+      "subject": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
     "rdp_enriched/smtp/minimal": {
-      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 89.126.202.164\n  Target  : canary-1\n\n======================================================================\n",
-      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "body": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 198.51.100.7\n  Target  : canary-1\n\n======================================================================\n",
+      "subject": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
     "rdp_enriched/smtp/standard": {
-      "body": "OpenCanary: RDP Login Attempt\n🌐 Instance: canary-1\n\n👿 Attacker: 89.126.202.164:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: 🇰🇿 Kazakhstan\n🦠 VT: 15/92 malicious (+3 suspicious)\n\n📝 Log: USERNAME=administrator\n",
-      "subject": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "body": "OpenCanary: RDP Login Attempt\n🌐 Instance: canary-1\n\n👿 Attacker: 198.51.100.7:52344\n🕒 Time: 2026-10-28 17:14:01 UTC\n📍 Location: 🇰🇿 Kazakhstan\n🦠 VT: 15/92 malicious (+3 suspicious)\n\n📝 Log: USERNAME=administrator\n",
+      "subject": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
-    "rdp_enriched/telegram/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary\\-1\r\n\r\n👿 *Attacker:* 89\\.126\\.202\\.164:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster\\.KZ\"\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\), reputation 3, 2026\\-10\\-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME\\=administrator",
-    "rdp_enriched/telegram/minimal": "Canary Incident: RDP Login Attempt. Source 89.126.202.164. Target canary-1.",
-    "rdp_enriched/telegram/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary\\-1\r\n\r\n👿 *Attacker:* 89\\.126\\.202\\.164:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\)\r\n\r\n📝 *Log:* USERNAME\\=administrator",
+    "rdp_enriched/telegram/detailed": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary\\-1\r\n\r\n👿 *Attacker:* 198\\.51\\.100\\.7:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan, Almaty\r\n🏢 *ASN:* AS202958 LLP \"Kompaniya Hoster\\.KZ\"\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\), reputation 3, 2026\\-10\\-28\r\n📊 *Events:* 1\r\n📝 *Log:* USERNAME\\=administrator",
+    "rdp_enriched/telegram/minimal": "Canary Incident: RDP Login Attempt. Source 198.51.100.7. Target canary-1.",
+    "rdp_enriched/telegram/standard": "🛡 OpenCanary: *RDP Login Attempt*\r\n🌐 *Instance:* canary\\-1\r\n\r\n👿 *Attacker:* 198\\.51\\.100\\.7:52344\r\n🕒 *Time:* 2026\\-10\\-28 17:14:01 UTC\r\n📍 *Location:* 🇰🇿 Kazakhstan\r\n🦠 *VT:* 15/92 malicious \\(\\+3 suspicious\\)\r\n\r\n📝 *Log:* USERNAME\\=administrator",
     "rdp_enriched/webhook/detailed": {
       "enrichment": {
         "geo": {
@@ -148,9 +148,9 @@
           "total": 92
         }
       },
-      "key": "incident:rdplogin:89.126.202.164:1793207641",
-      "text": "OpenCanary: RDP Login Attempt\r\n🌐 Instance: canary-1\r\n\r\n👿 Attacker: 89.126.202.164:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: 🇰🇿 Kazakhstan, Almaty\r\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 Events: 1\r\n📝 Log: USERNAME=administrator",
-      "title": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "key": "incident:rdplogin:198.51.100.7:1793207641",
+      "text": "OpenCanary: RDP Login Attempt\r\n🌐 Instance: canary-1\r\n\r\n👿 Attacker: 198.51.100.7:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: 🇰🇿 Kazakhstan, Almaty\r\n🏢 ASN: AS202958 LLP \"Kompaniya Hoster.KZ\"\r\n🦠 VT: 15/92 malicious (+3 suspicious), reputation 3, 2026-10-28\r\n📊 Events: 1\r\n📝 Log: USERNAME=administrator",
+      "title": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
     "rdp_enriched/webhook/minimal": {
       "enrichment": {
@@ -171,9 +171,9 @@
           "total": 92
         }
       },
-      "key": "incident:rdplogin:89.126.202.164:1793207641",
-      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 89.126.202.164\n  Target  : canary-1\n\n======================================================================\n",
-      "title": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "key": "incident:rdplogin:198.51.100.7:1793207641",
+      "text": "\n======================================================================\n                                ALERT\n======================================================================\n\n  Incident: RDP Login Attempt\n  Time    : 2026-10-28 17:14:01 (UTC)\n  Source  : 198.51.100.7\n  Target  : canary-1\n\n======================================================================\n",
+      "title": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
     "rdp_enriched/webhook/standard": {
       "enrichment": {
@@ -194,9 +194,9 @@
           "total": 92
         }
       },
-      "key": "incident:rdplogin:89.126.202.164:1793207641",
-      "text": "OpenCanary: RDP Login Attempt\r\n🌐 Instance: canary-1\r\n\r\n👿 Attacker: 89.126.202.164:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: 🇰🇿 Kazakhstan\r\n🦠 VT: 15/92 malicious (+3 suspicious)\r\n\r\n📝 Log: USERNAME=administrator",
-      "title": "RDP Login Attempt by 89.126.202.164 on canary-1"
+      "key": "incident:rdplogin:198.51.100.7:1793207641",
+      "text": "OpenCanary: RDP Login Attempt\r\n🌐 Instance: canary-1\r\n\r\n👿 Attacker: 198.51.100.7:52344\r\n🕒 Time: 2026-10-28 17:14:01 UTC\r\n📍 Location: 🇰🇿 Kazakhstan\r\n🦠 VT: 15/92 malicious (+3 suspicious)\r\n\r\n📝 Log: USERNAME=administrator",
+      "title": "RDP Login Attempt by 198.51.100.7 on canary-1"
     },
     "smb_file_open/discord/detailed": "🛡 OpenCanary: **Shared File Opened**\r\n🌐 **Instance:** canary-1\r\n\r\n👿 **Attacker:** 10.0.0.7:40000\r\n🕒 **Time:** 2026-10-28 17:14:01 UTC\r\n👤 **User:** CORP\\alice\r\n🗂 **Path:** payroll.xlsx\r\n📊 **Events:** 1",
     "smb_file_open/discord/minimal": "Canary Incident: Shared File Opened. Source 10.0.0.7. Target canary-1. File \"payroll.xlsx\", user \"CORP\\alice\".",
@@ -317,6 +317,10 @@
     "log_file": null,
     "log_level": "INFO",
     "max_stored_events": 100,
+    "notification_redaction": {
+      "enabled": false,
+      "values": 0
+    },
     "redis_url": "redis://:***@redis.example.test:6379/3",
     "service_messages": {
       "categories": [
@@ -487,7 +491,7 @@
       "logtype": "14001",
       "node_id": "canary-1",
       "notified": "False",
-      "src_host": "89.126.202.164",
+      "src_host": "198.51.100.7",
       "src_port": "52344",
       "updated": "True"
     },

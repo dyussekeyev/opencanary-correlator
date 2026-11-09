@@ -25,6 +25,7 @@ from opencanary_correlator.connectors.dispatchers import (
     WebhookDispatcher,
     breaker_name,
 )
+from opencanary_correlator.notification_identity import NotificationIdentityRedactor
 from opencanary_correlator.storage.redis_store import RedisStore
 
 _logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ def _build_webhook(settings: Settings, target: str, breaker: BreakerFactory) -> 
         timeout=settings.dispatch_timeout,
         breaker=breaker(target),
         detail=settings.webhook_detail,
+        identity_redactor=NotificationIdentityRedactor(settings.notification_redact_values),
     )
 
 
@@ -69,6 +71,7 @@ def _build_slack(settings: Settings, target: str, breaker: BreakerFactory) -> Ba
         timeout=settings.dispatch_timeout,
         breaker=breaker(target),
         detail=settings.slack_detail,
+        identity_redactor=NotificationIdentityRedactor(settings.notification_redact_values),
     )
 
 
@@ -78,6 +81,7 @@ def _build_discord(settings: Settings, target: str, breaker: BreakerFactory) -> 
         timeout=settings.dispatch_timeout,
         breaker=breaker(target),
         detail=settings.discord_detail,
+        identity_redactor=NotificationIdentityRedactor(settings.notification_redact_values),
     )
 
 
@@ -90,6 +94,7 @@ def _build_telegram(settings: Settings, target: str, breaker: BreakerFactory) ->
         detail=settings.telegram_detail,
         timeout=settings.dispatch_timeout,
         breaker=breaker(target),
+        identity_redactor=NotificationIdentityRedactor(settings.notification_redact_values),
     )
 
 
@@ -107,6 +112,7 @@ def _build_smtp(settings: Settings, target: str, _breaker: BreakerFactory) -> Ba
         start_tls=settings.smtp_starttls,
         use_tls=settings.smtp_use_tls,
         timeout=settings.dispatch_timeout,
+        identity_redactor=NotificationIdentityRedactor(settings.notification_redact_values),
     )
 
 

@@ -7,6 +7,7 @@ from environment loading.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from typing import Any, Final
@@ -76,6 +77,59 @@ OPENCTI_CREATE_MODES: Final[tuple[str, ...]] = ("off", "missing", "always")
 #: Longest accepted OpenCTI label. STIX has no hard limit; a configuration is
 #: not a data feed, and a label is copied into every indicator created.
 MAX_OPENCTI_LABEL_LENGTH: Final[int] = 64
+
+#: Longest accepted honeypot identity (an IP literal or DNS name).
+MAX_NOTIFICATION_REDACT_VALUE_LENGTH: Final[int] = 253
+
+#: How many honeypot identities one deployment may protect. A list is a small
+#: inventory of the operator's own hosts, not a blocklist.
+MAX_NOTIFICATION_REDACT_VALUES: Final[int] = 100
+
+_DNS_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def normalise_notification_redact_values(value: list[str]) -> list[str]:
+    """Normalise the honeypot identities whose names must not leave the estate.
+
+    Values are IP literals (v4 or v6) or DNS names. They are compared against
+    outgoing notification text, so they are canonicalised here: IPs through
+    `ipaddress` (which also folds IPv6 shorthand), DNS names to lower case, and
+    duplicates removed. Anything else is rejected instead of being treated as a
+    partial match, because a typo in a privacy control must not fail silently.
+    """
+    if len(value) > MAX_NOTIFICATION_REDACT_VALUES:
+        raise ValueError(
+            f"notification_redact_values accepts at most {MAX_NOTIFICATION_REDACT_VALUES} entries"
+        )
+    unique: dict[str, None] = {}
+    for raw in value:
+        candidate = raw.strip().rstrip(".")
+        if not candidate:
+            continue
+        if len(candidate) > MAX_NOTIFICATION_REDACT_VALUE_LENGTH:
+            raise ValueError(
+                "notification_redact_values entry exceeds "
+                f"{MAX_NOTIFICATION_REDACT_VALUE_LENGTH} characters"
+            )
+        if any(ord(character) < 33 or ord(character) == 127 for character in candidate):
+            raise ValueError(
+                "notification_redact_values must not contain whitespace or control characters"
+            )
+        try:
+            unique.setdefault(str(ipaddress.ip_address(candidate)), None)
+            continue
+        except ValueError:
+            pass
+        lowered = candidate.lower()
+        labels = lowered.split(".")
+        if all(label.isdigit() for label in labels):
+            # A dotted all-numeric value is a malformed IP, not a DNS name.
+            raise ValueError("notification_redact_values entries must be IP addresses or DNS names")
+        if not all(_DNS_LABEL_RE.match(label) for label in labels):
+            raise ValueError("notification_redact_values entries must be IP addresses or DNS names")
+        unique.setdefault(lowered, None)
+    return list(unique)
+
 
 #: Labels one indicator may carry at most.
 MAX_OPENCTI_LABELS: Final[int] = 20
@@ -452,6 +506,8 @@ __all__ = [
     "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
+    "MAX_NOTIFICATION_REDACT_VALUES",
+    "MAX_NOTIFICATION_REDACT_VALUE_LENGTH",
     "MAX_OPENCTI_LABELS",
     "MAX_OPENCTI_LABEL_LENGTH",
     "OPENCTI_CREATE_MODES",
@@ -464,6 +520,7 @@ __all__ = [
     "normalise_health_host",
     "normalise_log_file",
     "normalise_log_level",
+    "normalise_notification_redact_values",
     "normalise_opencti_create_mode",
     "normalise_opencti_token",
     "normalise_opencti_url",

@@ -52,6 +52,15 @@ SECRETS = (
 )
 
 
+def test_configured_honeypot_identities_join_the_log_secrets(settings_factory: Any) -> None:
+    settings = settings_factory(notification_redact_values="203.0.113.10,canary.example.test")
+
+    secrets = log_secrets(settings)
+
+    assert "203.0.113.10" in secrets
+    assert "canary.example.test" in secrets
+
+
 @pytest.fixture
 def captured_incident(incident_factory: Any) -> Any:
     """An incident whose stored `logdata` holds a password the canary captured."""

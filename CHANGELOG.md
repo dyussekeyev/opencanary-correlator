@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `OCC_NOTIFICATION_REDACT_VALUES` hides the deployment's own IPv4/IPv6
+  addresses and DNS names in every outbound alert. The final boundary of each
+  HTTP channel and of SMTP rewrites occurrences to `REDACTED`, covering the
+  legacy `minimal` text, all detail levels, Telegram MarkdownV2 escaping, Slack,
+  Discord, the complete webhook JSON document and SMTP subject/body. Matching is
+  token-aware (a DNS name also covers its subdomains), values are normalised and
+  deduplicated, and an invalid entry stops startup. Stored incidents and Redis
+  state are untouched, and the setting shows only its count in
+  `--check-config`; the list itself is masked as a log secret.
+
+### Changed
+
+- README examples, unit fixtures and the characterization snapshot now use
+  documentation address ranges instead of a real deployment address.
+
 ## [0.7.0] - 2026-11-05
 
 ### Added
