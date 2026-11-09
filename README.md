@@ -749,6 +749,68 @@ downstream rule does not have to recompute the ratio.
 **Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
+## MISP publishing (optional, off by default)
+
+A closed community deployment can share what its honeypots observed without
+sharing the honeypots themselves. The publisher is separate from the alert
+channels: it has its own durable Redis queue, is never rationed by
+`OCC_ALERT_BUDGET_*`, and is not affected by a broken chat channel. It publishes
+**observations**, not every alert.
+
+```dotenv
+OCC_MISP_ENABLED=true
+OCC_MISP_URL=https://threatintel.example
+OCC_MISP_API_KEY=...
+OCC_MISP_DISTRIBUTION=0        # private test; choose the community policy later
+OCC_MISP_PUBLISH_MODE=draft    # or auto once the instance is trusted
+OCC_MISP_TLP=amber
+OCC_MISP_PAP=amber
+OCC_MISP_EVENT_WINDOW=86400
+OCC_MISP_TAGS=honeypot
+```
+
+One event is built per UTC window (one day by default) and contains one
+`ip-src` attribute per unique globally routable source address, with first/last
+seen, the incident service and targeted port, and the event count. The event’s
+info says it is an automated honeypot observation, not an attributed actor.
+Nothing from `dst_host`, `node_id`, `logdata`, credentials, payloads, URLs or
+user agents is sent. Private, loopback, documentation and multicast addresses
+are skipped, as are the operator’s own addresses in
+`OCC_NOTIFICATION_REDACT_VALUES`.
+
+**Existing community knowledge wins.** Before building the daily event the
+publisher searches MISP for an exact `ip-src` value. An address that already
+exists gets a sighting and is not added to the new event; only addresses the
+community does not cover become new attributes. If every address in a window is
+already known, the window creates no event at all. The search and sighting are
+part of the durable retry path: a failed search or sighting leaves the window
+queued rather than creating a duplicate.
+
+**Draft first.** `draft` creates an unpublished event for review; `auto` calls
+the publish endpoint after the event, attributes and tags exist. Both modes
+require the configured TLP/PAP/confidence tags to resolve by exact name and, by
+default, at least one warninglist to be enabled. A warninglisted address is
+filtered out; an empty warninglist check is treated as a configuration failure,
+not as a clean address. `to_ids=true` is set only for the auth incidents listed
+in `OCC_MISP_TO_IDS_TYPES` (`ssh`, `rdp`, `ftp`, `telnet`, `mysql` and peers) with
+at least `OCC_MISP_TO_IDS_MIN_EVENTS` events in the window; scans, HTTP requests,
+SMB, SNMP, NTP and TFTP are excluded.
+
+Deterministic event and attribute UUIDs make a retry address the same object
+instead of creating a duplicate. The event, attribute and tag writes happen in
+that order, followed by sightings for known addresses; a window is acknowledged
+only after they succeed, so a temporary MISP outage leaves the queue intact.
+Check the effective, secret-free settings with `--check-config`; the API key is
+masked from logs and `repr()`.
+
+**Current MISP prerequisites.** The instance must have its TLP/PAP taxonomies
+and warninglists enabled, and the API key needs `perm_add`, `perm_modify`,
+`perm_sighting` and `perm_tagger`; `auto` additionally needs `perm_publish`.
+A restricted `User` role commonly lacks the last permission, in which case use
+`draft` for review or ask the instance administrator for a publishing service
+account. `OCC_MISP_DISTRIBUTION=4` also requires a sharing group id; without one
+MISP cannot resolve the audience.
+
 ## Correlation semantics
 
 - Global horizon `OCC_INCIDENT_HORIZON` (60 s): a repeat from the same `src_host`

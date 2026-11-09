@@ -12,6 +12,8 @@ from opencanary_correlator.app.parser import CorrelatorStartupError
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseReceiver
+from opencanary_correlator.connectors.publishers.base import BasePublisher
+from opencanary_correlator.connectors.publishers.misp.publisher import MispPublisher
 from opencanary_correlator.connectors.receivers import (
     SyslogTCPReceiver,
     SyslogUDPReceiver,
@@ -108,6 +110,19 @@ def build_enricher(
     )
 
 
+def build_publishers(
+    settings: Settings, store: RedisStore, audit: AuditLogger
+) -> list[BasePublisher]:
+    """Build outbound publishers. They never affect alert delivery."""
+    publishers: list[BasePublisher] = []
+    if settings.misp_enabled:
+        try:
+            publishers.append(MispPublisher(settings=settings, store=store, audit=audit))
+        except Exception as exc:
+            raise CorrelatorStartupError(f"MISP publisher: {type(exc).__name__}") from exc
+    return publishers
+
+
 def build_receivers(
     settings: Settings,
     engine: CorrelationEngine,
@@ -177,6 +192,7 @@ def build_health_server(
 __all__ = [
     "build_enricher",
     "build_health_server",
+    "build_publishers",
     "build_rate_limiter",
     "build_receivers",
 ]

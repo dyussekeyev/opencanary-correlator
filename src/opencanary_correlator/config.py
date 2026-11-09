@@ -21,7 +21,10 @@ from opencanary_correlator.config_validation import (
     DEFAULT_HEALTH_HOST,
     DEFAULT_HEALTH_PORT,
     DEFAULT_INTAKE_HOST,
+    DEFAULT_MISP_TO_IDS_TYPES,
     MAX_INCIDENT_HORIZON_SECONDS,
+    MISP_PAP_LEVELS,
+    MISP_TLP_LEVELS,
     decode_incident_horizons,
     disable_health_port,
     health_allowlist_or_loopback,
@@ -29,6 +32,9 @@ from opencanary_correlator.config_validation import (
     normalise_health_host,
     normalise_log_file,
     normalise_log_level,
+    normalise_misp_api_key,
+    normalise_misp_publish_mode,
+    normalise_misp_url,
     normalise_notification_redact_values,
     normalise_opencti_create_mode,
     normalise_opencti_token,
@@ -37,6 +43,8 @@ from opencanary_correlator.config_validation import (
     normalise_smb_actions,
     require_email_address,
     require_http_urls,
+    require_misp_config,
+    require_misp_url,
     require_opencti_config,
     require_opencti_url,
     require_redis_scheme,
@@ -45,6 +53,10 @@ from opencanary_correlator.config_validation import (
     validate_allowed_ips,
     validate_digest_time,
     validate_incident_horizons,
+    validate_misp_handling,
+    validate_misp_namespace,
+    validate_misp_tags,
+    validate_misp_to_ids_types,
     validate_opencti_labels,
     validate_service_categories,
     validate_service_channels,
@@ -67,6 +79,9 @@ ServiceSeverity = Literal["info", "warning", "critical"]
 #: Whether an OpenCTI indicator is created. `missing` writes one only when the
 #: lookup found nothing; `always` creates or updates the existing indicator.
 OpenCTICreateMode = Literal["off", "missing", "always"]
+
+#: Whether MISP events stay drafts for review or are published immediately.
+MispPublishMode = Literal["draft", "auto"]
 
 CommaSeparated = Annotated[list[str], NoDecode]
 
@@ -362,6 +377,52 @@ class Settings(BaseSettings):
     #: the body is read; an OpenCTI instance is not a trusted peer.
     opencti_max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=64 * 1024 * 1024)
 
+    # --- MISP threat-intelligence publishing --------------------------------
+    # Off unless configured. This is an outbound disclosure of attacker
+    # addresses, so it has an explicit switch, a separate key and a draft-first
+    # default. `distribution=0` keeps the first live test private; a community
+    # deployment raises it only after the instance's sharing policy is known.
+    misp_enabled: bool = False
+    misp_url: str | None = Field(default=None, max_length=2048)
+    misp_api_key: SecretStr | None = Field(default=None, repr=False)
+    misp_verify_tls: bool = True
+    misp_timeout: float = Field(default=10.0, gt=0.0, le=120.0)
+    #: A MISP response is parsed in memory; refuse an unexpectedly huge body.
+    misp_max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+    misp_distribution: int = Field(default=0, ge=0, le=4)
+    misp_sharing_group_id: int | None = Field(default=None, ge=1)
+    misp_publish_mode: MispPublishMode = "draft"
+    misp_tlp: str = "amber"
+    misp_pap: str = "amber"
+    #: MISP's own confidence taxonomy is preferred. A custom tag is accepted as
+    #: a fallback, but the publisher refuses to build an event whose tags do not
+    #: resolve, so a typo cannot silently drop the confidence marking.
+    misp_confidence_tag: str = 'misp:confidence-level="rarely-confident"'
+    #: One aggregate event per UTC window. The UTC day boundary is the default.
+    misp_event_window: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
+    #: Wait after a window closes before publishing it, so an event is not built
+    #: from a partial day when clocks or ingestion lag across replicas.
+    misp_publish_grace: float = Field(default=300.0, ge=0.0, le=24 * 3600.0)
+    misp_flush_interval: float = Field(default=60.0, ge=1.0, le=3600.0)
+    misp_to_ids_types: CommaSeparated = Field(
+        default_factory=lambda: list(DEFAULT_MISP_TO_IDS_TYPES),
+        description=(
+            "Comma-separated auth incident types that may carry to_ids=true "
+            "after the minimum event count and warninglist checks"
+        ),
+    )
+    misp_to_ids_min_events: int = Field(default=3, ge=1, le=1_000_000)
+    misp_tags: CommaSeparated = Field(
+        default_factory=lambda: ["honeypot"],
+        description="Comma-separated free-form tags attached to every event",
+    )
+    #: Stable namespace for deterministic MISP event and attribute UUIDs.
+    misp_event_namespace: str = "opencanary"
+    #: Fail closed when the instance has no warninglists enabled, because an
+    #: empty check would otherwise look like "clean" for every address.
+    misp_warninglist_required: bool = True
+    misp_max_observations_per_window: int = Field(default=10_000, ge=1, le=100_000)
+
     # --- Service messages ---------------------------------------------------
     # The correlator talking about itself: a rejected VirusTotal key, a spent
     # quota, a broken GeoIP database, a channel whose breaker opened, no channel
@@ -458,6 +519,8 @@ class Settings(BaseSettings):
         "canary_expected_nodes",
         "opencti_labels",
         "notification_redact_values",
+        "misp_to_ids_types",
+        "misp_tags",
         mode="before",
     )
     @classmethod
@@ -468,6 +531,61 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_opencti_labels(cls, value: list[str]) -> list[str]:
         return validate_opencti_labels(value)
+
+    @field_validator("misp_url", mode="before")
+    @classmethod
+    def _normalise_misp_url(cls, value: Any) -> Any:
+        return normalise_misp_url(value)
+
+    @field_validator("misp_url")
+    @classmethod
+    def _require_misp_url(cls, value: str | None) -> str | None:
+        return require_misp_url(value)
+
+    @field_validator("misp_api_key", mode="before")
+    @classmethod
+    def _normalise_misp_api_key(cls, value: Any) -> Any:
+        return normalise_misp_api_key(value)
+
+    @field_validator("misp_publish_mode", mode="before")
+    @classmethod
+    def _normalise_misp_publish_mode(cls, value: Any) -> Any:
+        return normalise_misp_publish_mode(value)
+
+    @field_validator("misp_tlp")
+    @classmethod
+    def _validate_misp_tlp(cls, value: str) -> str:
+        return validate_misp_handling(value, name="misp_tlp", allowed=MISP_TLP_LEVELS)
+
+    @field_validator("misp_pap")
+    @classmethod
+    def _validate_misp_pap(cls, value: str) -> str:
+        return validate_misp_handling(value, name="misp_pap", allowed=MISP_PAP_LEVELS)
+
+    @field_validator("misp_tags")
+    @classmethod
+    def _validate_misp_tags(cls, value: list[str]) -> list[str]:
+        return validate_misp_tags(value)
+
+    @field_validator("misp_to_ids_types")
+    @classmethod
+    def _validate_misp_to_ids_types(cls, value: list[str]) -> list[str]:
+        return validate_misp_to_ids_types(value)
+
+    @field_validator("misp_event_namespace")
+    @classmethod
+    def _validate_misp_namespace(cls, value: str) -> str:
+        return validate_misp_namespace(value)
+
+    @field_validator("misp_confidence_tag")
+    @classmethod
+    def _validate_misp_confidence_tag(cls, value: str) -> str:
+        tag = value.strip()
+        if not tag or len(tag) > 255:
+            raise ValueError("misp_confidence_tag must be 1..255 characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in tag):
+            raise ValueError("misp_confidence_tag must not contain control characters")
+        return tag
 
     @field_validator("notification_redact_values")
     @classmethod
@@ -607,6 +725,18 @@ class Settings(BaseSettings):
     def _validate_slack(self) -> Self:
         """An enabled Slack channel must have somewhere to send."""
         require_slack_endpoints(self.slack_enabled, self.slack_webhooks)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_misp(self) -> Self:
+        """A publisher that is switched on must have a usable destination."""
+        require_misp_config(
+            enabled=self.misp_enabled,
+            url=self.misp_url,
+            api_key=self.misp_api_key,
+            distribution=self.misp_distribution,
+            sharing_group_id=self.misp_sharing_group_id,
+        )
         return self
 
     @model_validator(mode="after")

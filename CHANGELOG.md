@@ -7,6 +7,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Optional MISP Automation API publisher (`OCC_MISP_ENABLED`, off by default)
+  that shares honeypot observations, not alert copies. One deterministic
+  aggregate event is built per UTC window from a durable Redis queue; `observe`
+  never affects correlation, the outbox or the alert budget. Only globally
+  routable source addresses, first/last seen, service, targeted port and event
+  count are sent. `dst_host`, `node_id`, raw `logdata`, credentials, payloads,
+  URLs and user agents never reach MISP. Events are drafts by default, TLP/PAP
+  and confidence tags must resolve, warninglists must be enabled, and
+  `to_ids=true` is limited to listed auth services with at least three events
+  that day. Before creating an event it searches for exact existing `ip-src`
+  attributes and records sightings instead of duplicating them; a window with
+  only known addresses creates no event. Retries are idempotent through
+  deterministic UUIDs.
 - `OCC_NOTIFICATION_REDACT_VALUES` hides the deployment's own IPv4/IPv6
   addresses and DNS names in every outbound alert. The final boundary of each
   HTTP channel and of SMTP rewrites occurrences to `REDACTED`, covering the

@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
+from opencanary_correlator.connectors.publishers.base import BasePublisher
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.core.engine import CorrelationEngine
 from opencanary_correlator.core.incident import Incident, IncidentRepository
@@ -71,6 +72,7 @@ def make_engine(
     dispatchers: Any,
     rules: Any = None,
     enricher: Any = None,
+    publishers: Any = (),
 ) -> CorrelationEngine:
     repository = IncidentRepository(store, settings, audit, clock=clock)
     engine_rules = rules if rules is not None else build_rules(store, repository, settings)
@@ -82,7 +84,24 @@ def make_engine(
         audit=audit,
         clock=clock,
         enricher=enricher,
+        publishers=publishers,
     )
+
+
+class RecordingPublisher(BasePublisher):
+    """Publisher stand-in that records incidents and can fail."""
+
+    name = "recording"
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.incidents: list[Incident] = []
+
+    async def observe(self, incident: IncidentLike) -> None:
+        assert isinstance(incident, Incident)
+        self.incidents.append(incident)
+        if self.error is not None:
+            raise self.error
 
 
 class RecordingEnricher:
@@ -106,6 +125,31 @@ def audit_actions(audit_stream: Any) -> list[str]:
 
 def login_event(event_factory: Any) -> CanaryEvent:
     return CanaryEvent.model_validate(event_factory())
+
+
+async def test_publisher_observes_even_with_no_dispatchers(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    publisher = RecordingPublisher()
+    engine = make_engine(store, settings_factory(), audit, clock, [], publishers=[publisher])
+
+    await engine.handle_event(login_event(event_factory))
+
+    assert len(publisher.incidents) == 1
+
+
+async def test_a_failing_publisher_cannot_break_dispatch(
+    store: Any, settings_factory: Any, audit: Any, clock: Any, event_factory: Any
+) -> None:
+    dispatcher = RecordingDispatcher()
+    publisher = RecordingPublisher(error=RuntimeError("feed down"))
+    engine = make_engine(
+        store, settings_factory(), audit, clock, [dispatcher], publishers=[publisher]
+    )
+
+    await engine.handle_event(login_event(event_factory))
+
+    assert len(dispatcher.incidents) == 1
 
 
 async def test_login_event_creates_incident_and_notifies(
