@@ -13,9 +13,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   legacy `minimal` text, all detail levels, Telegram MarkdownV2 escaping, Slack,
   Discord, the complete webhook JSON document and SMTP subject/body. Matching is
   token-aware (a DNS name also covers its subdomains), values are normalised and
-  deduplicated, and an invalid entry stops startup. Stored incidents and Redis
-  state are untouched, and the setting shows only its count in
-  `--check-config`; the list itself is masked as a log secret.
+  deduplicated, and an invalid entry stops startup. Percent-encoded spellings
+  are decoded before matching, including `%2E`/`%2D`, fully encoded and
+  double-encoded values, so URL-encoded copies cannot bypass the filter.
+  Stored incidents and Redis state are untouched, and the setting shows only
+  its count in `--check-config`; the list itself is masked as a log secret.
 
 ### Changed
 

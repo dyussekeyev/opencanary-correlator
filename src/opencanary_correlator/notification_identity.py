@@ -16,7 +16,7 @@ inside ``110.0.0.5`` and ``example.test`` does not match ``notexample.test``.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 #: Replacement for a protected identity. Plain letters on purpose: the filter
@@ -26,6 +26,12 @@ REDACTION_MARKER: Final[str] = "REDACTED"
 
 #: Guards against pathological nesting in a payload assembled from network input.
 MAX_REDACTION_DEPTH: Final[int] = 16
+
+#: A URL-encoded value can itself be encoded again (`%252E`). Two passes cover
+#: the realistic variants without letting a crafted `%25` chain grow the work.
+MAX_PERCENT_DECODE_PASSES: Final[int] = 2
+
+_HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
 
 _BS: Final[str] = "\\"
 #: One optional literal backslash. Telegram's MarkdownV2 renders a dot as
@@ -83,12 +89,28 @@ class NotificationIdentityRedactor:
         return bool(self._patterns)
 
     def text(self, value: str) -> str:
-        """Return ``value`` with every protected identity replaced."""
-        if not self._patterns:
+        """Return ``value`` with every protected identity replaced.
+
+        Plain text takes the direct path. A value containing ``%`` is also
+        checked through one or two percent-decoded views, because an attacker
+        can encode the dots, hyphens or every character of the honeypot's own
+        address. Matches are mapped back to the original spans, so the output
+        keeps the surrounding punctuation and escapes byte-for-byte; only the
+        protected token becomes the marker.
+        """
+        if not self._patterns or not value:
             return value
-        for pattern in self._patterns:
-            value = pattern.sub(REDACTION_MARKER, value)
-        return value
+        if "%" not in value:
+            for pattern in self._patterns:
+                value = pattern.sub(REDACTION_MARKER, value)
+            return value
+
+        spans: list[tuple[int, int]] = []
+        for decoded, mapping in _percent_decoded_views(value):
+            for pattern in self._patterns:
+                for match in pattern.finditer(decoded):
+                    spans.append((mapping[match.start()][0], mapping[match.end() - 1][1]))
+        return _replace_spans(value, spans)
 
     def payload(self, value: Any, *, _depth: int = 0) -> Any:
         """Return a copy of a JSON-like payload with protected identities removed.
@@ -109,6 +131,72 @@ class NotificationIdentityRedactor:
         if isinstance(value, str):
             return self.text(value)
         return value
+
+
+def _percent_decode(
+    text: str, source_spans: Sequence[tuple[int, int]]
+) -> tuple[str, list[tuple[int, int]]]:
+    """Decode one layer of ``%XX`` escapes, keeping a span per output character."""
+    characters: list[str] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        if (
+            text[index] == "%"
+            and index + 2 < len(text)
+            and text[index + 1] in _HEX_DIGITS
+            and text[index + 2] in _HEX_DIGITS
+        ):
+            characters.append(chr(int(text[index + 1 : index + 3], 16)))
+            spans.append((source_spans[index][0], source_spans[index + 2][1]))
+            index += 3
+        else:
+            characters.append(text[index])
+            spans.append(source_spans[index])
+            index += 1
+    return "".join(characters), spans
+
+
+def _percent_decoded_views(value: str) -> list[tuple[str, list[tuple[int, int]]]]:
+    """Return the original and up to two percent-decoded views of ``value``.
+
+    Each decoded character carries the original half-open span it came from, so
+    a match on the decoded view can replace exactly the encoded source text.
+    """
+    views: list[tuple[str, list[tuple[int, int]]]] = [
+        (value, [(index, index + 1) for index in range(len(value))])
+    ]
+    current = value
+    for _ in range(MAX_PERCENT_DECODE_PASSES):
+        decoded, spans = _percent_decode(current, views[-1][1])
+        if decoded == current:
+            break
+        views.append((decoded, spans))
+        current = decoded
+    return views
+
+
+def _replace_spans(value: str, spans: Iterable[tuple[int, int]]) -> str:
+    """Replace merged source spans with the marker, preserving everything else."""
+    ordered = sorted(spans)
+    if not ordered:
+        return value
+    merged: list[tuple[int, int]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged.append((start, end))
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        pieces.append(value[cursor:start])
+        pieces.append(REDACTION_MARKER)
+        cursor = end
+    pieces.append(value[cursor:])
+    return "".join(pieces)
 
 
 def _is_ip(value: str) -> bool:

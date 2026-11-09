@@ -39,6 +39,8 @@ from opencanary_correlator.notification_identity import (
 #: Documentation-safe literals: the real deployment identity stays in `.env`.
 PROTECTED_IP = "203.0.113.10"
 PROTECTED_DOMAIN = "canary.example.test"
+ENCODED_IP = "203%2E0%2E113%2E10"
+ENCODED_DOMAIN = "canary%2Eexample%2Etest"
 IDENTITY_REDACTOR = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
 
 ATTACKER_CONTEXT = Enrichment(
@@ -842,8 +844,9 @@ def _http_probe(incident_factory: Any, **overrides: Any) -> Any:
                 "METHOD": "GET",
                 "PATH": "/",
                 "HOST": PROTECTED_DOMAIN,
-                "HOSTNAME": PROTECTED_IP,
-                "USERAGENT": f"scanner for {PROTECTED_DOMAIN}",
+                "HOSTNAME": ENCODED_IP,
+                "USERAGENT": f"scanner for {ENCODED_DOMAIN}",
+                "URL": f"https%3A%2F%2F{ENCODED_IP}%2Fadmin",
             }
         ]
     )
@@ -879,6 +882,8 @@ async def test_webhook_removes_honeypot_identity_from_every_detail_level(
     document = calls[0].content.decode()
     assert PROTECTED_IP not in document
     assert PROTECTED_DOMAIN not in document
+    assert ENCODED_IP not in document
+    assert ENCODED_DOMAIN not in document
     assert REDACTION_MARKER in document
 
 
@@ -903,6 +908,8 @@ async def test_telegram_removes_identity_even_after_markdown_escaping(
     text = json.loads(calls[0].content)["text"]
     assert PROTECTED_IP not in text
     assert PROTECTED_DOMAIN not in text
+    assert ENCODED_IP not in text
+    assert ENCODED_DOMAIN not in text
     # Telegram escapes the dots; the filter has to match through that rendering.
     assert r"203\.0\.113\.10" not in text
     assert r"canary\.example\.test" not in text

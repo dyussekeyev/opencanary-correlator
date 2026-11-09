@@ -241,7 +241,10 @@ including a value an attacker placed in a log line. Matching is token-aware
 (`198.51.100.70` is not a hit for `198.51.100.7`, and
 `notcanary.example.test` is not a hit for `canary.example.test`); a configured
 DNS name also covers its subdomains, and escaped dots or hyphens in MarkdownV2
-are recognised. Values are normalised, deduplicated and limited to 100 entries
+are recognised. Percent-encoded spellings are decoded before matching, so
+`203%2E0%2E113%2E10`, a fully encoded `%32%30%33...` value, mixed raw/encoded
+text and double-encoded `%252E` variants are removed without touching unrelated
+URL escapes. Values are normalised, deduplicated and limited to 100 entries
 of 253 characters; an invalid entry stops the correlator at startup. Stored
 incidents, Redis keys and the investigation data itself are never rewritten.
 

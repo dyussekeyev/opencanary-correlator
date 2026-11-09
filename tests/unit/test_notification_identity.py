@@ -84,6 +84,74 @@ def test_an_ipv6_literal_is_matched_as_a_token() -> None:
     assert "2001:db8::100" in text
 
 
+def test_percent_encoded_ip_and_domain_are_removed() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
+
+    text = redactor.text(
+        "HOST=203%2E0%2E113%2E10 "
+        "DOMAIN=canary%2Eexample%2Etest "
+        "URL=https%3A%2F%2F203%2E0%2E113%2E10%2Fadmin"
+    )
+
+    assert "203%2E0%2E113%2E10" not in text
+    assert "canary%2Eexample%2Etest" not in text
+    assert text == "HOST=REDACTED DOMAIN=REDACTED URL=https%3A%2F%2FREDACTED%2Fadmin"
+
+
+def test_fully_and_lowercase_percent_encoded_values_are_removed() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
+
+    text = redactor.text(
+        "lower=203%2e0%2e113%2e10 "
+        "full=%32%30%33%2E%30%2E%31%31%33%2E%31%30 "
+        "domain=canary%2Eexample%2Etest"
+    )
+
+    assert text.count(REDACTION_MARKER) == 3
+    assert "%32%30%33" not in text
+    assert "canary%2Eexample%2Etest" not in text
+
+
+def test_percent_encoded_hyphens_in_subdomains_are_removed() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_DOMAIN])
+
+    text = redactor.text("UA=my%2Dagent.canary%2Eexample%2Etest")
+
+    assert text == "UA=REDACTED"
+
+
+def test_double_percent_encoded_values_are_removed() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
+
+    text = redactor.text("HOST=203%252E0%252E113%252E10 DOMAIN=canary%252Eexample%252Etest")
+
+    assert text == "HOST=REDACTED DOMAIN=REDACTED"
+
+
+def test_percent_decoding_does_not_widen_token_boundaries() -> None:
+    redactor = NotificationIdentityRedactor(["198.51.100.7", PROTECTED_DOMAIN])
+
+    text = redactor.text("HOST=198%2E51%2E100%2E70 DOMAIN=notcanary%2Eexample%2Etest")
+
+    assert text == "HOST=198%2E51%2E100%2E70 DOMAIN=notcanary%2Eexample%2Etest"
+
+
+def test_unrelated_percent_escapes_stay_untouched() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
+
+    text = "query=a%20b&path=%2Ftmp&value=%25"
+
+    assert redactor.text(text) == text
+
+
+def test_raw_and_encoded_occurrences_in_one_string_are_both_removed() -> None:
+    redactor = NotificationIdentityRedactor([PROTECTED_IP])
+
+    text = redactor.text(f"{PROTECTED_IP}%2C203%2E0%2E113%2E10")
+
+    assert text == "REDACTED%2CREDACTED"
+
+
 def test_the_marker_is_safe_inside_rendered_chat_markup() -> None:
     """The filter runs after MarkdownV2 escaping, so the marker must not need it."""
     assert REDACTION_MARKER
