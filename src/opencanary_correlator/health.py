@@ -94,11 +94,14 @@ class HealthServer:
         server, self._server = self._server, None
         if server is not None:
             server.close()
-            await server.wait_closed()
+        # Cancel first: `wait_closed()` waits for connection handlers, and a
+        # silent probe would otherwise hold shutdown for `_REQUEST_TIMEOUT`.
         clients = tuple(self._clients)
         for task in clients:
             task.cancel()
         await asyncio.gather(*clients, return_exceptions=True)
+        if server is not None:
+            await server.wait_closed()
 
     def _accept_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         # Reserve synchronously, before scheduling: over-cap sockets get no reader
