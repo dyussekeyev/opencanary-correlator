@@ -17,7 +17,11 @@ from typing import Any
 
 from opencanary_correlator.constants import KEY_INCIDENTS
 from opencanary_correlator.storage._base import _StoreBase
-from opencanary_correlator.storage.keys import NODES_LAST_SEEN, STATS_INSTANCE_PREFIX
+from opencanary_correlator.storage.keys import (
+    INCIDENTS_CREATED,
+    NODES_LAST_SEEN,
+    STATS_INSTANCE_PREFIX,
+)
 
 #: Heartbeats read in one digest. A deployment with more replicas than this is
 #: not what the correlator is built for; the cap keeps the read bounded anyway.
@@ -135,8 +139,16 @@ return refused
         return found
 
     async def count_new_incidents(self, *, start: float, end: float) -> int:
-        """New creations since v0.6 instrumentation, independent of last merge."""
-        return int(await self._client.zcount("stats:v2:incidents-created", start, f"({end}"))
+        """Creations inside the window whose incident still exists.
+
+        The mark outlives the hash when an operator deletes a false positive by
+        hand, so counting marks alone reports incidents that no longer exist.
+        """
+        return int(
+            await self._run_script(
+                self._count_live_created_script, [INCIDENTS_CREATED], [str(start), str(end)]
+            )
+        )
 
     async def count_incidents(self, *, start: float, end: float) -> int:
         """Incidents whose newest event lies inside `[start, end]`."""
