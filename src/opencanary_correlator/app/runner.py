@@ -274,6 +274,12 @@ async def run_correlator(
                 "publishers": [publisher.name for publisher in started_publishers],
             },
         )
+        _logger.info(
+            "startup complete: %d receiver(s), %d rule(s), %d channel(s)",
+            len(receivers),
+            len(engine.rule_names),
+            len(active_dispatchers),
+        )
         await notifier.notify(
             ServiceKind.LIFECYCLE_STARTED,
             title="correlator started",
@@ -327,6 +333,9 @@ async def run_correlator(
                         "error_type": type(exc).__name__,
                     },
                 )
+                # The audit trail records the failure; the operator's log says
+                # which resource was left behind without reading JSON events.
+                _logger.error("cleanup failed for %s: %s", name, type(exc).__name__)
 
         async def cancel_scan() -> None:
             if scan_recovery is not None:
@@ -392,6 +401,7 @@ async def run_correlator(
         await cleanup("log-handler", log_handler.stop, remaining() / 2)
         if owns_store:
             await cleanup("redis", store.aclose, remaining())
+        _logger.info("shutdown complete: %d receiver(s) stopped", len(started))
         audit.emit("shutdown", "info", {"receivers": len(started)})
 
 

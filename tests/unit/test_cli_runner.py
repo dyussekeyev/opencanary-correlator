@@ -120,9 +120,17 @@ async def wait_for_port(port: int, timeout: float = 3.0) -> None:
 
 
 async def test_run_correlator_starts_and_stops_cleanly(
-    fake_redis: Any, settings_factory: Any, free_tcp_port: Any, event_factory: Any
+    fake_redis: Any,
+    settings_factory: Any,
+    free_tcp_port: Any,
+    event_factory: Any,
+    monkeypatch: Any,
 ) -> None:
     store = RedisStore(fake_redis)
+    # `configure_logging` enables INFO by default, so the legacy journal carries
+    # the lifecycle lines in production; pin the level instead of inheriting
+    # whatever another test left on the root logger.
+    monkeypatch.setattr(logging.getLogger("opencanary_correlator"), "level", logging.INFO)
     settings = settings_factory(
         tcp_port=free_tcp_port,
         syslog_enabled=False,
@@ -168,11 +176,45 @@ async def test_run_correlator_starts_and_stops_cleanly(
     assert actions[0] == "receiver_started"
     assert "startup" in actions
     assert actions[-1] == "shutdown"
-    assert await store.lrange(KEY_LOGS) == ["console log line"]
+    journal = await store.lrange(KEY_LOGS)
+    # Startup is journaled; the shutdown line is written after the journal
+    # handler stops, so it only reaches stderr and the log file.
+    lifecycle = [line for line in journal if line.startswith("startup complete:")]
+    assert len(lifecycle) == 1
+    assert lifecycle[0].startswith("startup complete: 1 receiver(s)")
+    assert [line for line in journal if line not in lifecycle] == ["console log line"]
     assert not any(
         isinstance(handler, RedisLogHandler)
         for handler in logging.getLogger("opencanary_correlator").handlers
     )
+
+
+async def test_lifecycle_reaches_the_operational_log(
+    store: Any, settings_factory: Any, audit: Any, caplog: Any, free_tcp_port: Any
+) -> None:
+    """Startup and shutdown must be visible in the log, not only in the audit trail."""
+    caplog.set_level(logging.INFO, logger="opencanary_correlator.app.runner")
+    stop = asyncio.Event()
+    stop.set()
+
+    await run_correlator(
+        settings_factory(tcp_port=free_tcp_port, syslog_enabled=False, health_port=None),
+        store=store,
+        dispatchers=[],
+        audit=audit,
+        stop_event=stop,
+    )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "opencanary_correlator.app.runner"
+    ]
+    started = next(index for index, text in enumerate(messages) if text.startswith("startup"))
+    stopped = next(index for index, text in enumerate(messages) if text.startswith("shutdown"))
+    assert messages[started].startswith("startup complete: 1 receiver(s)")
+    assert messages[stopped].startswith("shutdown complete: 1 receiver(s)")
+    assert started < stopped
 
 
 async def test_critical_consumer_exit_stops_runtime(
@@ -197,7 +239,12 @@ async def test_critical_consumer_exit_stops_runtime(
 
 
 async def test_cleanup_error_does_not_skip_other_resources(
-    store: Any, settings_factory: Any, audit: Any, monkeypatch: Any, free_tcp_port: Any
+    store: Any,
+    settings_factory: Any,
+    audit: Any,
+    monkeypatch: Any,
+    free_tcp_port: Any,
+    caplog: Any,
 ) -> None:
     from opencanary_correlator.connectors.receivers.tcp_json import TCPJSONReceiver
 
@@ -223,6 +270,10 @@ async def test_cleanup_error_does_not_skip_other_resources(
         stop_event=stop,
     )
     assert closed == ["dispatcher"]
+    assert any(
+        record.getMessage() == "cleanup failed for tcp_json: RuntimeError"
+        for record in caplog.records
+    )
 
 
 async def test_stop_notice_precedes_client_close_and_is_not_start_suppressed(
