@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-10
+
 ### Added
 
 - Optional MISP Automation API publisher (`OCC_MISP_ENABLED`, off by default)
@@ -43,6 +45,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - README examples, unit fixtures and the characterization snapshot now use
   documentation address ranges instead of a real deployment address.
+- Compose now publishes only TCP JSON intake by default. TCP and UDP syslog ports
+  are published through explicit overlays (`docker-compose.syslog.yml` and
+  `docker-compose.syslog-udp.yml`), so disabled listeners no longer reserve
+  host ports. Syslog remains opt-in and must be enabled in the application config.
+
+### Fixed
+
+- TCP receiver shutdown closes live peers before waiting for the listener, and
+  health-server shutdown cancels silent client handlers first; open canary and
+  probe connections no longer delay a normal stop.
+- Startup, shutdown and cleanup failures now have operational log records as well
+  as the existing audit records. Lifecycle messages contain counts/resource names,
+  not event payloads.
+- The daily digest counts only incident-creation marks whose incident hash still
+  exists, so manually deleted incidents no longer inflate `New incidents`.
 
 ## [0.7.0] - 2026-11-05
 
