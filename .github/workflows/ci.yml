@@ -602,29 +602,42 @@ jobs:
           docker compose logs correlator | grep -q '"action":"startup"'
           docker compose exec -T correlator python -c 'import os; raise SystemExit(0 if os.getuid() == 10001 else 1)'
           test "$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q correlator)")" = "healthy"
-      - name: Publish the intake on loopback only
+      - name: Publish the base intake on loopback only
         run: |
-          # The default must keep the canary on this host safe: the published port
-          # is bound to 127.0.0.1, not to every interface. Print what compose
-          # actually bound instead of trusting the file.
-          for mapping in 15140 15141; do
-            bound=$(docker compose port correlator "$mapping" | head -n 1 | tr -d '\r')
-            echo "$mapping -> $bound"
-            test "$bound" = "127.0.0.1:$mapping"
-          done
-          # Widening stays one variable away. `docker compose port` reports the
-          # mapping of the container that is already running, so it cannot show
-          # what a changed variable would produce; the rendered configuration
-          # can, and that is what the next `up` would create.
-          default_ips=$(docker compose config | grep -c 'host_ip: 127.0.0.1')
-          # One variable per protocol family: the syslog mapping has its own.
-          widened_ips=$(
-            OCC_TCP_PUBLISH_HOST=0.0.0.0 OCC_SYSLOG_PUBLISH_HOST=0.0.0.0 \
-              docker compose config | grep -c 'host_ip: 0.0.0.0'
-          )
-          echo "loopback bindings: $default_ips, widened bindings: $widened_ips"
-          test "$default_ips" = "3"
-          test "$widened_ips" = "3"
+          bound=$(docker compose port correlator 15140 | head -n 1 | tr -d '\r')
+          echo "15140 -> $bound"
+          test "$bound" = "127.0.0.1:15140"
+      - name: Verify opt-in syslog Compose overlays
+        run: |
+          check_ports() {
+            expected="$1"
+            shift
+            docker compose "$@" config --format json |
+              EXPECTED_PORTS="$expected" python3 -c '
+          import json, os, sys
+          expected = {
+              tuple(item.split("/", 1)[0].split("@") + [item.split("/", 1)[1]])
+              for item in os.environ["EXPECTED_PORTS"].split(",")
+              if item
+          }
+          payload = json.load(sys.stdin)
+          ports = payload["services"]["correlator"].get("ports", [])
+          actual = {(str(p["target"]), p["host_ip"], p["protocol"]) for p in ports}
+          assert len(ports) == len(expected), f"duplicate or missing mappings: {ports}"
+          assert actual == expected, f"expected {expected}, got {actual}"
+          print("published mappings:", sorted(actual))
+          '
+          }
+          base=(-f docker-compose.yml)
+          tcp_syslog=(-f docker-compose.yml -f docker-compose.syslog.yml)
+          all_syslog=(-f docker-compose.yml -f docker-compose.syslog.yml -f docker-compose.syslog-udp.yml)
+          check_ports '15140@127.0.0.1/tcp' "${base[@]}"
+          check_ports '15140@127.0.0.1/tcp,15141@127.0.0.1/tcp' "${tcp_syslog[@]}"
+          check_ports '15140@127.0.0.1/tcp,15141@127.0.0.1/tcp,15141@127.0.0.1/udp' "${all_syslog[@]}"
+          OCC_TCP_PUBLISH_HOST=0.0.0.0 check_ports \
+            '15140@0.0.0.0/tcp,15141@127.0.0.1/tcp,15141@127.0.0.1/udp' "${all_syslog[@]}"
+          OCC_SYSLOG_PUBLISH_HOST=0.0.0.0 check_ports \
+            '15140@127.0.0.1/tcp,15141@0.0.0.0/tcp,15141@0.0.0.0/udp' "${all_syslog[@]}"
       - name: Keep the container healthy with a loopback-only listener
         env:
           OCC_HEALTH_HOST: 127.0.0.1

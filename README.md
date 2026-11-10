@@ -1024,18 +1024,38 @@ The bundled Redis requires a password: `OCC_REDIS_PASSWORD` has no default, and
 compose refuses to start without it. Use letters, digits, `-` and `_` only, since
 the password is embedded in the correlator's `OCC_REDIS_URL` unescaped.
 
-The image runs as an unprivileged user, accepts canary JSON on `15140/tcp`, and
-includes the syslog receiver for `15141/tcp` + `15141/udp`. Base images (Python,
-the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
-build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
-that reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
+The image runs as an unprivileged user and accepts canary JSON on `15140/tcp`.
+TCP and UDP syslog listeners are optional. Base images (Python, the `uv` builder
+and `redis:7-alpine`) are pinned by multi-arch digest, and the build installs
+exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK` that
+reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
 changing the port, narrowing the binding to loopback, or setting the port to `0`
 to disable the endpoint keeps the health status meaningful instead of probing a
 dead `15142` or the wrong address.
 
-Compose publishes both intake ports **on `127.0.0.1` only**, because the canary
-normally shares the host with the correlator. The binding is a variable, so it
-survives `docker compose` updates instead of being re-widened by them:
+Base Compose publishes only TCP JSON intake, on `127.0.0.1` by default. Syslog
+ports are opt-in overlays; adding an overlay publishes a port but does not enable
+the application receiver. Set the matching `OCC_SYSLOG_ENABLED` and
+`OCC_SYSLOG_UDP_ENABLED` values in `.env` as well.
+
+```bash
+# Publish TCP syslog (15141/tcp)
+# .env: OCC_SYSLOG_ENABLED=true
+docker compose -f docker-compose.yml -f docker-compose.syslog.yml up -d --build
+
+# Also publish UDP syslog (15141/udp); TCP syslog must be enabled too
+# .env: OCC_SYSLOG_ENABLED=true and OCC_SYSLOG_UDP_ENABLED=true
+docker compose -f docker-compose.yml -f docker-compose.syslog.yml \
+  -f docker-compose.syslog-udp.yml up -d --build
+```
+
+For TCP-only intake, keep using `docker compose up -d --build`; it publishes
+only `15140/tcp`. Do not add the syslog overlays unless the matching listener is
+enabled in `.env`.
+
+Both intake and optional syslog mappings bind to `127.0.0.1` by default, because
+the canary normally shares the host with the correlator. Publish addresses are
+variables, so they survive Compose updates instead of being re-widened:
 
 ```bash
 # .env — canaries on other machines
@@ -1047,9 +1067,8 @@ OCC_SYSLOG_HOST=0.0.0.0
 
 `OCC_TCP_HOST`/`OCC_SYSLOG_HOST` stay `0.0.0.0` **inside** the container: Docker
 forwards the published port to the container's bridge address, so a loopback
-listener there would never be reached through the mapping. The loopback part of
-the default is the host-side publish address. Set `OCC_SYSLOG_ENABLED=true` (and
-`OCC_SYSLOG_UDP_ENABLED=true` for UDP) in `.env` to start the syslog listener.
+listener there would never be reached through the mapping. The publish-host
+variables control only the host-side binding.
 The health port (`15142`) stays container-internal. Inspect it with
 `docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
 yourself if an external probe needs it.
@@ -1060,7 +1079,8 @@ inside the container while the image `HEALTHCHECK` keeps reporting `healthy`.
 Set `OCC_HEALTH_HOST=0.0.0.0` only together with a published health port.
 
 The compose file starts Redis and the correlator on a private network. If you
-widen the published intake ports (`15140`, `15141`) to a network interface,
+widen the published intake ports (`15140`, and `15141` when using syslog overlays)
+to a network interface,
 restrict them to your canary subnet at the firewall or cloud security-group
 level; they accept untrusted traffic by design.
 

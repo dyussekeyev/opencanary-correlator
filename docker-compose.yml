@@ -73,13 +73,10 @@ services:
     # unauthenticated write path into the incident store. The publish address is
     # a variable, so widening it is a `.env` value that survives every compose
     # update instead of an edit to this file. Canaries on other machines need
-    # OCC_TCP_PUBLISH_HOST=0.0.0.0 (and the syslog equivalent).
-    # Enable the syslog entries with OCC_SYSLOG_ENABLED=true, plus
-    # OCC_SYSLOG_UDP_ENABLED=true for UDP.
+    # OCC_TCP_PUBLISH_HOST=0.0.0.0. Syslog ports are opt-in: add
+    # docker-compose.syslog.yml for TCP and docker-compose.syslog-udp.yml for UDP.
     ports:
       - "${OCC_TCP_PUBLISH_HOST:-127.0.0.1}:${OCC_TCP_PORT:-15140}:${OCC_TCP_PORT:-15140}"
-      - "${OCC_SYSLOG_PUBLISH_HOST:-127.0.0.1}:${OCC_SYSLOG_PORT:-15141}:${OCC_SYSLOG_PORT:-15141}/tcp"
-      - "${OCC_SYSLOG_PUBLISH_HOST:-127.0.0.1}:${OCC_SYSLOG_PORT:-15141}:${OCC_SYSLOG_PORT:-15141}/udp"
     depends_on:
       redis:
         condition: service_healthy
