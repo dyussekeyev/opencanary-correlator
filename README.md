@@ -221,6 +221,38 @@ usual entry. A suppressed event is counted in `opencanary_events_ignored_total`
 and audited as `event_ignored` with `reason=smb_action`, so a suppression never
 looks like a lost event.
 
+### Hiding the honeypot's own address
+
+`dst_host` is already omitted from every alert layout, but a canary's address or
+hostname can still arrive inside a log field, for example as `HOSTNAME` in an
+HTTP request or as the target of a port scan. Set
+`OCC_NOTIFICATION_REDACT_VALUES` to a comma-separated list of the deployment's
+own IPv4/IPv6 addresses and DNS names to replace every occurrence on the final
+outbound boundary with `REDACTED`:
+
+```
+OCC_NOTIFICATION_REDACT_VALUES=203.0.113.10,canary.example.test
+```
+
+The filter is off by default. It runs after a message has been rendered and
+escaped, so it covers `minimal` text, every detail level, Telegram MarkdownV2,
+Slack, Discord, the complete webhook JSON document and SMTP subject and body —
+including a value an attacker placed in a log line. Matching is token-aware
+(`198.51.100.70` is not a hit for `198.51.100.7`, and
+`notcanary.example.test` is not a hit for `canary.example.test`); a configured
+DNS name also covers its subdomains, and escaped dots or hyphens in MarkdownV2
+are recognised. Percent-encoded spellings are decoded before matching, so
+`203%2E0%2E113%2E10`, a fully encoded `%32%30%33...` value, mixed raw/encoded
+text and double-encoded `%252E` variants are removed without touching unrelated
+URL escapes. Values are normalised, deduplicated and limited to 100 entries
+of 253 characters; an invalid entry stops the correlator at startup. Stored
+incidents, Redis keys and the investigation data itself are never rewritten.
+
+The values never appear in `--check-config` or `repr(Settings)`; it reports only
+`notification_redaction: {"enabled": true, "values": N}`. Keep the real list in
+the untracked `.env`, and note that an exact value is also added to the log
+secret list, so it is masked in log lines as well.
+
 HTTP channels retry 429/5xx and transport errors three times with exponential
 backoff and jitter, honour `Retry-After`, and share a Redis circuit breaker per
 endpoint (keyed by a hash of the URL or Telegram chat id), so a dead endpoint is
@@ -561,7 +593,7 @@ does not have to parse message text.
 🛡 OpenCanary: *RDP Login Attempt*
 🌐 *Instance:* opencanary-embassy
 
-👿 *Attacker:* 89.126.202.164:52344
+👿 *Attacker:* 198.51.100.7:52344
 🕒 *Time:* 2026-10-28 17:30:28 UTC
 📍 *Location:* 🇰🇿 Kazakhstan, Almaty
 🏢 *ASN:* AS202958 LLP "Kompaniya Hoster.KZ"
@@ -677,9 +709,9 @@ three keys as before.
 
 ```json
 {
-  "title": "RDP Login Attempt by 89.126.202.164 on opencanary-embassy",
+  "title": "RDP Login Attempt by 198.51.100.7 on opencanary-embassy",
   "text": "... legacy report ...",
-  "key": "incident:rdplogin:89.126.202.164:1793207641",
+  "key": "incident:rdplogin:198.51.100.7:1793207641",
   "enrichment": {
     "geo": {
       "country_code": "KZ",
@@ -698,7 +730,7 @@ three keys as before.
     },
     "opencti": {
       "id": "indicator--6f1c…",
-      "pattern": "[ipv4-addr:value = '89.126.202.164']",
+      "pattern": "[ipv4-addr:value = '198.51.100.7']",
       "confidence": 50,
       "created_at": "2026-10-28T17:30:28.000Z",
       "valid_from": "2026-10-28T17:30:28.000Z",
@@ -716,6 +748,94 @@ downstream rule does not have to recompute the ratio.
 
 **Attribution.** IP geolocation data from [DB-IP](https://db-ip.com) Lite,
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+## MISP publishing (optional, off by default)
+
+A closed community deployment can share what its honeypots observed without
+sharing the honeypots themselves. The publisher is separate from the alert
+channels: it has its own durable Redis queue, is never rationed by
+`OCC_ALERT_BUDGET_*`, and is not affected by a broken chat channel. It publishes
+**observations**, not every alert.
+
+```dotenv
+OCC_MISP_ENABLED=true
+OCC_MISP_URL=https://threatintel.example
+OCC_MISP_API_KEY=...
+OCC_MISP_DISTRIBUTION=0        # private test; choose the community policy later
+OCC_MISP_PUBLISH_MODE=draft    # or auto once the instance is trusted
+OCC_MISP_TLP=amber
+OCC_MISP_PAP=amber
+OCC_MISP_EVENT_WINDOW=86400
+OCC_MISP_TAGS=honeypot
+```
+
+One event is built per UTC window (one day by default) and contains one
+`ip-src` attribute per unique globally routable source address, with first/last
+seen, the incident service and targeted port, and the event count. The event’s
+info says it is an automated honeypot observation, not an attributed actor.
+Nothing from `dst_host`, `node_id`, `logdata`, credentials, payloads, URLs or
+user agents is sent. Private, loopback, documentation and multicast addresses
+are skipped, as are the operator’s own addresses in
+`OCC_NOTIFICATION_REDACT_VALUES`.
+
+**Existing community knowledge wins.** Before building the daily event the
+publisher searches MISP for an exact `ip-src` value. An address that already
+exists gets a sighting and is not added to the new event; only addresses the
+community does not cover become new attributes. If every address in a window is
+already known, the window creates no event at all. The search and sighting are
+part of the durable retry path: a failed search or sighting leaves the window
+queued rather than creating a duplicate.
+
+**Draft first.** `draft` creates an unpublished event for review; `auto` calls
+the publish endpoint after the event, attributes and tags exist. Both modes
+require the configured TLP/PAP/confidence tags to resolve by exact name and, by
+default, at least one warninglist to be enabled. A warninglisted address is
+filtered out; an empty warninglist check is treated as a configuration failure,
+not as a clean address. `to_ids=true` is set only for the auth incidents listed
+in `OCC_MISP_TO_IDS_TYPES` (`ssh`, `rdp`, `ftp`, `telnet`, `mysql` and peers) with
+at least `OCC_MISP_TO_IDS_MIN_EVENTS` events in the window; scans, HTTP requests,
+SMB, SNMP, NTP and TFTP are excluded.
+
+Deterministic event and attribute UUIDs make a retry address the same object
+instead of creating a duplicate. The event, attribute and tag writes happen in
+that order, followed by sightings for known addresses; a window is acknowledged
+only after they succeed, so a temporary MISP outage leaves the queue intact.
+Check the effective, secret-free settings with `--check-config`; the API key is
+masked from logs and `repr()`.
+
+**Current MISP prerequisites.** The instance must have its TLP/PAP taxonomies
+and warninglists enabled, and the API key needs `perm_add`, `perm_modify`,
+`perm_sighting` and `perm_tagger`; `auto` additionally needs `perm_publish`.
+A restricted `User` role commonly lacks the last permission, in which case use
+`draft` for review or ask the instance administrator for a publishing service
+account. `OCC_MISP_DISTRIBUTION=4` also requires a sharing group id; without one
+MISP cannot resolve the audience.
+
+**Live draft smoke test.** `tools/misp_smoke.py` checks the instance before a
+real publisher run. It is read-only by default: it validates the URL and API
+key, resolves every configured TLP/PAP/confidence/free-form tag by exact name,
+confirms that warninglists are enabled and queries
+`/warninglists/checkValue` for the test address. Only with `--execute` does it
+create one unpublished `distribution=0` event containing a single `ip-src` from
+a documentation range with `to_ids=false`, read it back to verify the draft,
+attribute and tags, then delete it and confirm it is gone. A failure after
+creation still deletes the event in a `finally` block; if cleanup fails, the
+event id is printed so it can be removed by hand. The publish endpoint is never
+called.
+
+```bash
+export OCC_MISP_URL=https://misp.example
+export OCC_MISP_API_KEY=...        # or --token-file
+.venv/Scripts/python.exe tools/misp_smoke.py            # preflight only
+.venv/Scripts/python.exe tools/misp_smoke.py --execute  # one draft, then delete
+```
+
+The key is read from `OCC_MISP_API_KEY` or `--token-file`, never from argv, and
+it is excluded from logs and from the JSON summary. `--keep` leaves the draft in
+place for inspection; `--allow-warninglisted` permits the write when the
+documentation address itself matches an enabled warninglist. Exit codes: `0`
+pass or dry-run preflight, `1` assertion/API failure, `2` usage error, `3`
+instance unreachable or API key rejected.
 
 ## Correlation semantics
 
@@ -904,18 +1024,38 @@ The bundled Redis requires a password: `OCC_REDIS_PASSWORD` has no default, and
 compose refuses to start without it. Use letters, digits, `-` and `_` only, since
 the password is embedded in the correlator's `OCC_REDIS_URL` unescaped.
 
-The image runs as an unprivileged user, accepts canary JSON on `15140/tcp`, and
-includes the syslog receiver for `15141/tcp` + `15141/udp`. Base images (Python,
-the `uv` builder and `redis:7-alpine`) are pinned by multi-arch digest, and the
-build installs exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK`
-that reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
+The image runs as an unprivileged user and accepts canary JSON on `15140/tcp`.
+TCP and UDP syslog listeners are optional. Base images (Python, the `uv` builder
+and `redis:7-alpine`) are pinned by multi-arch digest, and the build installs
+exactly `uv.lock` with `uv sync --frozen`. The image declares a `HEALTHCHECK` that
+reads `OCC_HEALTH_PORT` and `OCC_HEALTH_HOST` from the container environment;
 changing the port, narrowing the binding to loopback, or setting the port to `0`
 to disable the endpoint keeps the health status meaningful instead of probing a
 dead `15142` or the wrong address.
 
-Compose publishes both intake ports **on `127.0.0.1` only**, because the canary
-normally shares the host with the correlator. The binding is a variable, so it
-survives `docker compose` updates instead of being re-widened by them:
+Base Compose publishes only TCP JSON intake, on `127.0.0.1` by default. Syslog
+ports are opt-in overlays; adding an overlay publishes a port but does not enable
+the application receiver. Set the matching `OCC_SYSLOG_ENABLED` and
+`OCC_SYSLOG_UDP_ENABLED` values in `.env` as well.
+
+```bash
+# Publish TCP syslog (15141/tcp)
+# .env: OCC_SYSLOG_ENABLED=true
+docker compose -f docker-compose.yml -f docker-compose.syslog.yml up -d --build
+
+# Also publish UDP syslog (15141/udp); TCP syslog must be enabled too
+# .env: OCC_SYSLOG_ENABLED=true and OCC_SYSLOG_UDP_ENABLED=true
+docker compose -f docker-compose.yml -f docker-compose.syslog.yml \
+  -f docker-compose.syslog-udp.yml up -d --build
+```
+
+For TCP-only intake, keep using `docker compose up -d --build`; it publishes
+only `15140/tcp`. Do not add the syslog overlays unless the matching listener is
+enabled in `.env`.
+
+Both intake and optional syslog mappings bind to `127.0.0.1` by default, because
+the canary normally shares the host with the correlator. Publish addresses are
+variables, so they survive Compose updates instead of being re-widened:
 
 ```bash
 # .env — canaries on other machines
@@ -927,9 +1067,8 @@ OCC_SYSLOG_HOST=0.0.0.0
 
 `OCC_TCP_HOST`/`OCC_SYSLOG_HOST` stay `0.0.0.0` **inside** the container: Docker
 forwards the published port to the container's bridge address, so a loopback
-listener there would never be reached through the mapping. The loopback part of
-the default is the host-side publish address. Set `OCC_SYSLOG_ENABLED=true` (and
-`OCC_SYSLOG_UDP_ENABLED=true` for UDP) in `.env` to start the syslog listener.
+listener there would never be reached through the mapping. The publish-host
+variables control only the host-side binding.
 The health port (`15142`) stays container-internal. Inspect it with
 `docker inspect --format '{{.State.Health.Status}}' <container>`, or publish it
 yourself if an external probe needs it.
@@ -940,7 +1079,8 @@ inside the container while the image `HEALTHCHECK` keeps reporting `healthy`.
 Set `OCC_HEALTH_HOST=0.0.0.0` only together with a published health port.
 
 The compose file starts Redis and the correlator on a private network. If you
-widen the published intake ports (`15140`, `15141`) to a network interface,
+widen the published intake ports (`15140`, and `15141` when using syslog overlays)
+to a network interface,
 restrict them to your canary subnet at the firewall or cloud security-group
 level; they accept untrusted traffic by design.
 

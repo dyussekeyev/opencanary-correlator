@@ -24,12 +24,24 @@ from opencanary_correlator.connectors.dispatchers.discord import (
     DISCORD_MAX_CONTENT,
     DISCORD_MAX_EMBED_DESCRIPTION,
 )
+from opencanary_correlator.core.incident import IncidentHTTPRequest, IncidentNetworkPortScan
 from opencanary_correlator.enrichment.models import (
     Enrichment,
     GeoInfo,
     OpenCTIIndicator,
     VirusTotalReport,
 )
+from opencanary_correlator.notification_identity import (
+    REDACTION_MARKER,
+    NotificationIdentityRedactor,
+)
+
+#: Documentation-safe literals: the real deployment identity stays in `.env`.
+PROTECTED_IP = "203.0.113.10"
+PROTECTED_DOMAIN = "canary.example.test"
+ENCODED_IP = "203%2E0%2E113%2E10"
+ENCODED_DOMAIN = "canary%2Eexample%2Etest"
+IDENTITY_REDACTOR = NotificationIdentityRedactor([PROTECTED_IP, PROTECTED_DOMAIN])
 
 ATTACKER_CONTEXT = Enrichment(
     geo=GeoInfo(
@@ -116,13 +128,13 @@ async def test_webhook_title_and_text_hide_the_honeypot_address(incident_factory
     client = make_client(scripted_handler([httpx.Response(200)], calls))
     dispatcher = WebhookDispatcher(url="https://siem.test/hook", client=client, detail="detailed")
     try:
-        await dispatcher.dispatch(incident_factory(dst_host="89.126.202.164", dst_port=3389))
+        await dispatcher.dispatch(incident_factory(dst_host="198.51.100.7", dst_port=3389))
     finally:
         await dispatcher.aclose()
 
     document = json.loads(calls[0].content)
-    assert "89.126.202.164" not in document["title"]
-    assert "89.126.202.164" not in document["text"]
+    assert "198.51.100.7" not in document["title"]
+    assert "198.51.100.7" not in document["text"]
 
 
 async def test_webhook_carries_the_attacker_context_as_structured_json(
@@ -510,11 +522,11 @@ async def test_smtp_subject_and_body_hide_the_honeypot_address(incident_factory:
         send=fake_send,
     )
 
-    await dispatcher.dispatch(incident_factory(dst_host="89.126.202.164", dst_port=3389))
+    await dispatcher.dispatch(incident_factory(dst_host="198.51.100.7", dst_port=3389))
 
     message = sent[0]
-    assert "89.126.202.164" not in str(message["Subject"])
-    assert "89.126.202.164" not in message.get_content()
+    assert "198.51.100.7" not in str(message["Subject"])
+    assert "198.51.100.7" not in message.get_content()
     assert message["Subject"] == "FTP Login Attempt by 10.0.0.5 on canary-1"
 
 
@@ -822,3 +834,179 @@ def test_every_channel_carries_the_attacker_context(channel: str, incident_facto
     assert "Kazakhstan, Almaty" in detailed, channel
     assert "AS202958" in detailed, channel
     assert "reputation 0" in detailed, channel
+
+
+def _http_probe(incident_factory: Any, **overrides: Any) -> Any:
+    """An HTTP incident whose log fields carry the honeypot's own identity."""
+    logdata = json.dumps(
+        [
+            {
+                "METHOD": "GET",
+                "PATH": "/",
+                "HOST": PROTECTED_DOMAIN,
+                "HOSTNAME": ENCODED_IP,
+                "USERAGENT": f"scanner for {ENCODED_DOMAIN}",
+                "URL": f"https%3A%2F%2F{ENCODED_IP}%2Fadmin",
+            }
+        ]
+    )
+    return incident_factory(
+        IncidentHTTPRequest,
+        src_host=PROTECTED_IP,
+        src_port=52344,
+        dst_host=PROTECTED_IP,
+        dst_port=80,
+        logtype=3000,
+        logdata=logdata,
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("detail", ["minimal", "standard", "detailed"])
+async def test_webhook_removes_honeypot_identity_from_every_detail_level(
+    incident_factory: Any, detail: str
+) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        detail=detail,
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+    try:
+        assert (await dispatcher.dispatch(_http_probe(incident_factory))).status == "success"
+    finally:
+        await dispatcher.aclose()
+
+    document = calls[0].content.decode()
+    assert PROTECTED_IP not in document
+    assert PROTECTED_DOMAIN not in document
+    assert ENCODED_IP not in document
+    assert ENCODED_DOMAIN not in document
+    assert REDACTION_MARKER in document
+
+
+@pytest.mark.parametrize("detail", ["standard", "detailed"])
+async def test_telegram_removes_identity_even_after_markdown_escaping(
+    incident_factory: Any, detail: str
+) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = TelegramDispatcher(
+        token="123:secret-token",
+        chat_id="-100500",
+        client=client,
+        detail=detail,
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+    try:
+        assert (await dispatcher.dispatch(_http_probe(incident_factory))).status == "success"
+    finally:
+        await dispatcher.aclose()
+
+    text = json.loads(calls[0].content)["text"]
+    assert PROTECTED_IP not in text
+    assert PROTECTED_DOMAIN not in text
+    assert ENCODED_IP not in text
+    assert ENCODED_DOMAIN not in text
+    # Telegram escapes the dots; the filter has to match through that rendering.
+    assert r"203\.0\.113\.10" not in text
+    assert r"canary\.example\.test" not in text
+
+
+async def test_slack_removes_identity_from_the_rendered_text(incident_factory: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = SlackDispatcher(
+        url="https://hooks.slack.test/x",
+        client=client,
+        detail="detailed",
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+    try:
+        await dispatcher.dispatch(_http_probe(incident_factory))
+    finally:
+        await dispatcher.aclose()
+
+    text = json.loads(calls[0].content)["text"]
+    assert PROTECTED_IP not in text
+    assert PROTECTED_DOMAIN not in text
+
+
+async def test_discord_removes_identity_from_content_and_embed(incident_factory: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(204)], calls))
+    dispatcher = DiscordDispatcher(
+        url="https://discord.test/webhook",
+        client=client,
+        detail="detailed",
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+    try:
+        await dispatcher.dispatch(_http_probe(incident_factory))
+    finally:
+        await dispatcher.aclose()
+
+    document = calls[0].content.decode()
+    assert PROTECTED_IP not in document
+    assert PROTECTED_DOMAIN not in document
+
+
+@pytest.mark.parametrize("detail", ["minimal", "standard", "detailed"])
+async def test_smtp_removes_identity_from_subject_and_body(
+    incident_factory: Any, detail: str
+) -> None:
+    sent: list[Any] = []
+
+    async def fake_send(message: Any, **kwargs: Any) -> Any:
+        sent.append(message)
+        return ({}, "ok")
+
+    dispatcher = SmtpDispatcher(
+        host="smtp.test",
+        port=587,
+        sender="alerts@example.test",
+        recipients=["soc@example.test"],
+        detail=detail,
+        send=fake_send,
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+
+    assert (await dispatcher.dispatch(_http_probe(incident_factory))).status == "success"
+
+    message = sent[0]
+    document = f"{message['Subject']}\n{message.get_content()}"
+    assert PROTECTED_IP not in document
+    assert PROTECTED_DOMAIN not in document
+
+
+async def test_a_network_scan_rich_alert_hides_its_target_addresses(
+    incident_factory: Any,
+) -> None:
+    """The legacy scan report counts targets; the generic Log row used to list them."""
+    incident = incident_factory(
+        IncidentNetworkPortScan,
+        logtype=5002,
+        dst_port=22,
+        logdata=json.dumps([PROTECTED_IP, "198.51.100.20"]),
+    )
+    calls: list[httpx.Request] = []
+    client = make_client(scripted_handler([httpx.Response(200)], calls))
+    dispatcher = WebhookDispatcher(
+        url="https://siem.test/hook",
+        client=client,
+        detail="detailed",
+        identity_redactor=IDENTITY_REDACTOR,
+    )
+    try:
+        await dispatcher.dispatch(incident)
+    finally:
+        await dispatcher.aclose()
+
+    document = calls[0].content.decode()
+    assert PROTECTED_IP not in document
+    assert "198.51.100.20" in document
+    # The stored evidence itself stays exact for the console and the operators.
+    assert incident.logdata is not None
+    assert PROTECTED_IP in incident.logdata

@@ -5,6 +5,62 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-10
+
+### Added
+
+- Optional MISP Automation API publisher (`OCC_MISP_ENABLED`, off by default)
+  that shares honeypot observations, not alert copies. One deterministic
+  aggregate event is built per UTC window from a durable Redis queue; `observe`
+  never affects correlation, the outbox or the alert budget. Only globally
+  routable source addresses, first/last seen, service, targeted port and event
+  count are sent. `dst_host`, `node_id`, raw `logdata`, credentials, payloads,
+  URLs and user agents never reach MISP. Events are drafts by default, TLP/PAP
+  and confidence tags must resolve, warninglists must be enabled, and
+  `to_ids=true` is limited to listed auth services with at least three events
+  that day. Before creating an event it searches for exact existing `ip-src`
+  attributes and records sightings instead of duplicating them; a window with
+  only known addresses creates no event. Retries are idempotent through
+  deterministic UUIDs.
+- `tools/misp_smoke.py`, a safe live draft smoke test for the MISP publisher.
+  It is read-only unless `--execute` is passed; a write creates one unpublished
+  `distribution=0` event with a single documentation-range `ip-src` and
+  `to_ids=false`, verifies the draft, attribute, tags and warninglist gate,
+  then deletes it and confirms it is gone. Cleanup also runs after a failure,
+  the API key is read from the environment or a file and never appears in argv
+  or the summary, and the publish endpoint is never called.
+- `OCC_NOTIFICATION_REDACT_VALUES` hides the deployment's own IPv4/IPv6
+  addresses and DNS names in every outbound alert. The final boundary of each
+  HTTP channel and of SMTP rewrites occurrences to `REDACTED`, covering the
+  legacy `minimal` text, all detail levels, Telegram MarkdownV2 escaping, Slack,
+  Discord, the complete webhook JSON document and SMTP subject/body. Matching is
+  token-aware (a DNS name also covers its subdomains), values are normalised and
+  deduplicated, and an invalid entry stops startup. Percent-encoded spellings
+  are decoded before matching, including `%2E`/`%2D`, fully encoded and
+  double-encoded values, so URL-encoded copies cannot bypass the filter.
+  Stored incidents and Redis state are untouched, and the setting shows only
+  its count in `--check-config`; the list itself is masked as a log secret.
+
+### Changed
+
+- README examples, unit fixtures and the characterization snapshot now use
+  documentation address ranges instead of a real deployment address.
+- Compose now publishes only TCP JSON intake by default. TCP and UDP syslog ports
+  are published through explicit overlays (`docker-compose.syslog.yml` and
+  `docker-compose.syslog-udp.yml`), so disabled listeners no longer reserve
+  host ports. Syslog remains opt-in and must be enabled in the application config.
+
+### Fixed
+
+- TCP receiver shutdown closes live peers before waiting for the listener, and
+  health-server shutdown cancels silent client handlers first; open canary and
+  probe connections no longer delay a normal stop.
+- Startup, shutdown and cleanup failures now have operational log records as well
+  as the existing audit records. Lifecycle messages contain counts/resource names,
+  not event payloads.
+- The daily digest counts only incident-creation marks whose incident hash still
+  exists, so manually deleted incidents no longer inflate `New incidents`.
+
 ## [0.7.0] - 2026-11-05
 
 ### Added

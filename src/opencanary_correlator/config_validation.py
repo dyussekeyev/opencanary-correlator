@@ -7,6 +7,7 @@ from environment loading.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from typing import Any, Final
@@ -73,9 +74,85 @@ MAX_SMB_ACTION_LENGTH: Final[int] = 64
 #: nothing, or on every alert (create-or-update, never a duplicate).
 OPENCTI_CREATE_MODES: Final[tuple[str, ...]] = ("off", "missing", "always")
 
+#: MISP publication is either a human-reviewed draft or an explicit auto-publish.
+MISP_PUBLISH_MODES: Final[tuple[str, ...]] = ("draft", "auto")
+MISP_TLP_LEVELS: Final[tuple[str, ...]] = ("clear", "green", "amber", "amber+strict", "red")
+MISP_PAP_LEVELS: Final[tuple[str, ...]] = ("clear", "green", "amber", "red")
+MAX_MISP_TAG_LENGTH: Final[int] = 255
+MAX_MISP_NAMESPACE_LENGTH: Final[int] = 64
+
+#: Auth-service incident types that may carry `to_ids=true` once the daily
+#: observation count and the warninglist gate both pass. HTTP requests, scans,
+#: SMB, SNMP, NTP and TFTP deliberately stay out of the initial allowlist.
+DEFAULT_MISP_TO_IDS_TYPES: Final[tuple[str, ...]] = (
+    "ftp.login_attempt",
+    "http.login_attempt",
+    "ssh.login_attempt",
+    "telnet.login_attempt",
+    "httpproxy.login_attempt",
+    "mysql.login_attempt",
+    "mssql.login_attempt",
+    "vnc.login_attempt",
+    "rdp.login_attempt",
+    "sip.login_attempt",
+)
+
 #: Longest accepted OpenCTI label. STIX has no hard limit; a configuration is
 #: not a data feed, and a label is copied into every indicator created.
 MAX_OPENCTI_LABEL_LENGTH: Final[int] = 64
+
+#: Longest accepted honeypot identity (an IP literal or DNS name).
+MAX_NOTIFICATION_REDACT_VALUE_LENGTH: Final[int] = 253
+
+#: How many honeypot identities one deployment may protect. A list is a small
+#: inventory of the operator's own hosts, not a blocklist.
+MAX_NOTIFICATION_REDACT_VALUES: Final[int] = 100
+
+_DNS_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def normalise_notification_redact_values(value: list[str]) -> list[str]:
+    """Normalise the honeypot identities whose names must not leave the estate.
+
+    Values are IP literals (v4 or v6) or DNS names. They are compared against
+    outgoing notification text, so they are canonicalised here: IPs through
+    `ipaddress` (which also folds IPv6 shorthand), DNS names to lower case, and
+    duplicates removed. Anything else is rejected instead of being treated as a
+    partial match, because a typo in a privacy control must not fail silently.
+    """
+    if len(value) > MAX_NOTIFICATION_REDACT_VALUES:
+        raise ValueError(
+            f"notification_redact_values accepts at most {MAX_NOTIFICATION_REDACT_VALUES} entries"
+        )
+    unique: dict[str, None] = {}
+    for raw in value:
+        candidate = raw.strip().rstrip(".")
+        if not candidate:
+            continue
+        if len(candidate) > MAX_NOTIFICATION_REDACT_VALUE_LENGTH:
+            raise ValueError(
+                "notification_redact_values entry exceeds "
+                f"{MAX_NOTIFICATION_REDACT_VALUE_LENGTH} characters"
+            )
+        if any(ord(character) < 33 or ord(character) == 127 for character in candidate):
+            raise ValueError(
+                "notification_redact_values must not contain whitespace or control characters"
+            )
+        try:
+            unique.setdefault(str(ipaddress.ip_address(candidate)), None)
+            continue
+        except ValueError:
+            pass
+        lowered = candidate.lower()
+        labels = lowered.split(".")
+        if all(label.isdigit() for label in labels):
+            # A dotted all-numeric value is a malformed IP, not a DNS name.
+            raise ValueError("notification_redact_values entries must be IP addresses or DNS names")
+        if not all(_DNS_LABEL_RE.match(label) for label in labels):
+            raise ValueError("notification_redact_values entries must be IP addresses or DNS names")
+        unique.setdefault(lowered, None)
+    return list(unique)
+
 
 #: Labels one indicator may carry at most.
 MAX_OPENCTI_LABELS: Final[int] = 20
@@ -193,6 +270,130 @@ def normalise_opencti_create_mode(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     return value.strip().lower()
+
+
+def normalise_misp_url(value: Any) -> Any:
+    """Treat an unset or blank ``OCC_MISP_URL`` as "not configured"."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def require_misp_url(value: str | None) -> str | None:
+    """Accept an http(s) MISP base URL; plain http only for a loopback lab.
+
+    MISP may live under a path (for example ``/misp``), so the path is kept.
+    A query string or fragment would be silently discarded by the API client and
+    could hide a credential or tenant selector in the configuration, so both are
+    refused.
+    """
+    if value is None:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"misp_url must be an http(s) URL, got scheme {parsed.scheme or '<none>'!r}"
+        )
+    if not parsed.hostname:
+        raise ValueError("misp_url must name a host")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError(
+            f"misp_url must use https unless it is loopback (host {parsed.hostname!r})"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError("misp_url must not carry a query string or fragment")
+    return value.rstrip("/")
+
+
+def normalise_misp_api_key(value: Any) -> Any:
+    """An empty ``OCC_MISP_API_KEY`` means "no key", not an empty secret."""
+    if isinstance(value, SecretStr):
+        return value if value.get_secret_value().strip() else None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def normalise_misp_publish_mode(value: Any) -> Any:
+    """`draft` and `auto` are case-insensitive setting values."""
+    if not isinstance(value, str):
+        return value
+    return value.strip().lower()
+
+
+def validate_misp_handling(value: str, *, name: str, allowed: tuple[str, ...]) -> str:
+    """Validate a TLP/PAP level and return the lower-case machine value."""
+    text = value.strip().lower()
+    if text not in allowed:
+        raise ValueError(f"{name} must be one of: " + ", ".join(allowed))
+    return text
+
+
+def validate_misp_tags(value: list[str]) -> list[str]:
+    """Normalise free-form MISP tags without allowing invisible control text."""
+    unique: dict[str, None] = {}
+    for raw in value:
+        tag = raw.strip()
+        if not tag:
+            continue
+        if len(tag) > MAX_MISP_TAG_LENGTH:
+            raise ValueError(f"misp_tags entry exceeds {MAX_MISP_TAG_LENGTH} characters")
+        if any(ord(character) < 32 or ord(character) == 127 for character in tag):
+            raise ValueError("misp_tags must not contain control characters")
+        unique.setdefault(tag, None)
+    return list(unique)
+
+
+def validate_misp_namespace(value: str) -> str:
+    """A namespace is part of deterministic UUIDs; keep it portable and short."""
+    text = value.strip()
+    if not 1 <= len(text) <= MAX_MISP_NAMESPACE_LENGTH:
+        raise ValueError(f"misp_event_namespace must be 1..{MAX_MISP_NAMESPACE_LENGTH} characters")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]+", text):
+        raise ValueError(
+            "misp_event_namespace may contain only letters, digits, "
+            "dot, underscore, colon and hyphen"
+        )
+    return text
+
+
+def validate_misp_to_ids_types(value: list[str]) -> list[str]:
+    """Only known incident names may opt into the IDS flag."""
+    normalised = [name.strip() for name in value if name.strip()]
+    unknown = sorted(set(normalised) - set(INCIDENT_KEY_PREFIX))
+    if unknown:
+        raise ValueError("unknown misp_to_ids_types entries: " + ", ".join(unknown))
+    return list(dict.fromkeys(normalised))
+
+
+def require_misp_config(
+    *,
+    enabled: bool,
+    url: str | None,
+    api_key: SecretStr | None,
+    distribution: int,
+    sharing_group_id: int | None,
+) -> None:
+    """Refuse a half-configured MISP publisher at startup.
+
+    Distribution ``4`` means a sharing group; without its id MISP cannot resolve
+    the audience. The opposite combination is also a mistake: a sharing-group id
+    on an event that does not use sharing groups is ignored silently.
+    """
+    if distribution == 4 and sharing_group_id is None:
+        raise ValueError("OCC_MISP_SHARING_GROUP_ID is required when OCC_MISP_DISTRIBUTION=4")
+    if distribution != 4 and sharing_group_id is not None:
+        raise ValueError("OCC_MISP_SHARING_GROUP_ID requires OCC_MISP_DISTRIBUTION=4")
+    if not enabled:
+        return
+    if url is None:
+        raise ValueError("OCC_MISP_URL is required when OCC_MISP_ENABLED=true")
+    if api_key is None:
+        raise ValueError("OCC_MISP_API_KEY is required when OCC_MISP_ENABLED=true")
 
 
 def validate_opencti_labels(value: list[str]) -> list[str]:
@@ -448,12 +649,20 @@ __all__ = [
     "DEFAULT_HEALTH_HOST",
     "DEFAULT_HEALTH_PORT",
     "DEFAULT_INTAKE_HOST",
+    "DEFAULT_MISP_TO_IDS_TYPES",
     "DIGEST_TIME_RE",
     "KNOWN_CHANNEL_NAMES",
     "LOOPBACK_HOSTS",
     "MAX_INCIDENT_HORIZON_SECONDS",
+    "MAX_MISP_NAMESPACE_LENGTH",
+    "MAX_MISP_TAG_LENGTH",
+    "MAX_NOTIFICATION_REDACT_VALUES",
+    "MAX_NOTIFICATION_REDACT_VALUE_LENGTH",
     "MAX_OPENCTI_LABELS",
     "MAX_OPENCTI_LABEL_LENGTH",
+    "MISP_PAP_LEVELS",
+    "MISP_PUBLISH_MODES",
+    "MISP_TLP_LEVELS",
     "OPENCTI_CREATE_MODES",
     "SERVICE_CATEGORIES",
     "TELEGRAM_TOKEN_RE",
@@ -464,12 +673,18 @@ __all__ = [
     "normalise_health_host",
     "normalise_log_file",
     "normalise_log_level",
+    "normalise_misp_api_key",
+    "normalise_misp_publish_mode",
+    "normalise_misp_url",
+    "normalise_notification_redact_values",
     "normalise_opencti_create_mode",
     "normalise_opencti_token",
     "normalise_opencti_url",
     "normalise_service_severity",
     "require_email_address",
     "require_http_urls",
+    "require_misp_config",
+    "require_misp_url",
     "require_opencti_config",
     "require_opencti_url",
     "require_redis_scheme",
@@ -479,6 +694,10 @@ __all__ = [
     "validate_allowed_ips",
     "validate_digest_time",
     "validate_incident_horizons",
+    "validate_misp_handling",
+    "validate_misp_namespace",
+    "validate_misp_tags",
+    "validate_misp_to_ids_types",
     "validate_opencti_labels",
     "validate_service_categories",
     "validate_service_channels",

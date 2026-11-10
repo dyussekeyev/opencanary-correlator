@@ -98,6 +98,21 @@ def test_check_config_reports_the_log_file(monkeypatch: Any, capsys: Any, tmp_pa
     assert json.loads(capsys.readouterr().out)["log_file"].endswith("correlator.log")
 
 
+def test_check_config_reports_identity_redaction_without_values(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    monkeypatch.setenv("OCC_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OCC_NOTIFICATION_REDACT_VALUES", "203.0.113.10,canary.example.test")
+
+    assert main(["--check-config"]) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["notification_redaction"] == {"enabled": True, "values": 2}
+    assert "203.0.113.10" not in captured.out
+    assert "canary.example.test" not in captured.out
+
+
 def test_channel_names_counts_every_telegram_chat(settings_factory: Any) -> None:
     settings = settings_factory(
         telegram_token="123:abc",

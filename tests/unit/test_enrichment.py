@@ -333,7 +333,8 @@ async def test_a_real_geo_lookup_runs_through_the_enricher(tmp_path: Any) -> Non
 
     enricher = IncidentEnricher(geo=GeoLookup(Reader()))
 
-    enrichment = await enricher.enrich("89.126.202.164")
+    # A globally routable address: enrichment deliberately skips reserved ranges.
+    enrichment = await enricher.enrich("8.8.8.8")
 
     assert enrichment is not None
     assert enrichment.geo is not None

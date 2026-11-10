@@ -299,6 +299,20 @@ async def test_start_is_idempotent(fake_redis: Any) -> None:
         await server.stop()
 
 
+async def test_stop_does_not_wait_for_a_silent_client() -> None:
+    """A client that never sends a request line must not delay shutdown."""
+    server = await start_server(DeadStore())
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+    try:
+        await asyncio.wait_for(server.stop(), timeout=0.5)
+        assert await reader.read() == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+    assert server.is_running is False
+
+
 async def test_an_empty_connection_does_not_take_the_listener_down(fake_redis: Any) -> None:
     """A TCP probe that connects and hangs up without a request line is normal."""
     server = await start_server(fake_redis)

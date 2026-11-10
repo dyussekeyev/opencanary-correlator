@@ -20,12 +20,14 @@ from opencanary_correlator.app.parser import CorrelatorStartupError, build_parse
 from opencanary_correlator.app.wiring import (
     build_enricher,
     build_health_server,
+    build_publishers,
     build_rate_limiter,
     build_receivers,
 )
 from opencanary_correlator.audit import AuditLogger, RedisLogHandler
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher, BaseReceiver
+from opencanary_correlator.connectors.publishers.base import BasePublisher
 from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.digest import DigestScheduler
 from opencanary_correlator.core.engine import CorrelationEngine
@@ -100,6 +102,7 @@ async def run_correlator(
     audit: AuditLogger | None = None,
     stop_event: asyncio.Event | None = None,
     health: HealthServer | None = None,
+    publishers: Sequence[BasePublisher] | None = None,
 ) -> None:
     """Run receivers, correlation and dispatchers until `stop_event` is set."""
     audit = audit or AuditLogger("correlator")
@@ -153,6 +156,9 @@ async def run_correlator(
         else None
     )
     enricher = build_enricher(settings, store, audit, notifier)
+    active_publishers = (
+        list(publishers) if publishers is not None else build_publishers(settings, store, audit)
+    )
     engine = CorrelationEngine(
         rules=build_rules(store, repository, settings, audit),
         dispatchers=active_dispatchers,
@@ -163,6 +169,7 @@ async def run_correlator(
         outbox=outbox,
         notifier=notifier,
         budget=budget,
+        publishers=active_publishers,
     )
     rate_limiter = build_rate_limiter(settings, store)
     receivers = build_receivers(settings, engine, audit, rate_limiter, nodes)
@@ -185,6 +192,7 @@ async def run_correlator(
     package_logger.addHandler(log_handler)
 
     started: list[BaseReceiver] = []
+    started_publishers: list[BasePublisher] = []
     began = time.monotonic()
     scan_recovery: asyncio.Task[None] | None = None
     critical: list[asyncio.Task[None]] = []
@@ -229,6 +237,9 @@ async def run_correlator(
             await receiver.start()
         if health is not None:
             await health.start()
+        for publisher in active_publishers:
+            started_publishers.append(publisher)
+            await publisher.start()
         await notice_outbox.start()
         scan_recovery = asyncio.create_task(engine.recover_scans(), name="scan-recovery")
         await stats.start()
@@ -248,6 +259,9 @@ async def run_correlator(
             if component is not None
             for task in component.critical_tasks
         )
+        critical.extend(
+            task for publisher in started_publishers for task in publisher.critical_tasks
+        )
         running = True
         supervisor = asyncio.create_task(supervise(), name="runtime-supervisor")
         audit.emit(
@@ -257,7 +271,14 @@ async def run_correlator(
                 "receivers": [receiver.name for receiver in receivers],
                 "rules": list(engine.rule_names),
                 "channels": [dispatcher.name for dispatcher in active_dispatchers],
+                "publishers": [publisher.name for publisher in started_publishers],
             },
+        )
+        _logger.info(
+            "startup complete: %d receiver(s), %d rule(s), %d channel(s)",
+            len(receivers),
+            len(engine.rule_names),
+            len(active_dispatchers),
         )
         await notifier.notify(
             ServiceKind.LIFECYCLE_STARTED,
@@ -312,6 +333,9 @@ async def run_correlator(
                         "error_type": type(exc).__name__,
                     },
                 )
+                # The audit trail records the failure; the operator's log says
+                # which resource was left behind without reading JSON events.
+                _logger.error("cleanup failed for %s: %s", name, type(exc).__name__)
 
         async def cancel_scan() -> None:
             if scan_recovery is not None:
@@ -333,6 +357,10 @@ async def run_correlator(
                 ("stats", stats),
             )
             if component is not None
+        )
+        stops.extend(
+            (f"publisher:{publisher.name}", publisher.stop)
+            for publisher in reversed(started_publishers)
         )
         await asyncio.gather(
             *(cleanup(name, operation, settings.shutdown_timeout / 2) for name, operation in stops)
@@ -361,6 +389,9 @@ async def run_correlator(
         ]
         if enricher is not None:
             closes.append(("enricher", enricher.aclose))
+        closes.extend(
+            (f"publisher:{publisher.name}", publisher.aclose) for publisher in started_publishers
+        )
         if health is not None:
             closes.append(("health", health.stop))
         package_logger.removeHandler(log_handler)
@@ -370,6 +401,7 @@ async def run_correlator(
         await cleanup("log-handler", log_handler.stop, remaining() / 2)
         if owns_store:
             await cleanup("redis", store.aclose, remaining())
+        _logger.info("shutdown complete: %d receiver(s) stopped", len(started))
         audit.emit("shutdown", "info", {"receivers": len(started)})
 
 

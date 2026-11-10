@@ -53,6 +53,13 @@ def log_secrets(settings: Settings) -> tuple[str, ...]:
     if settings.opencti_token is not None:
         # Same path: a bearer header on every GraphQL request.
         secrets.append(settings.opencti_token.get_secret_value())
+    if settings.misp_api_key is not None:
+        # Sent in the Automation API Authorization header on every request.
+        secrets.append(settings.misp_api_key.get_secret_value())
+    # The operator's own honeypot addresses and names are not credentials, but
+    # they are deployment identity: keep them out of stderr, the log file and
+    # the legacy console journal as well as out of notifications.
+    secrets.extend(settings.notification_redact_values)
     return tuple(secrets)
 
 
@@ -63,7 +70,7 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
     same table `build_dispatchers` reads, so the summary cannot promise a
     delivery that startup would not build.
     """
-    return {
+    described: dict[str, Any] = {
         "redis_url": safe_redis_url(settings.redis_url),
         "tcp": {
             "enabled": settings.tcp_enabled,
@@ -85,6 +92,10 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "incident_lookup_scan_limit": settings.incident_lookup_scan_limit,
         "dispatch_timeout": settings.dispatch_timeout,
         "alert_detail": {spec.name: spec.detail(settings) for spec in CHANNEL_SPECS},
+        "notification_redaction": {
+            "enabled": bool(settings.notification_redact_values),
+            "values": len(settings.notification_redact_values),
+        },
         "channels": channel_names(settings),
         "enrichment": {
             "geoip": bool(settings.geoip_city_db or settings.geoip_asn_db),
@@ -133,6 +144,24 @@ def describe_settings(settings: Settings) -> dict[str, Any]:
         "log_level": settings.log_level,
         "log_file": settings.log_file,
     }
+    if settings.misp_enabled:
+        # Omitted while the publisher is off, so the default configuration's
+        # output (and the characterization snapshot) stays byte-identical.
+        described["misp"] = {
+            "enabled": True,
+            "url_configured": settings.misp_url is not None,
+            "api_key_configured": settings.misp_api_key is not None,
+            "verify_tls": settings.misp_verify_tls,
+            "distribution": settings.misp_distribution,
+            "sharing_group_configured": settings.misp_sharing_group_id is not None,
+            "publish_mode": settings.misp_publish_mode,
+            "tlp": settings.misp_tlp,
+            "pap": settings.misp_pap,
+            "event_window": settings.misp_event_window,
+            "warninglist_required": settings.misp_warninglist_required,
+            "to_ids_types": len(settings.misp_to_ids_types),
+        }
+    return described
 
 
 __all__ = ["CHANNEL_SPECS", "channel_names", "describe_settings", "log_secrets", "safe_redis_url"]

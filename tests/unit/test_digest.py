@@ -60,6 +60,26 @@ async def test_history_survives_heartbeat_loss_and_flush_replay(store: Any) -> N
     assert tomorrow.events["accepted"] == 0
 
 
+async def test_a_deleted_incident_is_not_counted_as_new(store: Any) -> None:
+    """An operator deleting a false positive must not inflate the next digest.
+
+    The creation mark outlives the hash on a manual `DEL`, so counting the
+    index instead of the incidents reported 120 new incidents against 103 that
+    existed on the production host.
+    """
+    for suffix in ("alpha", "beta"):
+        await store.save_new_incident(
+            f"incident:ftplogin:10.0.0.5:{suffix}",
+            {"node_id": "canary-1", "src_host": "10.0.0.5"},
+            score=NOW - 60,
+        )
+    assert (await collect_digest(store, now=NOW, top_sources=0)).new_incidents == 2
+
+    await store.client.delete("incident:ftplogin:10.0.0.5:beta")
+
+    assert (await collect_digest(store, now=NOW, top_sources=0)).new_incidents == 1
+
+
 async def test_default_digest_routing_reaches_all_channels(
     store: Any, settings_factory: Any, audit: Any
 ) -> None:

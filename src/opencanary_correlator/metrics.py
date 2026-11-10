@@ -108,6 +108,20 @@ ALERTS_BUDGET = Counter(
     "Notifications the alert budget allowed or withheld",
     ["result"],
 )
+MISP_OBSERVATIONS = Counter(
+    "opencanary_misp_observations_total",
+    "Correlated incidents offered to the MISP queue, by result",
+    ["result"],
+)
+MISP_PUBLICATIONS = Counter(
+    "opencanary_misp_publications_total",
+    "MISP windows settled as a sighting, draft or published event",
+    ["result"],
+)
+MISP_PENDING = Gauge(
+    "opencanary_misp_pending_windows",
+    "MISP aggregation windows waiting for publication",
+)
 ENRICHMENT_CACHE = Counter(
     "opencanary_enrichment_cache_total",
     "Initial enrichment cache reads per lookup (polling excluded)",

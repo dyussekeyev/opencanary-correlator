@@ -85,8 +85,8 @@ def incidents() -> dict[str, Incident]:
     """The fixed incident set every renderer is measured with."""
     enriched = _incident(
         IncidentRDPLogin,
-        key=f"incident:rdplogin:89.126.202.164:{FIXED_TIME}",
-        src_host="89.126.202.164",
+        key=f"incident:rdplogin:198.51.100.7:{FIXED_TIME}",
+        src_host="198.51.100.7",
         src_port=52344,
         dst_host="2.126.2.164",
         dst_port=3389,

@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencanary_correlator.storage.scripts import RELEASE_LOCK_LUA, SAVE_INCIDENT_LUA
+from opencanary_correlator.storage.scripts import (
+    COUNT_LIVE_CREATED_LUA,
+    RELEASE_LOCK_LUA,
+    SAVE_INCIDENT_LUA,
+)
 
 
 async def test_release_lock_deletes_key_when_token_matches(fake_redis: Any) -> None:
@@ -34,6 +38,25 @@ async def test_release_lock_on_missing_key_is_a_noop(fake_redis: Any) -> None:
 
     assert released == 0
     assert await fake_redis.exists("lock:x") == 0
+
+
+async def test_count_live_created_ignores_marks_without_an_incident(
+    fake_redis: Any,
+) -> None:
+    await fake_redis.zadd(
+        "stats:v2:incidents-created",
+        {"incident:a": 100, "incident:b": 200, "incident:gone": 150, "incident:old": 50},
+    )
+    await fake_redis.zadd("stats:v2:incidents-created", {"incident:edge": 250})
+    await fake_redis.hset("incident:a", mapping={"node_id": "canary-1"})
+    await fake_redis.hset("incident:b", mapping={"node_id": "canary-1"})
+
+    count = await fake_redis.eval(
+        COUNT_LIVE_CREATED_LUA, 1, "stats:v2:incidents-created", "60", "250"
+    )
+
+    # `incident:gone` has a mark but no hash: an operator deleted it.
+    assert count == 2
 
 
 async def test_save_incident_writes_hash_index_and_host_pointer(fake_redis: Any) -> None:

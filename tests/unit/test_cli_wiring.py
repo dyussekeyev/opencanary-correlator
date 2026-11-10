@@ -135,6 +135,32 @@ async def test_build_dispatchers_passes_the_configured_detail(
     assert captured["detail"] == "detailed"
 
 
+async def test_build_dispatchers_passes_the_notification_identity_filter(
+    settings_factory: Any, store: Any, monkeypatch: Any
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class RecordingTelegram:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("opencanary_correlator.app.channels.TelegramDispatcher", RecordingTelegram)
+    settings = settings_factory(
+        telegram_token="1:token",
+        telegram_chat_ids=["1"],
+        notification_redact_values="203.0.113.10,canary.example.test",
+    )
+
+    dispatchers = build_dispatchers(settings, store)
+
+    assert len(dispatchers) == 1
+    redactor = captured["identity_redactor"]
+    assert redactor.enabled is True
+    assert redactor.text("HOSTNAME=203.0.113.10 canary.example.test") == (
+        "HOSTNAME=REDACTED REDACTED"
+    )
+
+
 async def test_build_dispatchers_defaults_to_the_standard_detail(
     settings_factory: Any, store: Any, monkeypatch: Any
 ) -> None:

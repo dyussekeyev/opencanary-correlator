@@ -20,6 +20,7 @@ from redis.exceptions import RedisError
 
 from opencanary_correlator.storage.scripts import (
     CONFIRM_DEDUP_LUA,
+    COUNT_LIVE_CREATED_LUA,
     RELEASE_LOCK_LUA,
     RESERVE_ALERT_BUDGET_LUA,
     RESERVE_QUOTA_LUA,
@@ -69,6 +70,7 @@ class _StoreBase:
     _service_message_script: Script
     _reserve_budget_script: Script
     _take_budget_summary_script: Script
+    _count_live_created_script: Script
 
     def __init__(self, client: Redis) -> None:
         self._client = client
@@ -85,6 +87,9 @@ class _StoreBase:
         self._reserve_budget_script = cast(Script, client.register_script(RESERVE_ALERT_BUDGET_LUA))
         self._take_budget_summary_script = cast(
             Script, client.register_script(TAKE_BUDGET_SUMMARY_LUA)
+        )
+        self._count_live_created_script = cast(
+            Script, client.register_script(COUNT_LIVE_CREATED_LUA)
         )
 
     @classmethod

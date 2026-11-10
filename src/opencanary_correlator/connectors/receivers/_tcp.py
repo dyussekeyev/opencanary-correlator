@@ -107,9 +107,13 @@ class TCPStreamReceiver(NetworkReceiver):
         server, self._server = self._server, None
         if server is not None:
             server.close()
-            await server.wait_closed()
+        # `wait_closed()` also waits for connection handlers. A canary keeps its
+        # `SocketHandler` socket open between records, so the handlers have to end
+        # before the wait or shutdown blocks on a peer that is behaving correctly.
         for protocol in list(self._connections):
             protocol.close("shutdown")
+        if server is not None:
+            await server.wait_closed()
         admission = tuple(self._admission_tasks)
         for task in admission:
             task.cancel()

@@ -1,0 +1,4 @@
+services:
+  correlator:
+    ports:
+      - "${OCC_SYSLOG_PUBLISH_HOST:-127.0.0.1}:${OCC_SYSLOG_PORT:-15141}:${OCC_SYSLOG_PORT:-15141}/tcp"

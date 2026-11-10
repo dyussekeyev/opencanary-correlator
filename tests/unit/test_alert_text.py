@@ -209,7 +209,7 @@ def test_minimal_level_is_the_legacy_one_liner(incident_factory: Any) -> None:
 
 
 def test_standard_level_puts_the_instance_before_the_attacker(incident_factory: Any) -> None:
-    incident = incident_factory(node_id="opencanary-embassy", dst_host="89.126.202.164")
+    incident = incident_factory(node_id="opencanary-embassy", dst_host="198.51.100.7")
 
     text = render_alert(incident, detail="standard", flavor="plain")
     lines = text.split(CRLF)
@@ -235,12 +235,12 @@ def test_instance_and_attacker_use_the_requested_emoji(incident_factory: Any) ->
 
 def test_no_detail_level_prints_the_honeypot_address(incident_factory: Any) -> None:
     """D1: the canary's own address never leaves the estate, minimal included."""
-    incident = incident_factory(dst_host="89.126.202.164", dst_port=21)
+    incident = incident_factory(dst_host="198.51.100.7", dst_port=21)
 
     for detail in ALERT_DETAIL_LEVELS:
         text = render_alert(incident, detail=detail, flavor="plain")
 
-        assert "89.126.202.164" not in text
+        assert "198.51.100.7" not in text
         assert "IP:" not in text
 
 

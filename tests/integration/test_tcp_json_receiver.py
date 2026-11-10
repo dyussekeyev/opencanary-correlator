@@ -350,6 +350,23 @@ async def test_stats_track_accepted_and_connections(
     assert receiver.stats.rejected == 0
 
 
+async def test_stop_returns_promptly_while_a_canary_holds_its_socket(
+    sink: Any, audit: Any, audit_stream: Any
+) -> None:
+    """`SocketHandler` keeps its socket open between records; stop cannot wait for it."""
+    receiver = await make_receiver(sink, audit)
+    reader, writer = await open_connection(receiver)
+    try:
+        await asyncio.wait_for(receiver.stop(), timeout=1.0)
+        assert await wait_for_eof(reader) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+    assert receiver.is_running is False
+    assert ("receiver_stopped", "") in audit_actions(audit_stream)
+
+
 async def test_stop_is_idempotent(sink: Any, audit: Any) -> None:
     receiver = await make_receiver(sink, audit)
     await receiver.stop()

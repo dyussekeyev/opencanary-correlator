@@ -23,6 +23,7 @@ import httpx
 from redis.exceptions import RedisError
 
 from opencanary_correlator.connectors.base import BaseDispatcher, DispatchResult, IncidentLike
+from opencanary_correlator.notification_identity import NotificationIdentityRedactor
 from opencanary_correlator.storage.keys import delivery_target_id
 from opencanary_correlator.storage.redis_store import RedisStore
 
@@ -114,8 +115,13 @@ class HTTPDispatcher(BaseDispatcher):
         headers: Mapping[str, str] | None = None,
         expected_status: Sequence[int] = (200,),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        identity_redactor: NotificationIdentityRedactor | None = None,
     ) -> None:
         self._url = url
+        # Applied to the finished payload, so every detail level, the webhook's
+        # structured `enrichment` object and service notices are covered by one
+        # rule instead of each channel's renderer growing its own exemption.
+        self._identity_redactor = identity_redactor
         self.delivery_target_id = delivery_target_id(self.name, url)
         self._client = client if client is not None else httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
@@ -180,7 +186,7 @@ class HTTPDispatcher(BaseDispatcher):
         payload = self.build_service_payload(message)
         if payload is None:
             raise NotImplementedError(f"{type(self).__name__} cannot carry service messages")
-        return await self._post(payload)
+        return await self._post(self._scrub(payload))
 
     def build_notice_payload(self, message: str) -> dict[str, Any] | None:
         """Render a plain operator notice, or None when this channel has none.
@@ -197,15 +203,24 @@ class HTTPDispatcher(BaseDispatcher):
         payload = self.build_notice_payload(message)
         if payload is None:
             return DispatchResult(dispatcher=self.name, status="skipped", detail="not_supported")
-        return await self._post(payload)
+        return await self._post(self._scrub(payload))
 
     async def dispatch(self, incident: IncidentLike) -> DispatchResult:
         """POST the incident payload with retries, never raising."""
-        return await self._post(self.build_payload(incident))
+        return await self._post(self._scrub(self.build_payload(incident)))
 
     async def dispatch_once(self, incident: IncidentLike) -> DispatchResult:
         """Let the durable scheduler own retries and Retry-After delays."""
-        return await self._post(self.build_payload(incident), attempts=1)
+        return await self._post(self._scrub(self.build_payload(incident)), attempts=1)
+
+    def _scrub(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Remove configured honeypot identities from an outgoing body."""
+        if self._identity_redactor is None:
+            return payload
+        scrubbed = self._identity_redactor.payload(payload)
+        # `payload` is a JSON object by contract; the recursive copy keeps that.
+        assert isinstance(scrubbed, dict)  # noqa: S101 - invariant of payload()
+        return scrubbed
 
     async def _post(
         self, payload: Mapping[str, Any], *, attempts: int | None = None

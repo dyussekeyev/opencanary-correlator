@@ -38,6 +38,18 @@ end
 return 1
 """
 
+#: Count creation marks whose incident hash still exists. `ZCOUNT` also counts a
+#: mark left behind by a manual `DEL` (an operator removing a false positive), so
+#: it over-reported new incidents in every digest until retention pruned the
+#: mark. ARGV[1] and ARGV[2] are the window bounds, the second one exclusive.
+COUNT_LIVE_CREATED_LUA = """
+local live = 0
+for _, key in ipairs(redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], '(' .. ARGV[2])) do
+    if redis.call('EXISTS', key) == 1 then live = live + 1 end
+end
+return live
+"""
+
 #: Reserve one call in every configured quota window, or refuse without
 #: spending anything. ARGV is `limit, ttl_ms` pairs, one per key. Checking and
 #: incrementing separately would let two replicas both pass the check on the
@@ -162,6 +174,7 @@ return flat
 
 __all__ = [
     "CONFIRM_DEDUP_LUA",
+    "COUNT_LIVE_CREATED_LUA",
     "RELEASE_LOCK_LUA",
     "RESERVE_ALERT_BUDGET_LUA",
     "RESERVE_QUOTA_LUA",

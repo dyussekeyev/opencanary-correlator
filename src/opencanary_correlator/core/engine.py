@@ -18,6 +18,7 @@ from opencanary_correlator import metrics
 from opencanary_correlator.audit import AuditLogger
 from opencanary_correlator.config import Settings
 from opencanary_correlator.connectors.base import BaseDispatcher
+from opencanary_correlator.connectors.publishers.base import BasePublisher
 from opencanary_correlator.constants import IGNORED_LOGTYPES
 from opencanary_correlator.core.budget import AlertBudget
 from opencanary_correlator.core.delivery import deliver
@@ -55,6 +56,7 @@ class CorrelationEngine:
         outbox: AlertOutbox | None = None,
         notifier: ServiceNotifier | None = None,
         budget: AlertBudget | None = None,
+        publishers: Sequence[BasePublisher] = (),
     ) -> None:
         self._rules = list(rules)
         self._dispatchers = list(dispatchers)
@@ -70,6 +72,9 @@ class CorrelationEngine:
         self._failed_alerts_in_a_row = 0
         # Without a budget every incident notifies, as before.
         self._budget = budget
+        # Publishers are independent of the alert budget and the outbox: they
+        # observe every incident, including one whose notification was withheld.
+        self._publishers = list(publishers)
         if self._outbox is not None:
             self._outbox.set_enricher(enricher)
 
@@ -166,7 +171,7 @@ class CorrelationEngine:
         if incidents:
             if self._outbox is None:
                 await self._enrich(incidents)
-            await self._dispatch(incidents)
+            await self._dispatch_and_publish(incidents)
 
     async def recover_scans(self) -> None:
         """Recover threshold snapshots independently of new network traffic."""
@@ -178,7 +183,7 @@ class CorrelationEngine:
                     incidents = await rule.recover()
                     if self._outbox is None:
                         await self._enrich(incidents)
-                    await self._dispatch(incidents)
+                    await self._dispatch_and_publish(incidents)
                 except Exception as exc:
                     self._audit.emit(
                         "scan_recovery_failed",
@@ -258,6 +263,41 @@ class CorrelationEngine:
                 *(self._deliver(dispatcher, incident) for dispatcher in self._dispatchers)
             )
             await self._track_delivery(results, incident)
+
+    async def _dispatch_and_publish(self, incidents: Sequence[Incident]) -> None:
+        """Publish observations even when a dispatcher or the outbox raises.
+
+        The publisher is independent of the alert path, so it runs from a
+        `finally`: a broken Redis outbox or channel must not prevent an attack
+        observation from entering its own durable queue. With an outbox, the
+        enrichment happened in `prepare`, so geo context is already attached.
+        """
+        try:
+            await self._dispatch(incidents)
+        finally:
+            await self._publish(incidents)
+
+    async def _publish(self, incidents: Sequence[Incident]) -> None:
+        """Offer incidents to outbound publishers without affecting alerting.
+
+        A publisher failure is recorded and isolated per incident. No publisher
+        is allowed to delay or break the dispatch path; the durable queue inside
+        the publisher is what makes a retry possible.
+        """
+        for incident in incidents:
+            for publisher in self._publishers:
+                try:
+                    await publisher.observe(incident)
+                except Exception as exc:
+                    self._audit.emit(
+                        "publisher_failed",
+                        "error",
+                        {
+                            "publisher": publisher.name,
+                            "incident": incident.key,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
 
     async def _notification_allowed(self, incident: Incident) -> bool:
         """Ask the budget, failing open when it cannot answer.
