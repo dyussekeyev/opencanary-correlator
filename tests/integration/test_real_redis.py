@@ -1,8 +1,10 @@
 """Opt-in checks against a real Redis server.
 
-These tests are skipped unless ``OCC_TEST_REDIS_URL`` points at a **disposable**
-database, for example ``redis://localhost:6379/15``. They exist because the rest
-of the suite runs on fakeredis; this is the bridge to a real deployment.
+These tests are skipped when ``OCC_TEST_REDIS_URL`` is unset. When set, it must
+point at a **disposable**, reachable database, for example
+``redis://localhost:6379/15``; an unavailable server fails the tests rather than
+silently skipping them. They exist because the rest of the suite runs on
+fakeredis; this is the bridge to a real deployment.
 
     OCC_TEST_REDIS_URL=redis://localhost:6379/15 pytest tests/integration/test_real_redis.py
 
@@ -111,7 +113,10 @@ async def replica_stores() -> AsyncIterator[list[RedisStore]]:
     try:
         for store in stores:
             if not await store.ping():
-                pytest.skip("Redis from OCC_TEST_REDIS_URL is not reachable")
+                pytest.fail(
+                    "OCC_TEST_REDIS_URL is set but Redis is not reachable; "
+                    "check the service and URL"
+                )
         yield stores
     finally:
         for client in clients:
